@@ -1,12 +1,12 @@
 FACE_FLAG_OPTIONS = [
-    (0x0001, "Double Side"),
-    (0x0002, "Dark Back"),
-    (0x0004, "Opacity"),
-    (0x0008, "Transparent"),
-    (0x0010, "Mortal"),
-    (0x0020, "Phong"),
-    (0x0040, "Env Map"),
-    (0x0080, "Need VC"),
-    (0x8000, "Dark"),
+    (1, 'Double Side', 'Marks face as textured on both sides'),
+    (2, 'Dark Back', 'Marks face as having a dark back side'),
+    (4, 'Opacity', 'Marks face as transparent'),
+    (8, 'Transparent', 'Marks face as non-solid (bullets pass through harmlessly)'),
+    (16, 'Mortal', 'Marks face as a target zone'),
+    (32, 'Phong', 'Marks face as Phong Mapped'),
+    (64, 'Env Map', 'Marks face as Environment mapped'),
+    (128, 'Need VC', 'Unused'),
+    (32768, 'Dark', 'Marks face as having a dark front side')
 ]
 TEXTURE_WIDTH = 256

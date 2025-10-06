@@ -18,20 +18,21 @@ def menu_func_import(self, context):
 
 def menu_func_export(self, context):
     self.layout.operator(operators.CARNIVORES_OT_export_3df.bl_idname, text="Carnivores 3DF (.3df)")
-
-    
+   
 classes = [
+    # Operators: Import/Export
     operators.CARNIVORES_OT_import_3df,
     operators.CARNIVORES_OT_export_3df,
+    # Operators: Mesh Attribute Management
     operators.CARNIVORES_OT_create_3df_flags,
-    operators.CARNIVORES_OT_modal_message,
-    operators.CARNIVORES_OT_set_3df_flag,
-    operators.CARNIVORES_OT_clear_3df_flag,
-    operators.CARNIVORES_OT_toggle_3df_flag,
-    operators.CARNIVORES_OT_select_by_flags,
-    operators.VIEW3D_PT_carnivores_selection,
-    operators.CARNIVORES_OT_clear_all_3df_flags,
+    operators.CARNIVORES_OT_modify_3df_flag,
     operators.CARNIVORES_OT_clear_flag_selections,
+    # Operators: Selection
+    operators.CARNIVORES_OT_select_by_flags,
+    # Operators: UI Utilities
+    operators.CARNIVORES_OT_modal_message,
+    # Panels
+    operators.VIEW3D_PT_carnivores_selection,
     operators.VIEW3D_PT_3df_face_flags,
 ]
 
@@ -50,29 +51,10 @@ def register():
         )
 
     # Bool props for each known flag (with tooltips)
-    for i, (bit, label) in enumerate(FACE_FLAG_OPTIONS):
+    for (i, (bit, label, tooltip)) in enumerate(FACE_FLAG_OPTIONS):
         prop_name = f"cf_flag_{i}"
-        tooltip = {
-            0x0001: "Marks face as textured on both sides",
-            0x0002: "Marks face as having a dark back side",
-            0x0004: "Marks face as transparent",
-            0x0008: "Marks face as non-solid (bullets pass through harmlessly)",
-            0x0010: "Marks face as a target zone",
-            0x0020: "Marks face as Phong Mapped",
-            0x0040: "Marks face as EnvironMent mapped",
-            0x0080: "Unused",
-            0x8000: "Marks face as having a dark front side",
-        }.get(int(bit), f"Match faces with flag: {label}")
         if not hasattr(bpy.types.Scene, prop_name):
-            setattr(
-                bpy.types.Scene,
-                prop_name,
-                bpy.props.BoolProperty(
-                    name=label,
-                    description=tooltip,
-                    default=False
-                )
-            )
+            setattr(bpy.types.Scene, prop_name, bpy.props.BoolProperty(name=label, description=tooltip, default=False))
 
     # Mode and action controls with clearer labels
     if not hasattr(bpy.types.Scene, "cf_select_mode"):
@@ -99,36 +81,20 @@ def register():
     
     
 def unregister():
-    for i, (bit, label) in enumerate(FACE_FLAG_OPTIONS):
-        prop_name = f"cf_flag_{i}"
-        if hasattr(bpy.types.Scene, prop_name):
+    for attr in [f"cf_flag_{i}" for i, _ in enumerate(FACE_FLAG_OPTIONS)] + ['cf_flag_section', 'cf_select_mode', 'cf_select_action']:
+        if hasattr(bpy.types.Scene, attr):
             try:
-                delattr(bpy.types.Scene, prop_name)
-            except Exception:
-                pass
-
-    if hasattr(bpy.types.Scene, "cf_flag_section"):
-        try:
-            delattr(bpy.types.Scene, "cf_flag_section")
-        except Exception:
-            pass
-
-    if hasattr(bpy.types.Scene, "cf_select_mode"):
-        try:
-            delattr(bpy.types.Scene, "cf_select_mode")
-        except Exception:
-            pass
-
-    if hasattr(bpy.types.Scene, "cf_select_action"):
-        try:
-            delattr(bpy.types.Scene, "cf_select_action")
-        except Exception:
-            pass
+                delattr(bpy.types.Scene, attr)
+            except Exception as e:
+                print(f"[CarnivoresIO] Failed to remove scene property {attr}: {e}")
 
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
     for cls in reversed(classes):
-        bpy.utils.unregister_class(cls)
+        try:
+            bpy.utils.unregister_class(cls)
+        except Exception as e:
+            print(f"[CarnivoresIO] Failed to unregister class {cls.__name__}: {e}")
     
     
 if __name__ == "__main__":

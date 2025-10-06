@@ -60,7 +60,7 @@ def count_flag_hits(obj, attr_name="3df_flags"):
       - counts: dict mapping bit -> number of faces (numerator)
       - total: number of selected faces (EDIT mode) or total faces (OBJECT mode)
     """
-    counts = {bit: 0 for bit, _ in FACE_FLAG_OPTIONS}
+    counts = {bit: 0 for bit, _, _ in FACE_FLAG_OPTIONS}
     mesh = obj.data
     face_count = len(mesh.polygons)
     if face_count == 0:

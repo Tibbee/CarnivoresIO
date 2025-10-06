@@ -1,2 +1,8 @@
-doc/3DFSpecification.txt
 doc/CarnivoresIOSession
+doc/repo_index.txt
+doc/Minified
+backup/
+tools/
+else/
+.vscode
+
