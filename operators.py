@@ -60,11 +60,15 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         ],
         default='HOOKS'
     )
-    
     validate: bpy.props.BoolProperty(
         name="Run Validations",
         description="Enable file validity and error checking and if possible automatic repairs",
         default=False
+    )
+    flip_handedness: bpy.props.BoolProperty(
+        name='Flip Handedness',
+        description='Negate X-axis to match game\'s left-handed coordinate system (fixes mirroring)',
+        default=True
     )
     
     def draw (self, context):
@@ -78,6 +82,7 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         row.prop(self, "create_materials")
         layout.prop(self, "normal_smooth")
         layout.prop(self, "validate")
+        layout.prop(self, 'flip_handedness')
         
         layout.separator()
         
@@ -96,15 +101,16 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
     @utils.timed("CARNIVORES_OT_import_3df.execute", is_operator=True)
     def execute(self, context):
         
+        handedness_matrix = mathutils.Matrix.Scale(-1, 4, (1, 0, 0)) if self.flip_handedness else mathutils.Matrix.Identity(4)
         import_matrix = (
-            mathutils.Matrix.Scale(self.scale, 4) @
-            mathutils.Matrix.Scale(-1, 4, (1, 0, 0)) @
-            bpy_extras.io_utils.axis_conversion(
+            mathutils.Matrix.Scale(self.scale, 4) 
+            @ handedness_matrix 
+            @ bpy_extras.io_utils.axis_conversion(
                 from_forward=self.axis_forward,
                 from_up=self.axis_up,
                 to_forward='Y',
                 to_up='Z'
-            ).to_4x4()
+            ).to_4x4()  
         )
         import_matrix_np = np.array(import_matrix)
         
@@ -119,7 +125,7 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                 # Your existing parsing and importing logic here
                 mesh_name, object_name = utils.generate_names(filepath)
                 coll = utils.create_import_collection(object_name)
-                header, faces, uvs, vertices, bones, bone_names, texture, texture_height, warnings = parse_3df(filepath, self.validate, self.import_textures)
+                header, faces, uvs, vertices, bones, bone_names, texture, texture_height, warnings = parse_3df(filepath, self.validate, self.import_textures, flip_handedness=self.flip_handedness)
                 verticesTransformedPos = utils.apply_import_matrix(vertices['coord'], import_matrix_np)
                 bonesTransformedPos = utils.apply_import_matrix(bones['pos'], import_matrix_np)
 
@@ -199,6 +205,11 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         description="Export each selected mesh to a separate file using object names (filename as prefix); otherwise, export active object to the specified filename",
         default=False,
     )
+    flip_handedness: bpy.props.BoolProperty(
+        name='Flip Handedness',
+        description='Negate X-axis to match game\'s left-handed coordinate system (fixes mirroring)',
+        default=False  # Start disabled to match your current diff
+    )
     def draw(self, context):
         layout = self.layout
         layout.label(text="Export Options")
@@ -210,6 +221,7 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         row.enabled = self.export_textures
         row.prop(self, "flip_u")
         row.prop(self, "flip_v")
+        layout.prop(self, 'flip_handedness')
         layout.separator()
         box = layout.box()
         box.label(text="Axis Conversion")
@@ -218,13 +230,16 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
 
     @utils.timed("CARNIVORES_OT_export_3df.execute", is_operator=True)
     def execute(self, context):
+        handedness_matrix = mathutils.Matrix.Scale(-1, 4, (1, 0, 0)) if self.flip_handedness else mathutils.Matrix.Identity(4)
         export_matrix = (
             bpy_extras.io_utils.axis_conversion(
                 from_forward='Y',
                 from_up='Z',
                 to_forward=self.axis_forward,
                 to_up=self.axis_up
-            ).to_4x4() @ mathutils.Matrix.Scale(-1, 4, (1, 0, 0)) @ mathutils.Matrix.Scale(self.scale, 4)
+            ).to_4x4()
+            @ handedness_matrix
+            @ mathutils.Matrix.Scale(self.scale, 4) 
         )
         export_matrix_np = np.array(export_matrix)
         base_filepath = self.filepath
@@ -248,7 +263,8 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
                         export_matrix_np,
                         export_textures=self.export_textures,
                         flip_u=self.flip_u,
-                        flip_v=self.flip_v
+                        flip_v=self.flip_v,
+                        flip_handedness=self.flip_handedness
                     )
                     exported_files.append(os.path.basename(filepath))
                 except Exception as e:
@@ -266,7 +282,8 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
                     export_matrix_np,
                     export_textures=self.export_textures,
                     flip_u=self.flip_u,
-                    flip_v=self.flip_v
+                    flip_v=self.flip_v,
+                    flip_handedness=self.flip_handedness
                 )
                 exported_files.append(os.path.basename(filepath))
             except Exception as e:
@@ -365,7 +382,7 @@ class VIEW3D_PT_3df_face_flags(bpy.types.Panel):
         for (bit, label, _) in FACE_FLAG_OPTIONS:
             count = counts.get(bit, 0)
             icon = 'CHECKBOX_HLT' if count > 0 else 'CHECKBOX_DEHLT'
-            text = f"{label} ({count}/{total})" if count == 0 else f"{label} ({count}/{total})"
+            text = f"{label} ({count}/{total})"
             split = col.split(factor=label_fraction)
             left = split.column()
             right = split.column()

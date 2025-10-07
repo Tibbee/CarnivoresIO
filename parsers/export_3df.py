@@ -6,7 +6,7 @@ from ..core.constants import TEXTURE_WIDTH
 
 import bpy_extras.io_utils
 
-def export_3df(filepath, obj, export_matrix, export_textures=False, flip_u=False, flip_v=False):
+def export_3df(filepath, obj, export_matrix, export_textures=False, flip_u=False, flip_v=False, flip_handedness=True):
 
     mesh = obj.data
     tmp_mesh = utils.triangulated_mesh_copy(mesh)
@@ -48,7 +48,9 @@ def export_3df(filepath, obj, export_matrix, export_textures=False, flip_u=False
     # Get all face vertices at once
     face_verts_flat = np.empty(face_count * 3, dtype=np.uint32)
     tmp_mesh.polygons.foreach_get("vertices", face_verts_flat)
-    faces_arr['v'] = face_verts_flat.reshape(face_count, 3)[:, ::-1]
+    faces_arr['v'] = face_verts_flat.reshape(face_count, 3)
+    if flip_handedness:
+        faces_arr['v'] = faces_arr['v'][:, ::-1]  # Reverse winding for left-handed mirror
 
     # UVs (vectorized)
     uv_layer = tmp_mesh.uv_layers.active
@@ -62,14 +64,16 @@ def export_3df(filepath, obj, export_matrix, export_textures=False, flip_u=False
         all_us, all_vs = all_uvs[:, 0].reshape(face_count, 3), all_uvs[:, 1].reshape(face_count, 3)
         all_vs = 1.0 - all_vs    
         
+        if flip_handedness:
+            all_us = all_us[:, ::-1]  # Reverse U to match new vertex order
+            all_vs = all_vs[:, ::-1]  # Reverse V to match
+
         if flip_u:
             all_us = 1.0 - all_us
         if flip_v:
             all_vs = 1.0 - all_vs
         
-        all_us = all_us[:, ::-1]
-        all_vs = all_vs[:, ::-1]
-        
+
         u_ints = np.clip(np.round(all_us * 255), 0, 255).astype(np.uint32)
         v_ints = np.clip(np.round(all_vs * texture_height), 0, texture_height).astype(np.uint32)
         faces_arr['u_tex'] = u_ints

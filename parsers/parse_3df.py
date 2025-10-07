@@ -22,12 +22,13 @@ def parse_3df_header(file):
     return header, texture_height
 
 #@timed('parse_3df_faces')
-def parse_3df_faces(file, face_count, texture_height):
+def parse_3df_faces(file, face_count, texture_height, flip_handedness=True):
     
     faces = np.fromfile(file, dtype=FACE_DTYPE, count=face_count)
-    faces['v'] = faces['v'][:, ::-1]  # Reverse vertex indices (v1,v2,v3 -> v3,v2,v1)
-    faces['u_tex'] = faces['u_tex'][:, ::-1]  # Reverse U to match vertex order
-    faces['v_tex'] = faces['v_tex'][:, ::-1]  # Reverse V to match vertex order
+    if flip_handedness:
+        faces['v'] = faces['v'][:, ::-1]  # Reverse winding for right-handed import
+        faces['u_tex'] = faces['u_tex'][:, ::-1]  # Reverse U to match
+        faces['v_tex'] = faces['v_tex'][:, ::-1]  # Reverse V to match
     uvs = np.empty((face_count * 3, 2), dtype=np.float32)
     uvs[:, 0] = (faces['u_tex'].astype(np.float32) / 255.0).ravel()
     uvs[:, 1] = 1.0 - (faces['v_tex'].astype(np.float32) / max((texture_height or 256), 1)).ravel()
@@ -121,7 +122,7 @@ def parse_3df_texture(file, texture_size, texture_height):
     print("=========================")"""
     
 @timed('parse_3df')      
-def parse_3df(filepath, validate=True, parse_texture=True):
+def parse_3df(filepath, validate=True, parse_texture=True, flip_handedness=True):
     context = ParserContext()
 
     with open(filepath, 'rb') as file:
@@ -129,7 +130,7 @@ def parse_3df(filepath, validate=True, parse_texture=True):
 
         if validate:
             validator.validate_3df_header(header, filepath, context)
-            faces, uvs = parse_3df_faces(file, header['face_count'], texture_height)
+            faces, uvs = parse_3df_faces(file, header['face_count'], texture_height, flip_handedness=flip_handedness)
             faces = validator.validate_3df_faces(faces, header['face_count'], header['vertex_count'], texture_height, context)
             vertices = parse_3df_vertices(file, header['vertex_count'])
             vertices = validator.validate_3df_vertices(vertices, header['vertex_count'], header['bone_count'], context)

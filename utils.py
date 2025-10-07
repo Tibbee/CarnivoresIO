@@ -269,7 +269,7 @@ def create_uv_map(mesh, uvs):
 
     uv_layer = mesh.uv_layers.new(name="UV Map")
     flat_uvs = np.asarray(uvs, dtype=np.float32).ravel()
-    uv_layer.uv.foreach_set("vector", flat_uvs)
+    uv_layer.data.foreach_set('uv', flat_uvs)
     
     return uv_layer
 
@@ -430,9 +430,9 @@ def get_selected_face_indices(obj):
         if face_count == 0:
             return np.zeros(0, dtype=np.int32)
         sel_flags = np.empty(face_count, dtype=np.int8)
-        mesh.polygons.foreach_get("select", sel_flags)
+        mesh.polygons.foreach_get('select', sel_flags)
         selected_indices = np.nonzero(sel_flags)[0]
-        return selected_indices.astype(np.int32) if selected_indices.size > 0 else np.arange(face_count, dtype=np.int32)
+        return selected_indices.astype(np.int32)
 @timed("bulk_modify_flag")
 def bulk_modify_flag(mesh, selected_indices, mask, op):
     """
