@@ -31,3 +31,9 @@ BONE_DTYPE = np.dtype([
     ("parent", "<i2"),
     ("hidden", "<u2"),
 ])
+
+CAR_HEADER_DTYPE = np.dtype([
+    ('model_name', 'S32'),  # ASCII string (often ends with "msc: #")
+    ('ani_count', '<u4'), ('sfx_count', '<u4'), ('vertex_count', '<u4'),
+    ('face_count', '<u4'), ('texture_size', '<u4')
+])

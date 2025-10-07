@@ -253,3 +253,43 @@ def validate_3df_texture(texture_raw, texture_size, context):
         context.warnings.append("Texture data is completely zero (black/transparent); possible corruption.")
 
     return texture_raw
+
+def validate_car_header(header, filepath, context):
+    # Adapt validate_3df_header: reuse core checks, skip/add CAR-specific
+    if any(val < 0 for val in [header['vertex_count'], header['face_count'], header['texture_size']]):
+        raise ValueError('Header contains negative values (corrupted file?).')
+    if header['vertex_count'] <= 0 or header['face_count'] <= 0:
+        raise ValueError('Vertex/face counts must be >0.')
+    if header['ani_count'] < 0 or header['sfx_count'] < 0:
+        raise ValueError('Animation/sound counts must be >=0.')
+    if header['vertex_count'] > 2048:
+        raise ValueError('Vertex count exceeds max allowed (2048).')
+    elif header['vertex_count'] > 1024:
+        context.warnings.append(f"High vertex count: {header['vertex_count']}. Above 1024 AltEdit cannot open the file.")
+    if header['face_count'] > 2048:
+        raise ValueError('Face count exceeds max allowed (2048).')
+    elif header['face_count'] > 1024:
+        context.warnings.append(f"High face count: {header['face_count']}. Above 1024 AltEdit cannot open the file.")
+    if header['texture_size'] > 131072:
+        raise ValueError('Texture size exceeds max allowed (131072 bytes).')
+    if header['texture_size'] % 512 != 0:
+        raise ValueError('Texture size not aligned to 256-pixel-wide ARGB1555 format (must be multiple of 512).')
+    texture_height = header['texture_size'] // 512
+    if texture_height > 512:
+        context.warnings.append(f"Unusually high texture height: {texture_height}px (may indicate corruption).")
+    # File size check: up to texture only (skip anim/sound for now)
+    file_size = os.path.getsize(filepath)
+    expected_size = 52 + header['face_count'] * 64 + header['vertex_count'] * 16 + header['texture_size']
+    if file_size < expected_size:
+        raise ValueError(f"File too small. Expected >= {expected_size} bytes up to texture, got {file_size}.")
+    elif file_size > expected_size:
+        context.warnings.append(f"File has {file_size - expected_size} extra bytes (animations/sounds/cross-ref; ignored).")
+
+def validate_car_vertices(vertices, vertex_count, context):
+    # Reuse 3DF validation, but bone_count=0 and don't clamp owners (warn only)
+    vertices = validate_3df_vertices(vertices, vertex_count, bone_count=0, context=context)
+    non_zero_owners = np.count_nonzero(vertices['owner'])
+    if non_zero_owners > 0:
+        max_owner = np.max(vertices['owner'])
+        context.warnings.append(f"{non_zero_owners} vertices attached to {max_owner + 1} undefined bones (owners kept; dummy groups will be created in Blender).")
+    return vertices

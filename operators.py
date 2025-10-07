@@ -6,6 +6,7 @@ import bmesh
 import numpy as np
 
 from .parsers.parse_3df import parse_3df
+from .parsers.parse_car import parse_car
 from .parsers.export_3df import export_3df
 from .core.constants import FACE_FLAG_OPTIONS
 
@@ -292,6 +293,115 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
             self.report({'INFO'}, f"Exported {len(exported_files)} file(s): {', '.join(exported_files)}")
         else:
             self.report({'ERROR'}, "No files were exported due to errors.")
+        return {'FINISHED'}
+
+@bpy_extras.io_utils.orientation_helper(axis_forward='-Z', axis_up='Y')
+class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHelper):
+    bl_idname = 'carnivores.import_car'
+    bl_label = 'Import .CAR Model'
+    bl_description = 'Import a Carnivores .car model file'
+    bl_options = {'PRESET'}
+    filename_ext = '.car'
+    filter_glob: bpy.props.StringProperty(
+        default='*.car', 
+        options={'HIDDEN'}, 
+        maxlen=255
+    )
+
+    files: bpy.props.CollectionProperty(type=bpy.types.OperatorFileListElement)
+    directory: bpy.props.StringProperty(subtype='DIR_PATH')
+
+    scale: bpy.props.FloatProperty(
+        name='Scale', 
+        description='Scale factor for the imported model', 
+        default=0.01, 
+        min=0.01, 
+        max=100
+    )
+    import_textures: bpy.props.BoolProperty(
+        name='Import Textures', 
+        description='Import textures', 
+        default=True
+    )
+    create_materials: bpy.props.BoolProperty(
+        name='Create Materials', 
+        description='Create materials for the mesh and the world', 
+        default=True
+    )
+    normal_smooth: bpy.props.BoolProperty(
+        name='Smooth Faces', 
+        description='Whether to smooth out faces or leave them flat (faceted) at import', 
+        default=True
+    )
+    validate: bpy.props.BoolProperty(
+        name='Run Validations', 
+        description='Enable file validity and error checking and if possible automatic repairs', 
+        default=False
+    )
+    flip_handedness: bpy.props.BoolProperty(
+        name='Flip Handedness', 
+        description="Negate X-axis to match game's left-handed coordinate system (fixes mirroring)", 
+        default=True
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text='Import Options')
+        layout.prop(self, 'scale')
+        layout.prop(self, 'import_textures')
+        row = layout.row()
+        row.enabled = self.import_textures
+        row.prop(self, 'create_materials')
+        layout.prop(self, 'normal_smooth')
+        layout.prop(self, 'validate')
+        layout.prop(self, 'flip_handedness')
+        layout.separator()
+        box = layout.box()
+        box.label(text='Axis Conversion')
+        box.prop(self, 'axis_forward')
+        box.prop(self, 'axis_up')
+        layout.separator()
+
+    @utils.timed('CARNIVORES_OT_import_car.execute', is_operator=True)
+    def execute(self, context):
+        handedness_matrix = mathutils.Matrix.Scale(-1, 4, (1, 0, 0)) if self.flip_handedness else mathutils.Matrix.Identity(4)
+        import_matrix = mathutils.Matrix.Scale(self.scale, 4) @ handedness_matrix @ bpy_extras.io_utils.axis_conversion(
+            from_forward=self.axis_forward, from_up=self.axis_up, to_forward='Y', to_up='Z').to_4x4()
+        import_matrix_np = np.array(import_matrix)
+        filepaths = [os.path.join(self.directory, f.name) for f in self.files]
+        valid_paths = [fp for fp in filepaths if os.path.isfile(fp)]
+        if not valid_paths:
+            self.report({'ERROR'}, 'No valid .car files selected.')
+            return {'CANCELLED'}
+        for filepath in valid_paths:
+            try:
+                mesh_name, _ = utils.generate_names(filepath)  # Ignore basename; use model_name below
+                coll = utils.create_import_collection(os.path.splitext(os.path.basename(filepath))[0])
+                header, model_name, faces, uvs, vertices, bone_names, texture, texture_height, warnings = parse_car(
+                    filepath, validate=self.validate, parse_texture=self.import_textures, flip_handedness=self.flip_handedness)
+                verticesTransformedPos = utils.apply_import_matrix(vertices['coord'], import_matrix_np)
+                # Use bone_names from parser (already handles dummies/offset if needed)
+                obj = utils.create_mesh_object(mesh_name, verticesTransformedPos, faces['v'], model_name, self.normal_smooth, faces['flags'])
+                coll.objects.link(obj)
+                utils.create_uv_map(obj.data, uvs)
+                if self.import_textures and texture is not None:
+                    image = utils.create_image_texture(texture, texture_height, model_name)
+                    if self.create_materials:
+                        material = utils.create_texture_material(image, model_name)
+                        obj.data.materials.append(material)
+                # Vertex groups from owners (dummy bones if needed)
+                if len(bone_names) > 0:
+                    utils.create_vertex_groups_from_bones(obj, bone_names, vertices['owner'])
+                # No hooks/armature for .CAR (owners only; no positions/parents)
+                if warnings:
+                    bpy.ops.carnivores.modal_message('INVOKE_DEFAULT', message='\n'.join(warnings))
+            except Exception as e:
+                self.report({'ERROR'}, f"Failed to import {os.path.basename(filepath)} at parsing step: {str(e)}")
+                if 'coll' in locals() and coll in bpy.data.collections:
+                    bpy.data.collections.remove(coll, do_unlink=True)
+                continue
+        if self.create_materials and self.import_textures:
+            utils.setup_custom_world_shader()
         return {'FINISHED'}
 
 class CARNIVORES_OT_create_3df_flags(bpy.types.Operator):

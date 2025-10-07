@@ -2,7 +2,7 @@
 import numpy as np
 import os
 
-from . import validate_3df as validator
+from . import validate as validator
 from ..utils import timed
 from ..core.core import HEADER_DTYPE, FACE_DTYPE, VERTEX_DTYPE, BONE_DTYPE
 from ..core.constants import TEXTURE_WIDTH
