@@ -343,6 +343,11 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         description="Negate X-axis to match game's left-handed coordinate system (fixes mirroring)", 
         default=True
     )
+    import_animations: bpy.props.BoolProperty(
+        name='Import Animations', 
+        description='Import animations as shape keys', 
+        default=True
+    )
 
     def draw(self, context):
         layout = self.layout
@@ -355,6 +360,7 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         layout.prop(self, 'normal_smooth')
         layout.prop(self, 'validate')
         layout.prop(self, 'flip_handedness')
+        layout.prop(self, 'import_animations')
         layout.separator()
         box = layout.box()
         box.label(text='Axis Conversion')
@@ -377,13 +383,17 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
             try:
                 mesh_name, _ = utils.generate_names(filepath)  # Ignore basename; use model_name below
                 coll = utils.create_import_collection(os.path.splitext(os.path.basename(filepath))[0])
-                header, model_name, faces, uvs, vertices, bone_names, texture, texture_height, warnings = parse_car(
+                header, model_name, faces, uvs, vertices, bone_names, texture, texture_height, warnings, animations = parse_car(
                     filepath, validate=self.validate, parse_texture=self.import_textures, flip_handedness=self.flip_handedness)
+                # print(animations)  # Should show list of dicts
                 verticesTransformedPos = utils.apply_import_matrix(vertices['coord'], import_matrix_np)
                 # Use bone_names from parser (already handles dummies/offset if needed)
                 obj = utils.create_mesh_object(mesh_name, verticesTransformedPos, faces['v'], model_name, self.normal_smooth, faces['flags'])
                 coll.objects.link(obj)
                 utils.create_uv_map(obj.data, uvs)
+                # New: Shape keys from animations
+                if self.import_animations and animations:
+                    utils.create_shape_keys_from_car_animations(obj, animations, import_matrix_np)
                 if self.import_textures and texture is not None:
                     image = utils.create_image_texture(texture, texture_height, model_name)
                     if self.create_materials:
@@ -397,9 +407,8 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                     bpy.ops.carnivores.modal_message('INVOKE_DEFAULT', message='\n'.join(warnings))
             except Exception as e:
                 self.report({'ERROR'}, f"Failed to import {os.path.basename(filepath)} at parsing step: {str(e)}")
-                if 'coll' in locals() and coll in bpy.data.collections:
-                    bpy.data.collections.remove(coll, do_unlink=True)
-                continue
+                if 'coll' in locals() and bpy.data.collections.get(coll.name) is not None:
+                    continue
         if self.create_materials and self.import_textures:
             utils.setup_custom_world_shader()
         return {'FINISHED'}

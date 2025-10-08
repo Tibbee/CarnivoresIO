@@ -661,3 +661,35 @@ def handle_car_owners(vertices, context):
     max_owner_adjusted = int(np.max(vertices['owner']))
     bone_names = np.array([f"CarBone_{i + min_non_zero}" for i in range(max_owner_adjusted + 1)], dtype='U32')
     return vertices, bone_names
+
+def create_shape_keys_from_car_animations(obj, animations, import_matrix_np):
+    if not animations:
+        print("[ShapeKeys] No animations to import")
+        return
+    mesh = obj.data
+    vcount = len(mesh.vertices)
+    total_keys = 0
+    # Initialize shape keys if needed (first add creates Basis from current verts)
+    if mesh.shape_keys is None:
+        print("[ShapeKeys] Initializing shape keys (creating Basis)")
+        obj.shape_key_add(name="Basis")  # Auto-creates obj.data.shape_keys
+    sk_data = mesh.shape_keys
+    for anim in animations:
+        anim_name = anim['name']
+        frames_count = anim['frames_count']
+        positions = anim['positions']  # (frames_count, vcount, 3) float32
+        if positions.shape != (frames_count, vcount, 3):
+            print(f"[ShapeKeys] Warning: Skipping {anim_name} (invalid positions shape {positions.shape})")
+            continue
+        for frame_i in range(frames_count):  # All frames as keys (Basis is static verts)
+            key_name = f"{anim_name}.Frame_{frame_i+1:03d}"
+            # Transform this frame's positions
+            frame_pos = apply_import_matrix(positions[frame_i], import_matrix_np)  # Note: Use direct call (utils. not needed internally)
+            # Add new key (from_mix=False to base on Basis)
+            key = obj.shape_key_add(name=key_name, from_mix=False)
+            flat_pos = frame_pos.ravel()
+            key.data.foreach_set('co', flat_pos)
+            total_keys += 1
+        print(f"[ShapeKeys] Added {frames_count} keys for '{anim_name}'")
+    mesh.update()
+    print(f"[ShapeKeys] Total keys added: {total_keys} across {len(animations)} animations")
