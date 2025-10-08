@@ -1,7 +1,7 @@
 import numpy as np
 import os
 from . import validate as validator  # Reuse 3DF validations
-from ..utils import timed
+from ..utils import timed, handle_car_owners
 from ..core.core import FACE_DTYPE, VERTEX_DTYPE, CAR_HEADER_DTYPE  # Reuse dtypes
 from ..core.constants import TEXTURE_WIDTH
 
@@ -35,31 +35,7 @@ def parse_car_texture(file, texture_size, texture_height):
     from .parse_3df import parse_3df_texture  # Import to reuse
     return parse_3df_texture(file, texture_size, texture_height)
 
-def handle_car_owners(vertices, context):
-    """
-    Handle CAR-specific owner indexing: detect first non-zero owner, offset to 0-based,
-    generate dummy bone names starting from original min, and warn as needed.
-    Returns: (vertices with adjusted owners, bone_names array)
-    """
-    non_zero_owners = vertices['owner'][vertices['owner'] > 0]
-    if non_zero_owners.size == 0:
-        return vertices, np.array([], dtype='U32')
-    
-    min_non_zero = np.min(non_zero_owners)
-    max_owner = int(np.max(vertices['owner']))
-    
-    # Offset: subtract min_non_zero from non-zero owners (shifts to 0-based)
-    vertices['owner'][vertices['owner'] > 0] -= min_non_zero
-    context.warnings.append(f"Owner indices started at {min_non_zero}; offset by -{min_non_zero} to start at index 0.")
-    
-    # Clamp negatives (safe guard) and recompute max
-    vertices['owner'] = np.clip(vertices['owner'], 0, None)
-    max_owner_adjusted = int(np.max(vertices['owner']))
-    # Name starting from original min_non_zero (e.g., index 0 -> "CarBone_{min_non_zero}")
-    bone_names = np.array([f"CarBone_{i + min_non_zero}" for i in range(max_owner_adjusted + 1)], dtype='U32')
-    context.warnings.append(f"Created {len(bone_names)} dummy bones for vertex owners starting from {min_non_zero} (no positions/parents in .CAR).")
-    
-    return vertices, bone_names
+
 
 @timed('parse_car')
 def parse_car(filepath, validate=True, parse_texture=True, flip_handedness=True):

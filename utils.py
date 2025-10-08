@@ -650,3 +650,14 @@ def collect_bones_and_owners(obj, export_matrix):
     vertex_owners[:] = 0
     return bone_names, bone_positions, bone_parents, vertex_owners
 
+def handle_car_owners(vertices, context):
+    non_zero_owners = vertices['owner'][vertices['owner'] > 0]
+    if non_zero_owners.size == 0:
+        return vertices, np.array([], dtype='U32')
+    min_non_zero = np.min(non_zero_owners)
+    max_owner = int(np.max(vertices['owner']))
+    vertices['owner'][vertices['owner'] > 0] -= min_non_zero
+    vertices['owner'] = np.clip(vertices['owner'], 0, None)
+    max_owner_adjusted = int(np.max(vertices['owner']))
+    bone_names = np.array([f"CarBone_{i + min_non_zero}" for i in range(max_owner_adjusted + 1)], dtype='U32')
+    return vertices, bone_names

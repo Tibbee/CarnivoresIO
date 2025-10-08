@@ -291,5 +291,4 @@ def validate_car_vertices(vertices, vertex_count, context):
     non_zero_owners = np.count_nonzero(vertices['owner'])
     if non_zero_owners > 0:
         max_owner = np.max(vertices['owner'])
-        context.warnings.append(f"{non_zero_owners} vertices attached to {max_owner + 1} undefined bones (owners kept; dummy groups will be created in Blender).")
     return vertices
