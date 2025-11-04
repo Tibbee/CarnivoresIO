@@ -391,9 +391,14 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                 obj = utils.create_mesh_object(mesh_name, verticesTransformedPos, faces['v'], model_name, self.normal_smooth, faces['flags'])
                 coll.objects.link(obj)
                 utils.create_uv_map(obj.data, uvs)
-                # New: Shape keys from animations
+                # Create shape keys
                 if self.import_animations and animations:
                     utils.create_shape_keys_from_car_animations(obj, animations, import_matrix_np)
+                    # Automatically create fast actions + NLA strips
+                    try:
+                        utils.auto_create_shape_key_actions_from_car(obj, frame_step=1)
+                    except Exception as e:
+                        self.report({'WARNING'}, f"Failed to auto-create animations: {e}")
                 if self.import_textures and texture is not None:
                     image = utils.create_image_texture(texture, texture_height, model_name)
                     if self.create_materials:

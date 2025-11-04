@@ -693,3 +693,167 @@ def create_shape_keys_from_car_animations(obj, animations, import_matrix_np):
         print(f"[ShapeKeys] Added {frames_count} keys for '{anim_name}'")
     mesh.update()
     print(f"[ShapeKeys] Total keys added: {total_keys} across {len(animations)} animations")
+
+def create_shape_key_action(obj, action_name="CarAnimation"):
+    """Ensure the object has a shape key action assigned."""
+    if not obj or obj.type != 'MESH':
+        print("[Error] Selected object is not a mesh")
+        return None
+
+    mesh = obj.data
+    if not mesh.shape_keys:
+        print("[Error] Object has no shape keys")
+        return None
+
+    sk_data = mesh.shape_keys
+    sk_data.animation_data_create()
+
+    # Create or reuse action
+    action = bpy.data.actions.get(action_name)
+    if action is None:
+        action = bpy.data.actions.new(name=action_name)
+        print(f"[Action] Created new action: {action.name}")
+    else:
+        print(f"[Action] Reusing existing action: {action.name}")
+
+    sk_data.animation_data.action = action
+    print(f"[Action] Assigned to shape keys of '{obj.name}'")
+    return action
+
+def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, frame_step=1):
+    """
+    Creates a new Action for one animation sequence and keyframes its shape keys.
+    """
+    if not obj or obj.type != 'MESH':
+        print("[Error] Selected object is not a mesh")
+        return None
+
+    mesh = obj.data
+    if not mesh.shape_keys:
+        print("[Error] Object has no shape keys")
+        return None
+
+    sk_data = mesh.shape_keys
+    sk_data.animation_data_create()
+
+    # Create a unique Action for this animation
+    action_name = f"{anim_name}_Action"
+    action = bpy.data.actions.new(name=action_name)
+    sk_data.animation_data.action = action
+
+    # Collect shape keys belonging to this animation
+    key_blocks = [
+        kb for kb in sk_data.key_blocks
+        if re.match(fr"^{re.escape(anim_name)}\.Frame_\d+", kb.name)
+    ]
+    key_blocks.sort(key=lambda kb: kb.name)
+
+    if not key_blocks:
+        print(f"[Warning] No shape keys found for animation '{anim_name}'")
+        return None
+
+    print(f"[Keyframe] Creating Action '{action_name}' with {len(key_blocks)} frames")
+
+    frame = frame_start
+    for kb in key_blocks:
+        # Reset all other shape keys to 0
+        for other in sk_data.key_blocks:
+            other.value = 0.0
+            other.keyframe_insert(data_path="value", frame=frame)
+
+        # Activate the current one
+        kb.value = 1.0
+        kb.keyframe_insert(data_path="value", frame=frame)
+        frame += frame_step
+
+    print(f"[Keyframe] Done: Action '{action_name}' for '{anim_name}' ({frame_start}-{frame - 1})")
+    return action
+
+def push_shape_key_action_to_nla(obj, strip_name=None, frame_start=1, frame_end=None):
+    """
+    Pushes the current shape key Action of the object into the NLA as a new strip.
+    """
+    if not obj or obj.type != 'MESH':
+        print("[Error] Selected object is not a mesh")
+        return None
+
+    sk_data = obj.data.shape_keys
+    if not sk_data or not sk_data.animation_data or not sk_data.animation_data.action:
+        print("[Error] No active Action on shape keys. Create and keyframe first.")
+        return None
+
+    anim_data = sk_data.animation_data
+    action = anim_data.action
+    nla_tracks = anim_data.nla_tracks
+
+    if strip_name is None:
+        strip_name = action.name
+
+    # Create or reuse a track
+    if not nla_tracks:
+        track = nla_tracks.new()
+        track.name = f"{strip_name}_Track"
+    else:
+        # Reuse last or create new if overlapping
+        track = nla_tracks[-1]
+        if track.strips and track.strips[-1].frame_end > frame_start:
+            track = nla_tracks.new()
+            track.name = f"{strip_name}_Track"
+
+    # Determine frame range dynamically
+    if frame_end is None:
+        start, end = get_action_frame_range(action)
+        frame_start, frame_end = start, end
+
+    # Add the strip to the NLA
+    strip = track.strips.new(strip_name, frame_start, action)
+    strip.frame_end = frame_end
+    anim_data.action = None  # Unlink active action (push down)
+
+    print(f"[NLA] Action '{action.name}' pushed to NLA strip '{strip.name}' ({frame_start}-{frame_end})")
+    return strip
+    
+def auto_create_shape_key_actions_from_car(obj, frame_step=1):
+    """
+    Detects all car animation shape keys and converts them into Actions,
+    each automatically pushed into the NLA.
+    """
+    if not obj or obj.type != 'MESH':
+        print("[Error] Selected object is not a mesh")
+        return
+
+    mesh = obj.data
+    if not mesh.shape_keys:
+        print("[Info] No shape keys on object; skipping animation setup.")
+        return
+
+    sk_data = mesh.shape_keys
+    names = [kb.name for kb in sk_data.key_blocks if "." in kb.name]
+    base_names = sorted(set(n.split(".Frame_")[0] for n in names if ".Frame_" in n))
+
+    if not base_names:
+        print("[Info] No animation-style shape keys found (no .Frame_### pattern).")
+        return
+
+    print(f"[AutoAction] Found {len(base_names)} animation groups: {base_names}")
+
+    for anim_name in base_names:
+        print(f"[AutoAction] Processing animation '{anim_name}'...")
+
+        # Create and keyframe Action for this animation
+        action = keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, frame_step=frame_step)
+
+        # Push to NLA automatically
+        if action:
+            push_shape_key_action_to_nla(obj, strip_name=anim_name, frame_start=1, frame_end=None)
+
+    bpy.context.view_layer.update()
+    bpy.context.scene.frame_set(bpy.context.scene.frame_current)
+    print("[AutoAction] Completed all animations.")
+
+def get_action_frame_range(action):
+    """Return the min/max frame numbers for keyframes in this Action."""
+    if not action or not action.fcurves:
+        return (1, 1)
+    frames = [kp.co[0] for fc in action.fcurves for kp in fc.keyframe_points]
+    return (int(min(frames)), int(max(frames)))
