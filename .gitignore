@@ -4,5 +4,6 @@ doc/Minified
 backup/
 tools/
 else/
+GEMINI.md
 .vscode
 

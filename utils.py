@@ -130,7 +130,7 @@ def create_mesh_object(mesh_name, verticesTransformedPos, faces, object_name, sm
 
     return bpy.data.objects.new(object_name, mesh)
     
-@timed("apply_import_matrix")    
+#@timed("apply_import_matrix")    
 def apply_import_matrix(vertices, import_matrix):
     # Add homogeneous coordinate
     homogenous = np.column_stack((vertices, np.ones(len(vertices))))
@@ -415,7 +415,7 @@ def setup_custom_world_shader():
 
     world["CustomWorldShaderSet"] = True
 
-    #print("✅ Custom world shader setup complete.")
+    print("✅ Custom world shader setup complete.")
 @timed("get_selected_face_indices")    
 def get_selected_face_indices(obj):
     """Return numpy array of selected face indices (int32). In OBJECT mode, return all faces if none selected."""
@@ -662,6 +662,7 @@ def handle_car_owners(vertices, context):
     bone_names = np.array([f"CarBone_{i + min_non_zero}" for i in range(max_owner_adjusted + 1)], dtype='U32')
     return vertices, bone_names
 
+@timed('create_shape_keys_from_car_animations')
 def create_shape_keys_from_car_animations(obj, animations, import_matrix_np):
     if not animations:
         print("[ShapeKeys] No animations to import")
@@ -694,6 +695,7 @@ def create_shape_keys_from_car_animations(obj, animations, import_matrix_np):
     mesh.update()
     print(f"[ShapeKeys] Total keys added: {total_keys} across {len(animations)} animations")
 
+@timed('create_shape_key_action')
 def create_shape_key_action(obj, action_name="CarAnimation"):
     """Ensure the object has a shape key action assigned."""
     if not obj or obj.type != 'MESH':
@@ -720,55 +722,72 @@ def create_shape_key_action(obj, action_name="CarAnimation"):
     print(f"[Action] Assigned to shape keys of '{obj.name}'")
     return action
 
+@timed('keyframe_shape_key_animation_as_action')
 def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, frame_step=1):
-    """
-    Creates a new Action for one animation sequence and keyframes its shape keys.
-    """
     if not obj or obj.type != 'MESH':
-        print("[Error] Selected object is not a mesh")
-        return None
-
+        print('[Error] Selected object is not a mesh')
+        return
     mesh = obj.data
     if not mesh.shape_keys:
-        print("[Error] Object has no shape keys")
-        return None
-
+        print('[Error] Object has no shape keys')
+        return
     sk_data = mesh.shape_keys
     sk_data.animation_data_create()
-
-    # Create a unique Action for this animation
     action_name = f"{anim_name}_Action"
     action = bpy.data.actions.new(name=action_name)
     sk_data.animation_data.action = action
-
-    # Collect shape keys belonging to this animation
-    key_blocks = [
-        kb for kb in sk_data.key_blocks
-        if re.match(fr"^{re.escape(anim_name)}\.Frame_\d+", kb.name)
-    ]
+    key_blocks = [kb for kb in sk_data.key_blocks if re.match(f"^{re.escape(anim_name)}\\.Frame_\\d+", kb.name)]
     key_blocks.sort(key=lambda kb: kb.name)
-
     if not key_blocks:
         print(f"[Warning] No shape keys found for animation '{anim_name}'")
-        return None
-
+        return
     print(f"[Keyframe] Creating Action '{action_name}' with {len(key_blocks)} frames")
-
+    
+    # Identify all shape keys, excluding Basis
+    reference_key = sk_data.reference_key
+    all_keys = [kb for kb in sk_data.key_blocks if kb != reference_key]
+    group_keys = key_blocks
+    other_keys = [kb for kb in all_keys if kb not in group_keys]
+    
+    # Create F-Curves upfront for all relevant keys (one per shape key)
+    fcurves = {}
+    for kb in other_keys + group_keys:
+        data_path = f'key_blocks["{kb.name}"].value'
+        fc = action.fcurves.new(data_path=data_path, index=-1)
+        fc.extrapolation = 'CONSTANT'  # Hold values constant between keys
+        fcurves[kb.name] = fc
+    
     frame = frame_start
-    for kb in key_blocks:
-        # Reset all other shape keys to 0
-        for other in sk_data.key_blocks:
-            other.value = 0.0
-            other.keyframe_insert(data_path="value", frame=frame)
-
-        # Activate the current one
-        kb.value = 1.0
-        kb.keyframe_insert(data_path="value", frame=frame)
+    num_frames = len(group_keys)
+    
+    # At first frame: Other keys to 0, this group's future to 0, first to 1
+    # Batch insert and set CONSTANT interp
+    for kb in other_keys + group_keys[1:]:
+        fcurves[kb.name].keyframe_points.insert(frame, 0.0)
+        fcurves[kb.name].keyframe_points[-1].interpolation = 'CONSTANT'
+    fcurves[group_keys[0].name].keyframe_points.insert(frame, 1.0)
+    fcurves[group_keys[0].name].keyframe_points[-1].interpolation = 'CONSTANT'
+    
+    # Subsequent frames: Only this group (prev=0, curr=1)
+    prev = group_keys[0]
+    for i in range(1, num_frames):
         frame += frame_step
-
-    print(f"[Keyframe] Done: Action '{action_name}' for '{anim_name}' ({frame_start}-{frame - 1})")
+        fcurves[prev.name].keyframe_points.insert(frame, 0.0)
+        fcurves[prev.name].keyframe_points[-1].interpolation = 'CONSTANT'
+        curr = group_keys[i]
+        fcurves[curr.name].keyframe_points.insert(frame, 1.0)
+        fcurves[curr.name].keyframe_points[-1].interpolation = 'CONSTANT'
+        prev = curr
+    
+    # Update all curves (bulk op, fast)
+    for fc in fcurves.values():
+        fc.update()
+    
+    frame_end = frame_start + (num_frames - 1) * frame_step
+    print(f"[Keyframe] Done: Action '{action_name}' for '{anim_name}' (frames {frame_start}-{frame_end})")
     return action
 
+@timed('push_shape_key_action_to_nla')
 def push_shape_key_action_to_nla(obj, strip_name=None, frame_start=1, frame_end=None):
     """
     Pushes the current shape key Action of the object into the NLA as a new strip.
@@ -812,44 +831,72 @@ def push_shape_key_action_to_nla(obj, strip_name=None, frame_start=1, frame_end=
 
     print(f"[NLA] Action '{action.name}' pushed to NLA strip '{strip.name}' ({frame_start}-{frame_end})")
     return strip
-    
-def auto_create_shape_key_actions_from_car(obj, frame_step=1):
-    """
-    Detects all car animation shape keys and converts them into Actions,
-    each automatically pushed into the NLA.
-    """
-    if not obj or obj.type != 'MESH':
-        print("[Error] Selected object is not a mesh")
-        return
 
+@timed('auto_create_shape_key_actions_from_car')
+def auto_create_shape_key_actions_from_car(obj, frame_step=1):
+    if not obj or obj.type != 'MESH':
+        print('[Error] Selected object is not a mesh')
+        return
     mesh = obj.data
     if not mesh.shape_keys:
-        print("[Info] No shape keys on object; skipping animation setup.")
+        print('[Info] No shape keys on object; skipping animation setup.')
         return
-
     sk_data = mesh.shape_keys
-    names = [kb.name for kb in sk_data.key_blocks if "." in kb.name]
-    base_names = sorted(set(n.split(".Frame_")[0] for n in names if ".Frame_" in n))
-
+    names = [kb.name for kb in sk_data.key_blocks if '.' in kb.name]
+    base_names = sorted(set(n.split('.Frame_')[0] for n in names if '.Frame_' in n))
     if not base_names:
-        print("[Info] No animation-style shape keys found (no .Frame_### pattern).")
+        print('[Info] No animation-style shape keys found (no .Frame_### pattern).')
         return
-
     print(f"[AutoAction] Found {len(base_names)} animation groups: {base_names}")
-
+    
+    actions = []
     for anim_name in base_names:
         print(f"[AutoAction] Processing animation '{anim_name}'...")
-
-        # Create and keyframe Action for this animation
         action = keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, frame_step=frame_step)
-
-        # Push to NLA automatically
         if action:
-            push_shape_key_action_to_nla(obj, strip_name=anim_name, frame_start=1, frame_end=None)
-
+            actions.append(action)
+    
+    # Batch NLA push: Inline overlap checks per action (no manual indexing)
+    try:
+        anim_data = sk_data.animation_data
+        if actions:
+            nla_tracks = anim_data.nla_tracks
+            track = None
+            num_tracks_used = 0
+            for action in actions:
+                strip_name = action.name.replace('_Action', '')
+                start_frame, _ = get_action_frame_range(action)
+                
+                # Get last track or create first
+                if track is None:
+                    if nla_tracks:
+                        track = nla_tracks[-1]
+                    else:
+                        track = nla_tracks.new()
+                        track.name = strip_name
+                        num_tracks_used += 1
+                
+                # Overlap check: If last strip ends after start_frame, new track
+                if track.strips and track.strips[-1].frame_end > start_frame:
+                    track = nla_tracks.new()
+                    track.name = f'{strip_name}.{num_tracks_used + 1:03d}'
+                    num_tracks_used += 1
+                
+                # Add strip
+                strip = track.strips.new(strip_name, start_frame, action)
+                strip.use_sync_length = True  # Tighten eval for discrete steps
+            
+            anim_data.action = None  # Clear active action
+            print(f"[AutoAction] Pushed {len(actions)} actions to NLA batch (using {num_tracks_used} tracks).")
+    except Exception as e:
+        print(f"[AutoAction] NLA batch push failed (non-fatal): {e}")
+        import traceback
+        traceback.print_exc()  # Log full stack for debug (remove if noisy)
+    
+    # Single update at end (key for perf)
     bpy.context.view_layer.update()
     bpy.context.scene.frame_set(bpy.context.scene.frame_current)
-    print("[AutoAction] Completed all animations.")
+    print('[AutoAction] Completed all animations.')
 
 def get_action_frame_range(action):
     """Return the min/max frame numbers for keyframes in this Action."""
