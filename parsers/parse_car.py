@@ -91,8 +91,59 @@ def skip_car_sounds_and_crossref(file, header, context):
     file.seek(cross_ref_size, 1)
     print(f"[Debug] Skipped cross-ref table: {cross_ref_size} bytes")
 
+def parse_car_sounds_and_crossref(file, header, context, validate=True):
+    """
+    Returns:
+        sounds   – list[dict]
+        cross_ref – np.ndarray[int32] shape (64,)
+    """
+    sounds = []
+
+    # ------------------- Sound blocks -------------------
+    for sfx_idx in range(header['sfx_count']):
+        name_raw = np.fromfile(file, dtype='S32', count=1)[0]
+        name = name_raw.decode('ascii', errors='ignore').rstrip('\x00')
+        if not name:
+            name = f"Sound_{sfx_idx}"
+            if validate:
+                context.warnings.append(
+                    f"Sound #{sfx_idx} has empty name; using placeholder."
+                )
+
+        length = np.fromfile(file, dtype='<u4', count=1)[0]
+        expected_samples = length // 2
+        data = np.fromfile(file, dtype='<i2', count=expected_samples)
+
+        if data.size != expected_samples:
+            if validate:
+                context.warnings.append(
+                    f"Truncated sound '{name}': expected {expected_samples} samples, got {data.size}"
+                )
+            # Keep partial data — import step can skip if needed
+
+        sounds.append({
+            'name': name,
+            'data': data,
+            'length_bytes': length,
+        })
+
+    # ------------------- Cross-reference table -------------------
+    cross_ref = np.fromfile(file, dtype='<i4', count=64)
+
+    # Always clamp invalid indices (safety repair)
+    invalid = (cross_ref >= header['sfx_count']) | (cross_ref < -1)
+    if np.any(invalid):
+        cross_ref[invalid] = -1
+        if validate:
+            bad_count = np.count_nonzero(invalid)
+            context.warnings.append(
+                f"{bad_count} invalid sound indices in cross-ref table (clamped to -1)."
+            )
+
+    return sounds, cross_ref
+
 @timed('parse_car')
-def parse_car(filepath, validate=True, parse_texture=True, flip_handedness=True):
+def parse_car(filepath, validate=True, parse_texture=True, flip_handedness=True, import_sounds=True):
     context = ParserContext()
     with open(filepath, 'rb') as file:
         header, model_name, texture_height = parse_car_header(file)
@@ -111,8 +162,9 @@ def parse_car(filepath, validate=True, parse_texture=True, flip_handedness=True)
 
         animations = parse_car_animations(file, header, context)
         
-        skip_car_sounds_and_crossref(file, header, context)
+        sounds, cross_ref = parse_car_sounds_and_crossref(file, header, context, validate=validate)
 
-        file.seek(0, 2)  # Existing: EOF check
-
-    return header, model_name, faces, uvs, vertices, bone_names, texture, texture_height, context.warnings, animations
+    return (header, model_name, faces, uvs, vertices,
+            bone_names, texture, texture_height,
+            context.warnings, animations,
+            sounds, cross_ref)

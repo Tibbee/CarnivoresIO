@@ -348,6 +348,11 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         description='Import animations as shape keys', 
         default=True
     )
+    import_sounds: bpy.props.BoolProperty(
+        name='Import Sounds',
+        description='Import embedded sounds as sound datablocks',
+        default=True
+    )
 
     def draw(self, context):
         layout = self.layout
@@ -361,6 +366,7 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         layout.prop(self, 'validate')
         layout.prop(self, 'flip_handedness')
         layout.prop(self, 'import_animations')
+        layout.prop(self, 'import_sounds')
         layout.separator()
         box = layout.box()
         box.label(text='Axis Conversion')
@@ -383,8 +389,17 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
             try:
                 mesh_name, _ = utils.generate_names(filepath)  # Ignore basename; use model_name below
                 coll = utils.create_import_collection(os.path.splitext(os.path.basename(filepath))[0])
-                header, model_name, faces, uvs, vertices, bone_names, texture, texture_height, warnings, animations = parse_car(
-                    filepath, validate=self.validate, parse_texture=self.import_textures, flip_handedness=self.flip_handedness)
+                header, model_name, faces, uvs, vertices, bone_names, texture, texture_height, warnings, animations, sounds, cross_ref = parse_car(
+                    filepath,
+                    validate=self.validate,
+                    parse_texture=self.import_textures,
+                    flip_handedness=self.flip_handedness,
+                    import_sounds=self.import_sounds
+                )
+                print("SOUNDS:", len(sounds))
+                for s in sounds:
+                    print("  ->", s['name'], s['data'].size, "samples")
+                print("CROSS_REF (first 10):", cross_ref[:10])
                 # print(animations)  # Should show list of dicts
                 verticesTransformedPos = utils.apply_import_matrix(vertices['coord'], import_matrix_np)
                 # Use bone_names from parser (already handles dummies/offset if needed)
