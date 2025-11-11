@@ -5,6 +5,10 @@ import numpy as np
 import bmesh
 import re
 
+import wave
+import tempfile
+import os
+
 from .core.constants import FACE_FLAG_OPTIONS, TEXTURE_WIDTH
 
 import time
@@ -904,3 +908,59 @@ def get_action_frame_range(action):
         return (1, 1)
     frames = [kp.co[0] for fc in action.fcurves for kp in fc.keyframe_points]
     return (int(min(frames)), int(max(frames)))
+
+def import_car_sounds(self, sounds, model_name, context):
+    imported_sounds = []
+    for idx, s in enumerate(sounds):
+        sound_name = s['name']
+        data = s['data']
+        if data.size == 0:
+            print({'WARNING'}, f"Skipping empty sound '{sound_name}' (0 samples).")
+            continue
+        # Create temp WAV
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            temp_path = temp_file.name
+        try:
+            with wave.open(temp_path, 'wb') as wf:
+                wf.setnchannels(1)  # Mono
+                wf.setsampwidth(2)  # 16-bit
+                wf.setframerate(22050)
+                wf.setnframes(data.size)
+                wf.writeframes(data.tobytes())
+            # Load into Blender
+            sound_block = bpy.data.sounds.load(temp_path)
+            # Set the name before doing anything else
+            sound_block.name = sound_name
+            # Pack to embed
+            sound_block.pack()
+            # Unpack and repack to force Blender to update
+            if sound_block.packed_file:
+                sound_block.unpack(method='USE_LOCAL')
+                sound_block.pack()
+
+            imported_sounds.append(sound_block)
+            print({'INFO'}, f"Imported and packed sound '{sound_block.name}' ({data.size} samples).")
+        except Exception as e:
+            print({'ERROR'}, f"Failed to import sound '{sound_name}': {str(e)}")
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)  # Cleanup (safe now that it's packed)
+    return imported_sounds
+
+def associate_sounds_with_animations(self, obj, animations, cross_ref, imported_sounds):
+    if not animations or cross_ref is None:
+        return
+    for anim_idx, anim in enumerate(animations):
+        if anim_idx >= len(cross_ref):
+            break  # Table size limit
+        sound_idx = cross_ref[anim_idx]
+        if sound_idx == -1 or sound_idx >= len(imported_sounds):
+            continue
+        # Fixed: Matches utils.keyframe_shape_key_animation_as_action naming
+        action_name = f"{anim['name']}_Action"
+        action = bpy.data.actions.get(action_name)
+        if action:
+            action['carnivores_sound'] = imported_sounds[sound_idx].name
+            print({'INFO'}, f"Associated sound '{imported_sounds[sound_idx].name}' with animation '{anim['name']}'.")
+        else:
+            print({'WARNING'}, f"Action '{action_name}' not found for sound association.")

@@ -139,7 +139,7 @@
 
 | Type   | Size           | Name       | Description |
 |--------|----------------|------------|-------------|
-| byte   | **TextureSize**| **texture**| 16-bit TGA-style BGRA5551, always **256 pixels wide** |
+| byte   | **TextureSize**| **texture**| 16-bit TGA-style ARGB1555, always **256 pixels wide** |
 
 ---
 
