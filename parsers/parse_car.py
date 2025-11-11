@@ -114,6 +114,9 @@ def parse_car_sounds_and_crossref(file, header, context, validate=True):
         expected_samples = length // 2
         data = np.fromfile(file, dtype='<i2', count=expected_samples)
 
+        if data.dtype != np.int16:
+            data = data.astype(np.int16)  # Ensure int16 for WAV
+
         if data.size != expected_samples:
             if validate:
                 context.warnings.append(
@@ -129,6 +132,9 @@ def parse_car_sounds_and_crossref(file, header, context, validate=True):
 
     # ------------------- Cross-reference table -------------------
     cross_ref = np.fromfile(file, dtype='<i4', count=64)
+
+    if header['ani_count'] > len(cross_ref):
+        context.warnings.append(f"AniCount {header['ani_count']} exceeds cross-ref table size (64); extra animations will have no sound mapping.")
 
     # Always clamp invalid indices (safety repair)
     invalid = (cross_ref >= header['sfx_count']) | (cross_ref < -1)

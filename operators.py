@@ -414,6 +414,9 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                         utils.auto_create_shape_key_actions_from_car(obj, frame_step=1)
                     except Exception as e:
                         self.report({'WARNING'}, f"Failed to auto-create animations: {e}")
+                if self.import_sounds and sounds:
+                    imported_sounds = utils.import_car_sounds(self, sounds, model_name, context)
+                    utils.associate_sounds_with_animations(self, obj, animations, cross_ref, imported_sounds)
                 if self.import_textures and texture is not None:
                     image = utils.create_image_texture(texture, texture_height, model_name)
                     if self.create_materials:
