@@ -901,6 +901,7 @@ def auto_create_shape_key_actions_from_car(obj, frame_step=1):
     bpy.context.view_layer.update()
     bpy.context.scene.frame_set(bpy.context.scene.frame_current)
     print('[AutoAction] Completed all animations.')
+    return actions
 
 def get_action_frame_range(action):
     """Return the min/max frame numbers for keyframes in this Action."""
@@ -947,20 +948,29 @@ def import_car_sounds(self, sounds, model_name, context):
                 os.remove(temp_path)  # Cleanup (safe now that it's packed)
     return imported_sounds
 
-def associate_sounds_with_animations(self, obj, animations, cross_ref, imported_sounds):
-    if not animations or cross_ref is None:
+def associate_sounds_with_animations(self, obj, animations, cross_ref, imported_sounds, actions=None):
+    if not animations or cross_ref is None or not imported_sounds:
         return
+
+    # If actions are not passed directly, fall back to the old lookup method
+    action_list = actions or bpy.data.actions
+
     for anim_idx, anim in enumerate(animations):
         if anim_idx >= len(cross_ref):
             break  # Table size limit
+        
         sound_idx = cross_ref[anim_idx]
         if sound_idx == -1 or sound_idx >= len(imported_sounds):
             continue
-        # Fixed: Matches utils.keyframe_shape_key_animation_as_action naming
+
+        linked_sound = imported_sounds[sound_idx]
         action_name = f"{anim['name']}_Action"
-        action = bpy.data.actions.get(action_name)
+        
+        # Find the action in the provided list or the fallback list
+        action = next((act for act in action_list if act.name == action_name), None)
+
         if action:
-            action['carnivores_sound'] = imported_sounds[sound_idx].name
-            print({'INFO'}, f"Associated sound '{imported_sounds[sound_idx].name}' with animation '{anim['name']}'.")
+            action['carnivores_sound'] = linked_sound.name
+            print({'INFO'}, f"Associated sound '{linked_sound.name}' with animation '{anim['name']}'.")
         else:
             print({'WARNING'}, f"Action '{action_name}' not found for sound association.")

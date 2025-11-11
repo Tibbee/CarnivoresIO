@@ -1,3 +1,4 @@
+import aud # Import the aud module
 import bpy
 import bpy_extras.io_utils
 import os
@@ -410,13 +411,14 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                 if self.import_animations and animations:
                     utils.create_shape_keys_from_car_animations(obj, animations, import_matrix_np)
                     # Automatically create fast actions + NLA strips
+                    actions = []
                     try:
-                        utils.auto_create_shape_key_actions_from_car(obj, frame_step=1)
+                        actions = utils.auto_create_shape_key_actions_from_car(obj, frame_step=1)
                     except Exception as e:
                         self.report({'WARNING'}, f"Failed to auto-create animations: {e}")
                 if self.import_sounds and sounds:
                     imported_sounds = utils.import_car_sounds(self, sounds, model_name, context)
-                    utils.associate_sounds_with_animations(self, obj, animations, cross_ref, imported_sounds)
+                    utils.associate_sounds_with_animations(self, obj, animations, cross_ref, imported_sounds, actions)
                 if self.import_textures and texture is not None:
                     image = utils.create_image_texture(texture, texture_height, model_name)
                     if self.create_materials:
@@ -670,6 +672,207 @@ class CARNIVORES_OT_select_by_flags(bpy.types.Operator):
         self.report({'INFO'}, f"{action.title()}ed {matched_count} faces (mask 0x{mask:04X}).")
         return {'FINISHED'}
 
+class CARNIVORES_OT_play_linked_sound(bpy.types.Operator):
+    """Plays the sound linked to the active object's active animation by adding it to the sequencer"""
+    bl_idname = "carnivores.play_linked_sound"
+    bl_label = "Play Linked Sound"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj:
+            self.report({'ERROR'}, "No active object selected.")
+            return {'CANCELLED'}
+
+        if not obj.animation_data or not obj.animation_data.action:
+            self.report({'ERROR'}, "Active object has no active animation action.")
+            return {'CANCELLED'}
+
+        action = obj.animation_data.action
+        if 'carnivores_sound' not in action:
+            self.report({'ERROR'}, f"Animation '{action.name}' has no linked sound (missing 'carnivores_sound' property).")
+            return {'CANCELLED'}
+
+        sound_name = action['carnivores_sound']
+        linked_sound = bpy.data.sounds.get(sound_name)
+
+        if not linked_sound:
+            self.report({'ERROR'}, f"Linked sound '{sound_name}' not found in Blender data.")
+            return {'CANCELLED'}
+
+        # Ensure sequence editor exists
+        if not context.scene.sequence_editor:
+            context.scene.sequence_editor_create()
+
+        # Add sound strip to sequencer
+        # We'll place it on channel 1 and start it at the current frame
+        # The name of the strip will be the sound's name
+        try:
+            print(f"DEBUG: Sound data block exists. Sound name: {linked_sound.name}")
+            print(f"DEBUG: Attempting to play new sound '{linked_sound.name}' for {obj.name}.")
+
+            # Check if a strip with the same name already exists to avoid duplicates
+            existing_strip = context.scene.sequence_editor.sequences.get(linked_sound.name)
+            if existing_strip:
+                self.report({'INFO'}, f"Sound '{linked_sound.name}' already in sequencer. Skipping addition.")
+                return {'FINISHED'}
+
+            # Create a new sound strip and link the existing sound data block
+            sound_strip = context.scene.sequence_editor.sequences.new(
+                name=linked_sound.name,
+                type='SOUND',
+                channel=1,
+                frame_start=context.scene.frame_current
+            )
+            sound_strip.sound = linked_sound  # Link the actual sound datablock
+
+            self.report({'INFO'}, f"Added sound '{linked_sound.name}' to sequencer at frame {context.scene.frame_current}.")
+        except Exception as e:
+            self.report({'ERROR'}, f"Failed to add sound to sequencer: {e}")
+            return {'CANCELLED'}
+
+        return {'FINISHED'}
+
+# Global dictionary to track playing sounds for each object
+_playing_sounds = {}
+_aud_device = None # Global aud device
+
+def get_aud_device():
+    global _aud_device
+    if _aud_device is None:
+        _aud_device = aud.Device()
+    return _aud_device
+
+def carnivores_nla_sound_handler(scene):
+    global _playing_sounds # Moved global declaration to the top
+    print(f"DEBUG: Handler called at frame {scene.frame_current}")
+    if not scene.carnivores_nla_sound_enabled:
+        print("DEBUG: NLA Sound Playback is disabled.")
+        return
+
+    # Only play sounds if the animation is actively playing
+    if not bpy.context.screen.is_animation_playing:
+        print("DEBUG: Animation is not playing. Stopping all sounds.")
+        for obj_id, (handle, sound_name) in list(_playing_sounds.items()):
+            handle.stop()
+            del _playing_sounds[obj_id]
+        return
+
+    device = get_aud_device()
+    print(f"DEBUG: NLA Sound Playback enabled. Device: {device}")
+
+    objects_with_active_sounds = {} # {obj: linked_sound_name}
+
+    for obj in scene.objects:
+        print(f"DEBUG: Processing object: {obj.name}")
+        
+        anim_data_container = None
+        if obj.animation_data: # Check for regular object animation data
+            anim_data_container = obj.animation_data
+            print(f"DEBUG: Object {obj.name} has obj.animation_data: {anim_data_container}")
+        elif obj.data and obj.data.shape_keys and obj.data.shape_keys.animation_data: # Check for shape key animation data
+            anim_data_container = obj.data.shape_keys.animation_data
+            print(f"DEBUG: Object {obj.name} has shape_keys.animation_data: {anim_data_container}")
+        
+        if anim_data_container and anim_data_container.nla_tracks:
+            print(f"DEBUG: Object {obj.name} has NLA tracks (length): {len(anim_data_container.nla_tracks)}")
+            
+            current_action = None
+            # If in tweak mode, find the action being tweaked. Otherwise, do nothing for this object.
+            if scene.is_nla_tweakmode:
+                # When a strip is in tweak mode, its action becomes the object's active action.
+                active_action = anim_data_container.action if anim_data_container else None
+                if active_action:
+                    # Verify this active action belongs to a strip on this object
+                    for track in anim_data_container.nla_tracks:
+                        for strip in track.strips:
+                            if strip.action == active_action:
+                                # Found the tweaked strip. This is our action.
+                                # We also check if the playhead is within the strip's visual bounds.
+                                if strip.frame_start <= scene.frame_current < strip.frame_end:
+                                    current_action = active_action
+                                    print(f"DEBUG: Focused NLA strip found for {obj.name}: {strip.name}, Action: {current_action.name}")
+                                break
+                        if current_action:
+                            break
+
+            if current_action and 'carnivores_sound' in current_action:
+                linked_sound_name = current_action['carnivores_sound']
+                objects_with_active_sounds[obj] = linked_sound_name
+                print(f"DEBUG: Object {obj.name} should play '{linked_sound_name}'.")
+            else:
+                print(f"DEBUG: No linked sound for {obj.name} at frame {scene.frame_current}.")
+        else:
+            print(f"DEBUG: Object {obj.name} has no animation data or NLA tracks.")
+
+    # Now, iterate through _playing_sounds to stop sounds that should no longer be playing
+    # Create a copy of keys to avoid RuntimeError during dictionary modification
+    for obj_playing in list(_playing_sounds.keys()):
+        current_handle, current_sound_name = _playing_sounds[obj_playing]
+        print(f"DEBUG: Checking currently playing sound for {obj_playing.name}: '{current_sound_name}'")
+
+        if obj_playing not in objects_with_active_sounds:
+            # This object should no longer be playing any sound
+            print(f"DEBUG: Object {obj_playing.name} no longer has an active sound. Stopping '{current_sound_name}'.")
+            current_handle.stop()
+            del _playing_sounds[obj_playing]
+        elif objects_with_active_sounds[obj_playing] != current_sound_name:
+            # This object should be playing a different sound
+            print(f"DEBUG: Object {obj_playing.name} should play '{objects_with_active_sounds[obj_playing]}' but is playing '{current_sound_name}'. Stopping old sound.")
+            current_handle.stop()
+            del _playing_sounds[obj_playing]
+        else:
+            print(f"DEBUG: Object {obj_playing.name} is still correctly playing '{current_sound_name}'.")
+
+    # Now, iterate through objects_with_active_sounds to start new sounds or ensure existing ones are playing
+    for obj_active, linked_sound_name in objects_with_active_sounds.items():
+        linked_sound_data_block = bpy.data.sounds.get(linked_sound_name)
+
+        if not linked_sound_data_block:
+            print(f"DEBUG: Linked sound data block '{linked_sound_name}' not found for {obj_active.name}. Skipping playback.")
+            continue # Cannot play if sound data block is missing
+
+        if obj_active in _playing_sounds:
+            # Sound is already being managed (it's the correct one and was not stopped above)
+            # Assume it's playing and looping correctly. Do nothing.
+            print(f"DEBUG: Sound '{linked_sound_name}' for {obj_active.name} is already playing correctly (managed).")
+        else:
+            # This object needs a new sound started
+            print(f"DEBUG: Object {obj_active.name} needs to start playing '{linked_sound_name}'.")
+            try:
+                sound_factory = linked_sound_data_block.factory
+                sound_factory.loop(True) # Configure the factory for looping
+                handle = device.play(sound_factory)
+                _playing_sounds[obj_active] = (handle, linked_sound_name)
+                print(f"NLA Sound: Object '{obj_active.name}' playing '{linked_sound_name}'.")
+            except Exception as e:
+                print(f"NLA Sound Error: Could not play sound '{linked_sound_name}' for {obj_active.name}: {e}")
+                if obj_active in _playing_sounds:
+                    del _playing_sounds[obj_active]
+
+class CARNIVORES_OT_toggle_nla_sound_playback(bpy.types.Operator):
+    bl_idname = "carnivores.toggle_nla_sound_playback"
+    bl_label = "Toggle NLA Sound Playback"
+    bl_description = "Toggles automatic sound playback based on active NLA strips"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        scene = context.scene
+        scene.carnivores_nla_sound_enabled = not scene.carnivores_nla_sound_enabled
+
+        if scene.carnivores_nla_sound_enabled:
+            self.report({'INFO'}, "NLA Sound Playback Enabled.")
+        else:
+            # Stop all aud handles when disabling
+            global _playing_sounds
+            for obj_id, (handle, sound_name) in list(_playing_sounds.items()): # Use list() to iterate over a copy
+                handle.stop()
+                del _playing_sounds[obj_id]
+            print("DEBUG: All playing sounds stopped and cleared.")
+            self.report({'INFO'}, "NLA Sound Playback Disabled.")
+
+        return {'FINISHED'}
+
 class VIEW3D_PT_carnivores_selection(bpy.types.Panel):
     bl_label = "Selection Tools"
     bl_idname = "VIEW3D_PT_carnivores_selection"
@@ -722,6 +925,14 @@ class VIEW3D_PT_carnivores_selection(bpy.types.Panel):
         col.label(text="- Has All (AND): Matches if face has every selected flag")
         col.label(text="- Has None (NOT): Matches if face has no selected flags")
         col.label(text="Action: Apply Select/Deselect/Invert to matched faces")
+        
+        layout.separator()
+        layout.operator(CARNIVORES_OT_play_linked_sound.bl_idname, icon='PLAY_SOUND')
+        
+        layout.separator()
+        row = layout.row()
+        row.prop(scene, "carnivores_nla_sound_enabled", text="Enable NLA Sound", toggle=True)
+        row.operator(CARNIVORES_OT_toggle_nla_sound_playback.bl_idname, text="", icon='PLAY_SOUND' if not scene.carnivores_nla_sound_enabled else 'PAUSE')
 
 class CARNIVORES_OT_modify_3df_flag(bpy.types.Operator):
     bl_idname = 'carnivores.modify_3df_flag'

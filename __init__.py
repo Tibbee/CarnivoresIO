@@ -33,12 +33,15 @@ classes = [
     operators.CARNIVORES_OT_select_by_flags,
     # Operators: UI Utilities
     operators.CARNIVORES_OT_modal_message,
+    operators.CARNIVORES_OT_play_linked_sound,
+    operators.CARNIVORES_OT_toggle_nla_sound_playback,
     # Panels
     operators.VIEW3D_PT_carnivores_selection,
     operators.VIEW3D_PT_3df_face_flags,
 ]
 
 def register():
+    print("DEBUG: CarnivoresIO register() called.")
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
@@ -81,9 +84,20 @@ def register():
             default='SELECT'
         )
     
+    if not hasattr(bpy.types.Scene, "carnivores_nla_sound_enabled"):
+        bpy.types.Scene.carnivores_nla_sound_enabled = bpy.props.BoolProperty(
+            name="Enable NLA Sound Playback",
+            description="Enable automatic sound playback based on active NLA strips",
+            default=False
+        )
+    
+    # Ensure the handler is always registered while the addon is enabled.
+    if operators.carnivores_nla_sound_handler not in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.append(operators.carnivores_nla_sound_handler)
     
 def unregister():
-    for attr in [f"cf_flag_{i}" for i, _ in enumerate(FACE_FLAG_OPTIONS)] + ['cf_flag_section', 'cf_select_mode', 'cf_select_action']:
+    print("DEBUG: CarnivoresIO unregister() called.")
+    for attr in [f"cf_flag_{i}" for i, _ in enumerate(FACE_FLAG_OPTIONS)] + ['cf_flag_section', 'cf_select_mode', 'cf_select_action', 'carnivores_nla_sound_enabled']:
         if hasattr(bpy.types.Scene, attr):
             try:
                 delattr(bpy.types.Scene, attr)
@@ -92,6 +106,10 @@ def unregister():
 
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
+    # Unregister the handler if it was registered
+    if operators.carnivores_nla_sound_handler in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.remove(operators.carnivores_nla_sound_handler)
+    
     for cls in reversed(classes):
         try:
             bpy.utils.unregister_class(cls)
