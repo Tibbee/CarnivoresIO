@@ -9,6 +9,7 @@ import wave
 import tempfile
 import os
 
+from . import operators
 from .core.constants import FACE_FLAG_OPTIONS, TEXTURE_WIDTH
 
 import time
@@ -937,6 +938,9 @@ def import_car_sounds(self, sounds, model_name, context):
             # Unpack and repack to force Blender to update
             if sound_block.packed_file:
                 sound_block.unpack(method='USE_LOCAL')
+                # Add the path of the created file to our set for later cleanup
+                unpacked_filepath = bpy.path.abspath(sound_block.filepath)
+                operators._temp_sound_files.add(unpacked_filepath)
                 sound_block.pack()
 
             imported_sounds.append(sound_block)

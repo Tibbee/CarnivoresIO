@@ -1,4 +1,5 @@
 import bpy
+import os
 from . import operators
 from .core.constants import FACE_FLAG_OPTIONS
 
@@ -94,6 +95,10 @@ def register():
     # Ensure the handler is always registered while the addon is enabled.
     if operators.carnivores_nla_sound_handler not in bpy.app.handlers.frame_change_post:
         bpy.app.handlers.frame_change_post.append(operators.carnivores_nla_sound_handler)
+    if operators.playback_started_handler not in bpy.app.handlers.animation_playback_pre:
+        bpy.app.handlers.animation_playback_pre.append(operators.playback_started_handler)
+    if operators.playback_stopped_handler not in bpy.app.handlers.animation_playback_post:
+        bpy.app.handlers.animation_playback_post.append(operators.playback_stopped_handler)
     
 def unregister():
     print("DEBUG: CarnivoresIO unregister() called.")
@@ -109,6 +114,21 @@ def unregister():
     # Unregister the handler if it was registered
     if operators.carnivores_nla_sound_handler in bpy.app.handlers.frame_change_post:
         bpy.app.handlers.frame_change_post.remove(operators.carnivores_nla_sound_handler)
+    if operators.playback_started_handler in bpy.app.handlers.animation_playback_pre:
+        bpy.app.handlers.animation_playback_pre.remove(operators.playback_started_handler)
+    if operators.playback_stopped_handler in bpy.app.handlers.animation_playback_post:
+        bpy.app.handlers.animation_playback_post.remove(operators.playback_stopped_handler)
+    
+    # Cleanup temporary sound files
+    print("DEBUG: Cleaning up temporary sound files...")
+    for filepath in operators._temp_sound_files:
+        if os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+                print(f"DEBUG: Removed temp sound file: {filepath}")
+            except Exception as e:
+                print(f"WARNING: Failed to remove temp sound file {filepath}: {e}")
+    operators._temp_sound_files.clear()
     
     for cls in reversed(classes):
         try:

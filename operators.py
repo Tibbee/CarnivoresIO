@@ -735,7 +735,9 @@ class CARNIVORES_OT_play_linked_sound(bpy.types.Operator):
 
 # Global dictionary to track playing sounds for each object
 _playing_sounds = {}
+_temp_sound_files = set()
 _aud_device = None # Global aud device
+_is_real_playback = False # Our reliable flag for actual playback state
 
 def get_aud_device():
     global _aud_device
@@ -743,112 +745,87 @@ def get_aud_device():
         _aud_device = aud.Device()
     return _aud_device
 
+def playback_started_handler(scene):
+    """This handler is called by Blender right before animation playback starts."""
+    global _is_real_playback
+    _is_real_playback = True
+    print("DEBUG: Playback STARTED. _is_real_playback = True")
+
+def playback_stopped_handler(scene):
+    """This handler is called by Blender right after animation playback stops."""
+    global _is_real_playback, _playing_sounds
+    _is_real_playback = False
+    print("DEBUG: Playback STOPPED. _is_real_playback = False")
+    
+    # If there are any lingering sounds, stop them now.
+    if _playing_sounds:
+        print("DEBUG: Playback stopped, stopping all managed sounds.")
+        for handle, _ in _playing_sounds.values():
+            handle.stop()
+        _playing_sounds.clear()
+
 def carnivores_nla_sound_handler(scene):
-    global _playing_sounds # Moved global declaration to the top
-    print(f"DEBUG: Handler called at frame {scene.frame_current}")
-    if not scene.carnivores_nla_sound_enabled:
-        print("DEBUG: NLA Sound Playback is disabled.")
+    global _playing_sounds, _is_real_playback
+    
+    # This handler should ONLY run when our flag indicates real playback is happening.
+    if not _is_real_playback:
         return
 
-    # Only play sounds if the animation is actively playing
-    if not bpy.context.screen.is_animation_playing:
-        print("DEBUG: Animation is not playing. Stopping all sounds.")
-        for obj_id, (handle, sound_name) in list(_playing_sounds.items()):
-            handle.stop()
-            del _playing_sounds[obj_id]
+    if not scene.carnivores_nla_sound_enabled:
         return
 
     device = get_aud_device()
-    print(f"DEBUG: NLA Sound Playback enabled. Device: {device}")
-
     objects_with_active_sounds = {} # {obj: linked_sound_name}
 
     for obj in scene.objects:
-        print(f"DEBUG: Processing object: {obj.name}")
-        
         anim_data_container = None
-        if obj.animation_data: # Check for regular object animation data
+        if obj.animation_data:
             anim_data_container = obj.animation_data
-            print(f"DEBUG: Object {obj.name} has obj.animation_data: {anim_data_container}")
-        elif obj.data and obj.data.shape_keys and obj.data.shape_keys.animation_data: # Check for shape key animation data
+        elif obj.data and obj.data.shape_keys and obj.data.shape_keys.animation_data:
             anim_data_container = obj.data.shape_keys.animation_data
-            print(f"DEBUG: Object {obj.name} has shape_keys.animation_data: {anim_data_container}")
         
         if anim_data_container and anim_data_container.nla_tracks:
-            print(f"DEBUG: Object {obj.name} has NLA tracks (length): {len(anim_data_container.nla_tracks)}")
-            
             current_action = None
-            # If in tweak mode, find the action being tweaked. Otherwise, do nothing for this object.
             if scene.is_nla_tweakmode:
-                # When a strip is in tweak mode, its action becomes the object's active action.
                 active_action = anim_data_container.action if anim_data_container else None
                 if active_action:
-                    # Verify this active action belongs to a strip on this object
                     for track in anim_data_container.nla_tracks:
                         for strip in track.strips:
                             if strip.action == active_action:
-                                # Found the tweaked strip. This is our action.
-                                # We also check if the playhead is within the strip's visual bounds.
                                 if strip.frame_start <= scene.frame_current < strip.frame_end:
                                     current_action = active_action
-                                    print(f"DEBUG: Focused NLA strip found for {obj.name}: {strip.name}, Action: {current_action.name}")
                                 break
                         if current_action:
                             break
 
             if current_action and 'carnivores_sound' in current_action:
-                linked_sound_name = current_action['carnivores_sound']
-                objects_with_active_sounds[obj] = linked_sound_name
-                print(f"DEBUG: Object {obj.name} should play '{linked_sound_name}'.")
-            else:
-                print(f"DEBUG: No linked sound for {obj.name} at frame {scene.frame_current}.")
-        else:
-            print(f"DEBUG: Object {obj.name} has no animation data or NLA tracks.")
+                objects_with_active_sounds[obj] = current_action['carnivores_sound']
 
-    # Now, iterate through _playing_sounds to stop sounds that should no longer be playing
-    # Create a copy of keys to avoid RuntimeError during dictionary modification
+    # Stop sounds that should no longer be playing
     for obj_playing in list(_playing_sounds.keys()):
         current_handle, current_sound_name = _playing_sounds[obj_playing]
-        print(f"DEBUG: Checking currently playing sound for {obj_playing.name}: '{current_sound_name}'")
-
-        if obj_playing not in objects_with_active_sounds:
-            # This object should no longer be playing any sound
-            print(f"DEBUG: Object {obj_playing.name} no longer has an active sound. Stopping '{current_sound_name}'.")
+        if obj_playing not in objects_with_active_sounds or objects_with_active_sounds[obj_playing] != current_sound_name:
             current_handle.stop()
             del _playing_sounds[obj_playing]
-        elif objects_with_active_sounds[obj_playing] != current_sound_name:
-            # This object should be playing a different sound
-            print(f"DEBUG: Object {obj_playing.name} should play '{objects_with_active_sounds[obj_playing]}' but is playing '{current_sound_name}'. Stopping old sound.")
-            current_handle.stop()
-            del _playing_sounds[obj_playing]
-        else:
-            print(f"DEBUG: Object {obj_playing.name} is still correctly playing '{current_sound_name}'.")
 
-    # Now, iterate through objects_with_active_sounds to start new sounds or ensure existing ones are playing
+    # Start new sounds
     for obj_active, linked_sound_name in objects_with_active_sounds.items():
-        linked_sound_data_block = bpy.data.sounds.get(linked_sound_name)
-
-        if not linked_sound_data_block:
-            print(f"DEBUG: Linked sound data block '{linked_sound_name}' not found for {obj_active.name}. Skipping playback.")
-            continue # Cannot play if sound data block is missing
-
         if obj_active in _playing_sounds:
-            # Sound is already being managed (it's the correct one and was not stopped above)
-            # Assume it's playing and looping correctly. Do nothing.
-            print(f"DEBUG: Sound '{linked_sound_name}' for {obj_active.name} is already playing correctly (managed).")
-        else:
-            # This object needs a new sound started
-            print(f"DEBUG: Object {obj_active.name} needs to start playing '{linked_sound_name}'.")
-            try:
-                sound_factory = linked_sound_data_block.factory
-                sound_factory.loop(True) # Configure the factory for looping
-                handle = device.play(sound_factory)
-                _playing_sounds[obj_active] = (handle, linked_sound_name)
-                print(f"NLA Sound: Object '{obj_active.name}' playing '{linked_sound_name}'.")
-            except Exception as e:
-                print(f"NLA Sound Error: Could not play sound '{linked_sound_name}' for {obj_active.name}: {e}")
-                if obj_active in _playing_sounds:
-                    del _playing_sounds[obj_active]
+            continue
+
+        linked_sound_data_block = bpy.data.sounds.get(linked_sound_name)
+        if not linked_sound_data_block:
+            continue
+
+        try:
+            sound_factory = linked_sound_data_block.factory
+            sound_factory.loop(True)
+            handle = device.play(sound_factory)
+            _playing_sounds[obj_active] = (handle, linked_sound_name)
+        except Exception as e:
+            print(f"NLA Sound Error: Could not play sound '{linked_sound_name}' for {obj_active.name}: {e}")
+            if obj_active in _playing_sounds:
+                del _playing_sounds[obj_active]
 
 class CARNIVORES_OT_toggle_nla_sound_playback(bpy.types.Operator):
     bl_idname = "carnivores.toggle_nla_sound_playback"
