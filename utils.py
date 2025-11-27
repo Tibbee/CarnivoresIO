@@ -974,7 +974,8 @@ def associate_sounds_with_animations(self, obj, animations, cross_ref, imported_
         action = next((act for act in action_list if act.name == action_name), None)
 
         if action:
-            action['carnivores_sound'] = linked_sound.name
+            # Use the PointerProperty registered on bpy.types.Action
+            action.carnivores_sound_ptr = linked_sound
             print({'INFO'}, f"Associated sound '{linked_sound.name}' with animation '{anim['name']}'.")
         else:
             print({'WARNING'}, f"Action '{action_name}' not found for sound association.")

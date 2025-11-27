@@ -34,15 +34,24 @@ classes = [
     operators.CARNIVORES_OT_select_by_flags,
     # Operators: UI Utilities
     operators.CARNIVORES_OT_modal_message,
-    operators.CARNIVORES_OT_play_linked_sound,
     operators.CARNIVORES_OT_toggle_nla_sound_playback,
+    operators.CARNIVORES_OT_import_sound_for_action,
     # Panels
     operators.VIEW3D_PT_carnivores_selection,
     operators.VIEW3D_PT_3df_face_flags,
+    operators.VIEW3D_PT_carnivores_audio,
 ]
 
 def register():
-    print("DEBUG: CarnivoresIO register() called.")
+    from . import operators # Import here to avoid circular dependencies during registration
+    
+    # Register Action properties
+    bpy.types.Action.carnivores_sound_ptr = bpy.props.PointerProperty(
+        type=bpy.types.Sound,
+        name="Linked Sound",
+        description="The sound data block linked to this action for Carnivores playback."
+    )
+
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
@@ -108,6 +117,10 @@ def unregister():
                 delattr(bpy.types.Scene, attr)
             except Exception as e:
                 print(f"[CarnivoresIO] Failed to remove scene property {attr}: {e}")
+    
+    # Remove Action property
+    if hasattr(bpy.types.Action, "carnivores_sound_ptr"):
+        del bpy.types.Action.carnivores_sound_ptr
 
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)

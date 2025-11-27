@@ -798,8 +798,16 @@ def carnivores_nla_sound_handler(scene):
                         if current_action:
                             break
 
-            if current_action and 'carnivores_sound' in current_action:
-                objects_with_active_sounds[obj] = current_action['carnivores_sound']
+            # Use the pointer property first, fallback to legacy string property if needed (optional)
+            if current_action:
+                sound_name = None
+                if getattr(current_action, 'carnivores_sound_ptr', None):
+                     sound_name = current_action.carnivores_sound_ptr.name
+                elif 'carnivores_sound' in current_action:
+                     sound_name = current_action['carnivores_sound']
+                
+                if sound_name:
+                    objects_with_active_sounds[obj] = sound_name
 
     # Stop sounds that should no longer be playing
     for obj_playing in list(_playing_sounds.keys()):
@@ -819,13 +827,69 @@ def carnivores_nla_sound_handler(scene):
 
         try:
             sound_factory = linked_sound_data_block.factory
-            sound_factory.loop(True)
-            handle = device.play(sound_factory)
-            _playing_sounds[obj_active] = (handle, linked_sound_name)
+            
+            # Fallback: If Blender failed to create a factory (common with some external files),
+            # try loading it directly via aud using the absolute path.
+            if not sound_factory:
+                abs_path = bpy.path.abspath(linked_sound_data_block.filepath)
+                if os.path.exists(abs_path):
+                    try:
+                        sound_factory = aud.Sound.file(abs_path)
+                        print(f"DEBUG: Loaded sound factory from file fallback: {abs_path}")
+                    except Exception as e:
+                        print(f"NLA Sound Warning: Fallback load failed for '{linked_sound_name}': {e}")
+
+            if sound_factory:
+                # Play the sound without looping (looping handled by re-triggering or future features)
+                handle = device.play(sound_factory)
+                _playing_sounds[obj_active] = (handle, linked_sound_name)
+            else:
+                # Factory creation failed (broken file or invalid path)
+                print(f"NLA Sound Warning: Could not load audio factory for '{linked_sound_name}'")
+
         except Exception as e:
             print(f"NLA Sound Error: Could not play sound '{linked_sound_name}' for {obj_active.name}: {e}")
             if obj_active in _playing_sounds:
                 del _playing_sounds[obj_active]
+
+class CARNIVORES_OT_import_sound_for_action(bpy.types.Operator, bpy_extras.io_utils.ImportHelper):
+    """Import a sound file and link it to the specified Action"""
+    bl_idname = "carnivores.import_sound_for_action"
+    bl_label = "Import Sound"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    filter_glob: bpy.props.StringProperty(
+        default="*.wav;*.mp3;*.ogg;*.flac",
+        options={'HIDDEN'},
+    )
+
+    action_name: bpy.props.StringProperty(name="Action Name")
+
+    def execute(self, context):
+        if not self.action_name:
+            self.report({'ERROR'}, "No action specified.")
+            return {'CANCELLED'}
+        
+        action = bpy.data.actions.get(self.action_name)
+        if not action:
+            self.report({'ERROR'}, f"Action '{self.action_name}' not found.")
+            return {'CANCELLED'}
+
+        filepath = self.filepath
+        if not os.path.isfile(filepath):
+            self.report({'ERROR'}, "File not found.")
+            return {'CANCELLED'}
+
+        try:
+            sound = bpy.data.sounds.load(filepath)
+            # sound.pack() # Disabled packing to ensure immediate playback reliability
+            action.carnivores_sound_ptr = sound
+            self.report({'INFO'}, f"Imported '{sound.name}' and linked to '{action.name}'")
+        except Exception as e:
+            self.report({'ERROR'}, f"Failed to load sound: {e}")
+            return {'CANCELLED'}
+
+        return {'FINISHED'}
 
 class CARNIVORES_OT_toggle_nla_sound_playback(bpy.types.Operator):
     bl_idname = "carnivores.toggle_nla_sound_playback"
@@ -903,17 +967,59 @@ class VIEW3D_PT_carnivores_selection(bpy.types.Panel):
         col.label(text="- Has None (NOT): Matches if face has no selected flags")
         col.label(text="Action: Apply Select/Deselect/Invert to matched faces")
         
-        layout.separator()
-        layout.operator(CARNIVORES_OT_play_linked_sound.bl_idname, icon='PLAY_SOUND')
-        
-        layout.separator()
-        row = layout.row()
-        row.prop(scene, "carnivores_nla_sound_enabled", text="Enable NLA Sound", toggle=True)
-        row.operator(CARNIVORES_OT_toggle_nla_sound_playback.bl_idname, text="", icon='PLAY_SOUND' if not scene.carnivores_nla_sound_enabled else 'PAUSE')
 
-class CARNIVORES_OT_modify_3df_flag(bpy.types.Operator):
+class VIEW3D_PT_carnivores_audio(bpy.types.Panel):                                                                                                                                 
+    bl_label = "Carnivores Audio"                                                                                                                                                  
+    bl_idname = "VIEW3D_PT_carnivores_audio"                                                                                                                                       
+    bl_space_type = 'VIEW_3D'                                                                                                                                                      
+    bl_region_type = 'UI'                                                                                                                                                          
+    bl_category = 'Carnivores'                                                                                                                                                     
+                                                                                                                                                                                   
+    def draw(self, context):                                                                                                                                                       
+        layout = self.layout
+        scene = context.scene                                                                                                                                                      
+                                                                                                                                                                                   
+        row = layout.row()                                                                                                                                                         
+        row.prop(scene, "carnivores_nla_sound_enabled", text="Enable NLA Sound", toggle=True)                                                                                      
+        row.operator(CARNIVORES_OT_toggle_nla_sound_playback.bl_idname, text="", icon='PLAY_SOUND' if not scene.carnivores_nla_sound_enabled else 'PAUSE')                         
+                                                                                                                                                                                   
+        layout.separator()                                                                                                                                                         
+        layout.label(text="NLA Sound Associations:")                                                                                                                               
+                                                                                                                                                                                   
+        obj = context.active_object                                                                                                                                                
+                                                                                                                                                                                   
+        if not obj or not obj.data or not hasattr(obj.data, 'shape_keys') or not obj.data.shape_keys:                                                                              
+            layout.label(text="Select an object with shape keys.", icon='INFO')                                                                                                    
+            return                                                                                                                                                                 
+                                                                                                                                                                                   
+        anim_data = obj.data.shape_keys.animation_data                                                                                                                             
+        if not anim_data or not anim_data.nla_tracks:                                                                                                                              
+            layout.label(text="Object has no NLA tracks.", icon='INFO')                                                                                                            
+            return                                                                                                                                                                 
+                                                                                                                                                                                   
+        box = layout.box()                                                                                                                                                         
+        for track in anim_data.nla_tracks:                                                                                                                                         
+            for strip in track.strips:                                                                                                                                             
+                action = strip.action
+                if not action:
+                     continue
+
+                row = box.row(align=True)                                                                                                                                                    
+                row.label(text=strip.name, icon='NLA')
+                
+                # Prop search / Dropdown for the pointer property
+                # This renders the sound datablock selector directly
+                row.prop(action, "carnivores_sound_ptr", text="")
+
+                # Button to import a new sound file directly for this action
+                op = row.operator("carnivores.import_sound_for_action", text="", icon='FILE_FOLDER')
+                op.action_name = action.name
+
+class CARNIVORES_OT_modify_3df_flag(bpy.types.Operator):                                                                                                                                                                                   
     bl_idname = 'carnivores.modify_3df_flag'
+                                                                                                                                                                    
     bl_label = 'Modify 3DF Flag'
+                                                                                                                                                                    
     bl_options = {'REGISTER', 'UNDO'}
     
     action: bpy.props.EnumProperty(
