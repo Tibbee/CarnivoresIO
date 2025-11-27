@@ -20,12 +20,14 @@ def menu_func_import(self, context):
 
 def menu_func_export(self, context):
     self.layout.operator(operators.CARNIVORES_OT_export_3df.bl_idname, text="Carnivores 3DF (.3df)")
+    self.layout.operator(operators.CARNIVORES_OT_export_car.bl_idname, text="Carnivores CAR (.car)")
    
 classes = [
     # Operators: Import/Export
     operators.CARNIVORES_OT_import_3df,
     operators.CARNIVORES_OT_import_car,
     operators.CARNIVORES_OT_export_3df,
+    operators.CARNIVORES_OT_export_car,
     # Operators: Mesh Attribute Management
     operators.CARNIVORES_OT_create_3df_flags,
     operators.CARNIVORES_OT_modify_3df_flag,

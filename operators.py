@@ -9,6 +9,7 @@ import numpy as np
 from .parsers.parse_3df import parse_3df
 from .parsers.parse_car import parse_car
 from .parsers.export_3df import export_3df
+from .parsers.export_car import export_car
 from .core.constants import FACE_FLAG_OPTIONS
 
 from . import utils
@@ -295,6 +296,109 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         else:
             self.report({'ERROR'}, "No files were exported due to errors.")
         return {'FINISHED'}
+
+@bpy_extras.io_utils.orientation_helper(axis_forward='-Z', axis_up='Y')
+class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
+    bl_idname = "carnivores.export_car"
+    bl_label = "Export .CAR Model"
+    bl_description = "Export active mesh object as Carnivores .car model file"
+    bl_options = {'PRESET'}
+    
+    filename_ext = ".car"
+    filter_glob: bpy.props.StringProperty(default="*.car", options={'HIDDEN'}, maxlen=255)
+    
+    scale: bpy.props.FloatProperty(
+        name="Scale",
+        description="Scale factor to apply on export (applies to vertex coordinates)",
+        default=100.0,
+        min=1.0,
+        max=1000.0,
+    )
+    
+    model_name: bpy.props.StringProperty(
+        name="Model Name Override",
+        description="Internal model name (max 32 chars). Defaults to filename if empty. Tip: Suffix with 'msc: #' for special behavior.",
+        default="",
+        maxlen=32
+    )
+    
+    export_textures: bpy.props.BoolProperty(
+        name="Export Textures",
+        description="Export texture(s) if a suitable image is found",
+        default=True,
+    )
+    
+    flip_u: bpy.props.BoolProperty(
+        name="Flip U",
+        description="Flip U coordinate integers",
+        default=False,
+    )
+    
+    flip_v: bpy.props.BoolProperty(
+        name="Flip V",
+        description="Flip V coordinate integers",
+        default=False,
+    )
+    
+    flip_handedness: bpy.props.BoolProperty(
+        name='Flip Handedness',
+        description='Negate X-axis to match game\'s left-handed coordinate system',
+        default=False
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Export Options")
+        layout.prop(self, "scale")
+        layout.prop(self, "model_name")
+        layout.prop(self, "export_textures")
+        row = layout.row()
+        row.enabled = self.export_textures
+        row.prop(self, "flip_u")
+        row.prop(self, "flip_v")
+        layout.prop(self, 'flip_handedness')
+        layout.separator()
+        box = layout.box()
+        box.label(text="Axis Conversion")
+        box.prop(self, "axis_forward")
+        box.prop(self, "axis_up")
+
+    @utils.timed("CARNIVORES_OT_export_car.execute", is_operator=True)
+    def execute(self, context):
+        handedness_matrix = mathutils.Matrix.Scale(-1, 4, (1, 0, 0)) if self.flip_handedness else mathutils.Matrix.Identity(4)
+        export_matrix = (
+            bpy_extras.io_utils.axis_conversion(
+                from_forward='Y',
+                from_up='Z',
+                to_forward=self.axis_forward,
+                to_up=self.axis_up
+            ).to_4x4()
+            @ handedness_matrix
+            @ mathutils.Matrix.Scale(self.scale, 4) 
+        )
+        export_matrix_np = np.array(export_matrix)
+        
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            self.report({'ERROR'}, "No active mesh object selected.")
+            return {'CANCELLED'}
+
+        try:
+            export_car(
+                self.filepath,
+                obj,
+                export_matrix_np,
+                export_textures=self.export_textures,
+                flip_u=self.flip_u,
+                flip_v=self.flip_v,
+                flip_handedness=self.flip_handedness,
+                model_name_override=self.model_name
+            )
+            self.report({'INFO'}, f"Exported {os.path.basename(self.filepath)}")
+            return {'FINISHED'}
+        except Exception as e:
+            self.report({'ERROR'}, f"Export failed: {e}")
+            return {'CANCELLED'}
 
 @bpy_extras.io_utils.orientation_helper(axis_forward='-Z', axis_up='Y')
 class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHelper):
