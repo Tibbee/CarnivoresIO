@@ -32,9 +32,9 @@ def convert_sound_to_22khz_mono(sound_datablock):
 
         # Resample: 22050 Hz
         factory = factory.limit(0, 100000) # Safety limit? No, just process.
-        factory = factory.resample(22050, high_quality=True)
+        factory = factory.resample(22050)
         # Mixdown: Mono
-        factory = factory.mixdown(1) # 1 channel
+        factory = factory.rechannel(1) # 1 channel
         
         # Render to numpy array
         # aud.Sound.data() returns numpy array of float32 samples usually
@@ -61,89 +61,118 @@ def convert_sound_to_22khz_mono(sound_datablock):
 def gather_car_animations(obj, export_matrix, vertex_count):
     """
     Collects animation data by iterating over NLA strips or the active action.
-    Returns: list of dicts {'name': str, 'kps': int, 'frames': list_of_numpy_arrays, 'sound_name': str}
+    Returns: list of dicts {'name': str, 'kps': int, 'frames': list_of_numpy_arrays, 'sound_ptr': Sound}
     """
     animations = []
     context = bpy.context
     scene = context.scene
     
-    # Determine source of animations
-    # Priority: Selected NLA Strips -> All NLA Strips -> Active Action
+    # --- 1. Find Animation Source ---
+    anim_data = None
+    source_label = ""
+    
+    # Check Shape Keys (Priority for .car workflow)
+    if obj.data.shape_keys and obj.data.shape_keys.animation_data:
+        anim_data = obj.data.shape_keys.animation_data
+        source_label = "Shape Keys"
+    # Check Parent Armature (Rigged workflow)
+    elif obj.parent and obj.parent.type == 'ARMATURE' and obj.parent.animation_data:
+        anim_data = obj.parent.animation_data
+        source_label = f"Parent Armature ({obj.parent.name})"
+    # Check Object (Legacy/Simple workflow)
+    elif obj.animation_data:
+        anim_data = obj.animation_data
+        source_label = f"Object ({obj.name})"
+        
+    if not anim_data:
+        print("[Export] No animation data found on Object, ShapeKeys, or Parent Armature.")
+        return []
+        
+    print(f"[Export] Found animation source: {source_label}")
+
+    # --- 2. Identify Actions to Process ---
     actions_to_process = [] # (Action, Name, FrameStart, FrameEnd)
     
-    anim_data = obj.animation_data
-    if anim_data and anim_data.nla_tracks:
+    if anim_data.nla_tracks:
         for track in anim_data.nla_tracks:
             if track.mute: continue
             for strip in track.strips:
-                # We use the strip's action duration
-                # Note: Carnivores anims are usually baked actions. 
-                # We'll export the action itself, not the NLA strip placement.
-                actions_to_process.append(strip)
+                # Store relevant data before we mute tracks
+                actions_to_process.append({
+                    'action': strip.action,
+                    'name': strip.action.name if strip.action else strip.name, # Use action name preferably
+                    'start': int(strip.action.frame_range[0]) if strip.action else int(strip.frame_start),
+                    'end': int(strip.action.frame_range[1]) if strip.action else int(strip.frame_end)
+                })
 
-    # Fallback to active action if no NLA
-    if not actions_to_process and anim_data and anim_data.action:
-        # Create a dummy strip-like object
-        class DummyStrip:
-            action = anim_data.action
-            name = anim_data.action.name
-            frame_start = anim_data.action.frame_range[0]
-            frame_end = anim_data.action.frame_range[1]
-        actions_to_process.append(DummyStrip())
+    # Fallback: Active Action (if no NLA strips found or processed)
+    if not actions_to_process and anim_data.action:
+        actions_to_process.append({
+            'action': anim_data.action,
+            'name': anim_data.action.name,
+            'start': int(anim_data.action.frame_range[0]),
+            'end': int(anim_data.action.frame_range[1])
+        })
 
     if not actions_to_process:
+        print("[Export] No actions/strips found to export.")
         return []
 
-    # Store current state
+    # --- STATE MANAGEMENT ---
     original_frame = scene.frame_current
-    original_action = anim_data.action if anim_data else None
+    original_action = anim_data.action
+    original_use_nla = anim_data.use_nla
     
-    # We need to mute NLA to play individual actions cleanly
-    # Or just use the action directly on the object
-    
-    try:
-        # Force Object Mode for evaluation
-        # if obj.mode != 'OBJECT':
-        #     bpy.ops.object.mode_set(mode='OBJECT')
+    # Disable NLA to force Action playback
+    anim_data.use_nla = False
 
-        for strip in actions_to_process:
-            action = strip.action
-            if not action: continue
+    # Store Modifier States (Disable non-deformers to match base mesh topology)
+    mod_states = {}
+    for mod in obj.modifiers:
+        mod_states[mod.name] = mod.show_viewport
+        if mod.type not in {'ARMATURE', 'HOOK'}: # Keep Deformers only. 
+            mod.show_viewport = False
+
+    print(f"[Export] Processing {len(actions_to_process)} animations...")
+
+    try:
+        for entry in actions_to_process:
+            action = entry['action']
+            if not action: 
+                print(f"[Export] Skipping entry {entry['name']} (No Action)")
+                continue
             
-            # Prepare Action
+            # Activate Action
             anim_data.action = action
             
-            # Determine FPS / KPS
+            # Check for Sound
+            snd_ptr = getattr(action, 'carnivores_sound_ptr', None)
+            if snd_ptr:
+                print(f"[Export] Animation '{action.name}' has linked sound: {snd_ptr.name}")
+            else:
+                print(f"[Export] Animation '{action.name}' has NO linked sound.")
+            
+            # Determine KPS (Frames per second)
             fps = scene.render.fps
-            kps = fps * 1000 if fps < 100 else fps # Some heuristics for KPS? 
-            # Actually Carnivores KPS is often FrameRate. parse_car reads it as uint32. 
-            # Let's use scene FPS.
             kps = int(fps) 
 
-            start = int(action.frame_range[0])
-            end = int(action.frame_range[1])
+            start = entry['start']
+            end = entry['end']
             frames_data = []
             
-            print(f"[Export] Processing Action: {action.name} ({start}-{end})")
+            print(f"[Export] Baking Action: {action.name} ({start}-{end})")
 
             for frame in range(start, end + 1):
                 scene.frame_set(frame)
                 
-                # Evaluate mesh
+                # Evaluate mesh (Deformed by Armature/Action)
                 depsgraph = context.evaluated_depsgraph_get()
                 eval_obj = obj.evaluated_get(depsgraph)
-                
-                # Extract vertices
-                # We need them in the same order as the base mesh
-                # Assuming topology doesn't change
                 mesh = eval_obj.data
                 
-                # Apply export matrix
                 count = len(mesh.vertices)
                 if count != vertex_count:
-                    print(f"Warning: Frame {frame} of {action.name} has {count} verts, expected {vertex_count}. Skipping frame.")
-                    # Fill with zeros or previous frame to prevent crash?
-                    # Better to just abort this animation
+                    print(f"[Export] Error: Frame {frame} of '{action.name}' has {count} vertices, expected {vertex_count} (Base). Skipping animation.")
                     break
                 
                 # Bulk get coords
@@ -151,13 +180,17 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                 mesh.vertices.foreach_get("co", verts_co_flat)
                 verts_co = verts_co_flat.reshape(count, 3)
                 
+                # Debug: Print first vertex position to verify animation
+                if frame == start:
+                    print(f"         Frame {frame} v[0]: {verts_co[0]}")
+                elif frame == start + 1:
+                    print(f"         Frame {frame} v[0]: {verts_co[0]}")
+
                 # Transform
                 transformed_co = utils.apply_import_matrix(verts_co, export_matrix)
                 
                 # Quantize to fixed point 16.0
-                # Carnivores: integer = float * 16.0
                 quantized = np.clip(transformed_co * 16.0, -32768, 32767).astype(np.int16)
-                
                 frames_data.append(quantized)
 
             if len(frames_data) == (end - start + 1):
@@ -165,16 +198,26 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                     'name': action.name,
                     'kps': kps,
                     'frames': frames_data,
-                    'sound_ptr': getattr(action, 'carnivores_sound_ptr', None)
+                    'sound_ptr': snd_ptr
                 })
-            else:
-                print(f"Skipping animation {action.name} due to vertex count mismatch.")
+            # else: loop broke due to error
+
+    except Exception as e:
+        print(f"[Export] Critical Error during animation bake: {e}")
+        import traceback
+        traceback.print_exc()
 
     finally:
-        # Restore
+        # --- RESTORE STATE ---
         scene.frame_set(original_frame)
-        if anim_data:
+        if anim_data: # Check if we found one
             anim_data.action = original_action
+            anim_data.use_nla = original_use_nla
+        
+        # Restore Modifiers
+        for mod_name, state in mod_states.items():
+            if mod_name in obj.modifiers:
+                obj.modifiers[mod_name].show_viewport = state
 
     return animations
 
