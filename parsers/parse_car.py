@@ -13,7 +13,8 @@ def parse_car_header(file):
     header = np.fromfile(file, dtype=CAR_HEADER_DTYPE, count=1)[0]
     if CAR_HEADER_DTYPE.itemsize != 52:
         raise ValueError('Incomplete CAR header: expected 52 bytes.')
-    model_name = header['model_name'].decode('ascii', errors='ignore').rstrip('\x00')
+    # Sanitize string: split at first null byte to discard potential garbage
+    model_name = header['model_name'].decode('ascii', errors='ignore').split('\x00')[0]
     # Loose check for expected suffix
     if not model_name.endswith('msc: #'):
         context = ParserContext()
@@ -43,7 +44,8 @@ def parse_car_animations(file, header, context):
         for anim_idx in range(header['ani_count']):
             # Read 32-byte name
             ani_name_raw = np.fromfile(file, dtype='S32', count=1)[0]
-            ani_name = ani_name_raw.decode('ascii', errors='ignore').rstrip('\x00')
+            # Sanitize string: split at first null byte
+            ani_name = ani_name_raw.decode('ascii', errors='ignore').split('\x00')[0]
             if not ani_name:
                 ani_name = f"Anim_{anim_idx}"
             # Read kps and frames_count
@@ -102,7 +104,8 @@ def parse_car_sounds_and_crossref(file, header, context, validate=True):
     # ------------------- Sound blocks -------------------
     for sfx_idx in range(header['sfx_count']):
         name_raw = np.fromfile(file, dtype='S32', count=1)[0]
-        name = name_raw.decode('ascii', errors='ignore').rstrip('\x00')
+        # Sanitize string: split at first null byte
+        name = name_raw.decode('ascii', errors='ignore').split('\x00')[0]
         if not name:
             name = f"Sound_{sfx_idx}"
             if validate:
