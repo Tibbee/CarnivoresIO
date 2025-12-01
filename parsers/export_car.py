@@ -94,7 +94,8 @@ def gather_car_animations(obj, export_matrix, vertex_count):
     actions_to_process = [] # (Action, Name, FrameStart, FrameEnd)
     
     if anim_data.nla_tracks:
-        for track in anim_data.nla_tracks:
+        # Iterate tracks in reverse (Top-most track first) to match visual order and file order preference
+        for track in reversed(list(anim_data.nla_tracks)):
             if track.mute: continue
             for strip in track.strips:
                 # Store relevant data before we mute tracks

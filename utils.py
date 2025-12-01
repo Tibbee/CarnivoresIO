@@ -648,7 +648,52 @@ def collect_bones_and_owners(obj, export_matrix):
 
             return bone_names, bone_positions, bone_parents, vertex_owners
 
-    # Fallback: No bones at all → add default
+    # If no armature or hook modifiers, but has vertex groups,
+    # interpret these vertex groups as "bones" for the .car format.
+    # Vertex owner indices will be based on the alphabetical order of vertex group names.
+    if not obj.parent or obj.parent.type != 'ARMATURE': # No armature parent
+        hook_mods = [m for m in obj.modifiers if m.type == 'HOOK' and m.object and m.vertex_group]
+        if not hook_mods and obj.vertex_groups: # No hooks, but has vertex groups
+            
+            # Filter for non-empty vertex groups and sort them alphabetically for consistent indexing
+            # We assume any existing VG could be used for ownership.
+            active_vgs = []
+            for vg in obj.vertex_groups:
+                # To check if a VG is empty without iterating all vertices,
+                # we could check if vg.add or vg.remove has been called, but this is more complex.
+                # For now, we'll assume any existing VG is a candidate for owner.
+                active_vgs.append(vg)
+            
+            if active_vgs: # Only proceed if there are actual vertex groups
+                # Sort alphabetically to get a deterministic index for 'bone'
+                active_vgs.sort(key=lambda vg: vg.name)
+                
+                bone_names = [vg.name for vg in active_vgs]
+                
+                # Create a map for quick lookup from vg.index (Blender's internal VG index)
+                # to our new 'bone_idx' (based on sorted alphabetical order)
+                vg_blender_idx_to_bone_idx = {vg.index: i for i, vg in enumerate(active_vgs)}
+                
+                bone_positions = [(0.0, 0.0, 0.0)] * len(bone_names) # Dummy positions for carbones
+                bone_parents = [-1] * len(bone_names) # No parents for carbones
+                
+                vertex_owners = np.zeros(len(obj.data.vertices), dtype=np.uint16)
+                
+                for v_idx, vertex in enumerate(obj.data.vertices):
+                    winning_bone_idx = 0 # Default to bone 0 if no recognized group found for this vertex
+                    highest_weight = 0.0
+                    
+                    for g in vertex.groups: # Iterate groups vertex belongs to
+                        if g.group in vg_blender_idx_to_bone_idx: # Check if this group is one of our active_vgs
+                            if g.weight > highest_weight:
+                                highest_weight = g.weight
+                                winning_bone_idx = vg_blender_idx_to_bone_idx[g.group]
+                    
+                    vertex_owners[v_idx] = winning_bone_idx
+                
+                return bone_names, bone_positions, bone_parents, vertex_owners
+    
+    # Fallback: No bones at all (original behavior for truly bone-less meshes)
     bone_names = ["Default"]
     bone_positions = [(0.0, 0.0, 0.0)]
     bone_parents = [-1]
@@ -848,7 +893,17 @@ def auto_create_shape_key_actions_from_car(obj, frame_step=1):
         return
     sk_data = mesh.shape_keys
     names = [kb.name for kb in sk_data.key_blocks if '.' in kb.name]
-    base_names = sorted(set(n.split('.Frame_')[0] for n in names if '.Frame_' in n))
+    
+    # Preserve order: iterate names, extract base, add to list if not seen
+    base_names = []
+    seen = set()
+    for n in names:
+        if '.Frame_' in n:
+            base = n.split('.Frame_')[0]
+            if base not in seen:
+                seen.add(base)
+                base_names.append(base)
+                
     if not base_names:
         print('[Info] No animation-style shape keys found (no .Frame_### pattern).')
         return
@@ -868,7 +923,9 @@ def auto_create_shape_key_actions_from_car(obj, frame_step=1):
             nla_tracks = anim_data.nla_tracks
             track = None
             num_tracks_used = 0
-            for action in actions:
+            # Reverse order so first animation in list becomes the top-most NLA track
+            # (Tracks are added bottom-to-top, 0..N)
+            for action in reversed(actions):
                 strip_name = action.name.replace('_Action', '')
                 start_frame, _ = get_action_frame_range(action)
                 
