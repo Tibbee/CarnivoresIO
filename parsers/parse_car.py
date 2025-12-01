@@ -39,6 +39,8 @@ def parse_car_texture(file, texture_size, texture_height):
 def parse_car_animations(file, header, context):
     animations = []
     vcount = header['vertex_count']
+    used_names = {}  # Map base_name -> count
+    
     if header['ani_count'] > 0:
         print(f"[Debug] Starting animation parsing: {header['ani_count']} animations, {vcount} vertices")
         for anim_idx in range(header['ani_count']):
@@ -48,6 +50,17 @@ def parse_car_animations(file, header, context):
             ani_name = ani_name_raw.decode('ascii', errors='ignore').split('\x00')[0]
             if not ani_name:
                 ani_name = f"Anim_{anim_idx}"
+            
+            # Enforce Uniqueness
+            if ani_name in used_names:
+                count = used_names[ani_name]
+                used_names[ani_name] += 1
+                unique_name = f"{ani_name}_{count}" # e.g., Ms_die_1, Ms_die_2
+                print(f"[Debug] Renaming duplicate animation '{ani_name}' to '{unique_name}'")
+                ani_name = unique_name
+            else:
+                used_names[ani_name] = 1
+            
             # Read kps and frames_count
             ani_kps = np.fromfile(file, dtype='<u4', count=1)[0]
             frames_count = np.fromfile(file, dtype='<u4', count=1)[0]
@@ -100,6 +113,7 @@ def parse_car_sounds_and_crossref(file, header, context, validate=True):
         cross_ref – np.ndarray[int32] shape (64,)
     """
     sounds = []
+    used_names = {} # Map name -> count
 
     # ------------------- Sound blocks -------------------
     for sfx_idx in range(header['sfx_count']):
@@ -112,6 +126,17 @@ def parse_car_sounds_and_crossref(file, header, context, validate=True):
                 context.warnings.append(
                     f"Sound #{sfx_idx} has empty name; using placeholder."
                 )
+        
+        # Enforce Uniqueness
+        if name in used_names:
+            count = used_names[name]
+            used_names[name] += 1
+            unique_name = f"{name}_{count}"
+            if validate:
+                context.warnings.append(f"Renaming duplicate sound '{name}' to '{unique_name}'")
+            name = unique_name
+        else:
+            used_names[name] = 1
 
         length = np.fromfile(file, dtype='<u4', count=1)[0]
         expected_samples = length // 2

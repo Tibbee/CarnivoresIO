@@ -665,8 +665,12 @@ def collect_bones_and_owners(obj, export_matrix):
                 active_vgs.append(vg)
             
             if active_vgs: # Only proceed if there are actual vertex groups
-                # Sort alphabetically to get a deterministic index for 'bone'
-                active_vgs.sort(key=lambda vg: vg.name)
+                # Helper for natural sorting (handles CarBone_2 vs CarBone_10 correctly)
+                def natural_sort_key(vg):
+                    return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', vg.name)]
+
+                # Sort naturally to get a deterministic index for 'bone'
+                active_vgs.sort(key=natural_sort_key)
                 
                 bone_names = [vg.name for vg in active_vgs]
                 
@@ -773,7 +777,7 @@ def create_shape_key_action(obj, action_name="CarAnimation"):
     return action
 
 @timed('keyframe_shape_key_animation_as_action')
-def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, frame_step=1):
+def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, frame_step=1, kps=None):
     if not obj or obj.type != 'MESH':
         print('[Error] Selected object is not a mesh')
         return
@@ -785,6 +789,11 @@ def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, frame_
     sk_data.animation_data_create()
     action_name = f"{anim_name}_Action"
     action = bpy.data.actions.new(name=action_name)
+    
+    # Store Original KPS if provided
+    if kps is not None:
+        action["carnivores_kps"] = int(kps)
+        
     sk_data.animation_data.action = action
     key_blocks = [kb for kb in sk_data.key_blocks if re.match(f"^{re.escape(anim_name)}\\.Frame_\\d+", kb.name)]
     key_blocks.sort(key=lambda kb: kb.name)
@@ -883,7 +892,7 @@ def push_shape_key_action_to_nla(obj, strip_name=None, frame_start=1, frame_end=
     return strip
 
 @timed('auto_create_shape_key_actions_from_car')
-def auto_create_shape_key_actions_from_car(obj, frame_step=1):
+def auto_create_shape_key_actions_from_car(obj, frame_step=1, parsed_animations=None):
     if not obj or obj.type != 'MESH':
         print('[Error] Selected object is not a mesh')
         return
@@ -893,6 +902,12 @@ def auto_create_shape_key_actions_from_car(obj, frame_step=1):
         return
     sk_data = mesh.shape_keys
     names = [kb.name for kb in sk_data.key_blocks if '.' in kb.name]
+    
+    # Create KPS lookup map if animations provided
+    kps_map = {}
+    if parsed_animations:
+        for anim in parsed_animations:
+            kps_map[anim['name']] = anim['kps']
     
     # Preserve order: iterate names, extract base, add to list if not seen
     base_names = []
@@ -912,7 +927,10 @@ def auto_create_shape_key_actions_from_car(obj, frame_step=1):
     actions = []
     for anim_name in base_names:
         print(f"[AutoAction] Processing animation '{anim_name}'...")
-        action = keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, frame_step=frame_step)
+        # Retrieve KPS from map or default to None
+        anim_kps = kps_map.get(anim_name)
+        
+        action = keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, frame_step=frame_step, kps=anim_kps)
         if action:
             actions.append(action)
     

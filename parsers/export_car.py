@@ -124,15 +124,24 @@ def gather_car_animations(obj, export_matrix, vertex_count):
     original_action = anim_data.action
     original_use_nla = anim_data.use_nla
     
+    # Shape Key Pinning Handling
+    original_show_only_shape_key = False
+    if obj.type == 'MESH' and obj.show_only_shape_key:
+        original_show_only_shape_key = True
+        obj.show_only_shape_key = False # Disable pinning to allow animation
+        print("[Export] Temporarily disabled Shape Key Pinning for bake.")
+
     # Disable NLA to force Action playback
     anim_data.use_nla = False
 
-    # Store Modifier States (Disable non-deformers to match base mesh topology)
+    # Store Modifier States & Force Enable Deformers
     mod_states = {}
     for mod in obj.modifiers:
         mod_states[mod.name] = mod.show_viewport
-        if mod.type not in {'ARMATURE', 'HOOK'}: # Keep Deformers only. 
-            mod.show_viewport = False
+        if mod.type in {'ARMATURE', 'HOOK'}: 
+            mod.show_viewport = True # Force enable deformers
+        else:
+            mod.show_viewport = False # Disable others
 
     print(f"[Export] Processing {len(actions_to_process)} animations...")
 
@@ -154,8 +163,8 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                 print(f"[Export] Animation '{action.name}' has NO linked sound.")
             
             # Determine KPS (Frames per second)
-            fps = scene.render.fps
-            kps = int(fps) 
+            # Priority: 1. Custom Property (imported) 2. Scene FPS (created in Blender)
+            kps = action.get("carnivores_kps", int(scene.render.fps))
 
             start = entry['start']
             end = entry['end']
@@ -165,38 +174,60 @@ def gather_car_animations(obj, export_matrix, vertex_count):
 
             for frame in range(start, end + 1):
                 scene.frame_set(frame)
+                context.view_layer.update() # Ensure depsgraph is fully updated
                 
                 # Evaluate mesh (Deformed by Armature/Action)
                 depsgraph = context.evaluated_depsgraph_get()
                 eval_obj = obj.evaluated_get(depsgraph)
-                mesh = eval_obj.data
                 
-                count = len(mesh.vertices)
-                if count != vertex_count:
-                    print(f"[Export] Error: Frame {frame} of '{action.name}' has {count} vertices, expected {vertex_count} (Base). Skipping animation.")
-                    break
+                # Use to_mesh() to get the deformed geometry with modifiers applied
+                mesh = eval_obj.to_mesh()
                 
-                # Bulk get coords
-                verts_co_flat = np.empty(count * 3, dtype=np.float32)
-                mesh.vertices.foreach_get("co", verts_co_flat)
-                verts_co = verts_co_flat.reshape(count, 3)
-                
-                # Debug: Print first vertex position to verify animation
-                if frame == start:
-                    print(f"         Frame {frame} v[0]: {verts_co[0]}")
-                elif frame == start + 1:
-                    print(f"         Frame {frame} v[0]: {verts_co[0]}")
+                try:
+                    count = len(mesh.vertices)
+                    if count != vertex_count:
+                        print(f"[Export] Error: Frame {frame} of '{action.name}' has {count} vertices, expected {vertex_count} (Base). Skipping animation.")
+                        eval_obj.to_mesh_clear()
+                        break
+                    
+                    # Bulk get coords
+                    verts_co_flat = np.empty(count * 3, dtype=np.float32)
+                    mesh.vertices.foreach_get("co", verts_co_flat)
+                    verts_co = verts_co_flat.reshape(count, 3)
+                    
+                    # Debug: Print first vertex position to verify animation
+                    if frame == start:
+                        print(f"         Frame {frame} v[0]: {verts_co[0]}")
+                    elif frame == start + 1:
+                        print(f"         Frame {frame} v[0]: {verts_co[0]}")
 
-                # Transform
-                transformed_co = utils.apply_import_matrix(verts_co, export_matrix)
+                    # Transform
+                    transformed_co = utils.apply_import_matrix(verts_co, export_matrix)
+                    
+                    # Quantize to fixed point 16.0
+                    quantized = np.clip(transformed_co * 16.0, -32768, 32767).astype(np.int16)
+                    frames_data.append(quantized)
                 
-                # Quantize to fixed point 16.0
-                quantized = np.clip(transformed_co * 16.0, -32768, 32767).astype(np.int16)
-                frames_data.append(quantized)
+                finally:
+                    eval_obj.to_mesh_clear()
 
             if len(frames_data) == (end - start + 1):
+                # Static Check
+                is_static = True
+                if len(frames_data) > 1:
+                    first_frame = frames_data[0]
+                    for f_data in frames_data[1:]:
+                        if not np.array_equal(f_data, first_frame):
+                            is_static = False
+                            break
+                if is_static and len(frames_data) > 1:
+                    print(f"[Export] Warning: Animation '{action.name}' appears to be static (all frames identical).")
+
+                # Strip Blender's "_Action" suffix for cleaner names in the .car file
+                clean_name = action.name.replace("_Action", "")
+
                 animations.append({
-                    'name': action.name,
+                    'name': clean_name,
                     'kps': kps,
                     'frames': frames_data,
                     'sound_ptr': snd_ptr
@@ -219,6 +250,10 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         for mod_name, state in mod_states.items():
             if mod_name in obj.modifiers:
                 obj.modifiers[mod_name].show_viewport = state
+        
+        # Restore Pinning
+        if original_show_only_shape_key:
+             obj.show_only_shape_key = True
 
     return animations
 
@@ -288,9 +323,15 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
         faces_arr.tofile(f)
         
         # Vertices
-        # .CAR vertex format: (x,y,z, owner, hide). Same as .3DF but order might matter.
-        # parse_car uses same dtype.
-        verts_arr.tofile(f)
+        # The .car format expects 1-based indexing for vertex owners.
+        # Our internal representation (from collect_bones_and_owners) is 0-based.
+        # Create a temporary copy for modification.
+        car_verts_arr = verts_arr.copy()
+        # Increment all owner indices by 1.
+        # A 0-based index of 0 (corresponding to the first bone) becomes 1 (the first bone's ID in .car).
+        # This applies to all vertices, ensuring consistency with the .car format's 1-based bone indexing.
+        car_verts_arr['owner'] += 1
+        car_verts_arr.tofile(f)
         
         # Texture
         if texture_raw is not None:

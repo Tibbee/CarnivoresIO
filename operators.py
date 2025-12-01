@@ -211,7 +211,7 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
     flip_handedness: bpy.props.BoolProperty(
         name='Flip Handedness',
         description='Negate X-axis to match game\'s left-handed coordinate system (fixes mirroring)',
-        default=False  # Start disabled to match your current diff
+        default=True  # Start disabled to match your current diff
     )
     def draw(self, context):
         layout = self.layout
@@ -343,7 +343,7 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
     flip_handedness: bpy.props.BoolProperty(
         name='Flip Handedness',
         description='Negate X-axis to match game\'s left-handed coordinate system',
-        default=False
+        default=True
     )
 
     def draw(self, context):
@@ -517,7 +517,7 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                     # Automatically create fast actions + NLA strips
                     actions = []
                     try:
-                        actions = utils.auto_create_shape_key_actions_from_car(obj, frame_step=1)
+                        actions = utils.auto_create_shape_key_actions_from_car(obj, frame_step=1, parsed_animations=animations)
                     except Exception as e:
                         self.report({'WARNING'}, f"Failed to auto-create animations: {e}")
                 if self.import_sounds and sounds:
