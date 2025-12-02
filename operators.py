@@ -1102,7 +1102,7 @@ class VIEW3D_PT_carnivores_audio(bpy.types.Panel):
             return                                                                                                                                                                 
                                                                                                                                                                                    
         box = layout.box()                                                                                                                                                         
-        for track in anim_data.nla_tracks:                                                                                                                                         
+        for track in reversed(anim_data.nla_tracks):                                                                                                                                         
             for strip in track.strips:                                                                                                                                             
                 action = strip.action
                 if not action:

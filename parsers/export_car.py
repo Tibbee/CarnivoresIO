@@ -60,8 +60,12 @@ def convert_sound_to_22khz_mono(sound_datablock):
 
 def gather_car_animations(obj, export_matrix, vertex_count):
     """
-    Collects animation data by iterating over NLA strips or the active action.
-    Returns: list of dicts {'name': str, 'kps': int, 'frames': list_of_numpy_arrays, 'sound_ptr': Sound}
+    Collects animation data by baking the object's deformation.
+    Strategy:
+    1. If NLA tracks exist, iterate through each strip (Reversed order):
+       - Solo the track (mute others).
+       - Bake the frame range.
+    2. If no NLA tracks, fallback to baking the active Action.
     """
     animations = []
     context = bpy.context
@@ -71,15 +75,13 @@ def gather_car_animations(obj, export_matrix, vertex_count):
     anim_data = None
     source_label = ""
     
-    # Check Shape Keys (Priority for .car workflow)
+    # Priority: Shape Keys -> Parent Armature -> Object
     if obj.data.shape_keys and obj.data.shape_keys.animation_data:
         anim_data = obj.data.shape_keys.animation_data
         source_label = "Shape Keys"
-    # Check Parent Armature (Rigged workflow)
     elif obj.parent and obj.parent.type == 'ARMATURE' and obj.parent.animation_data:
         anim_data = obj.parent.animation_data
         source_label = f"Parent Armature ({obj.parent.name})"
-    # Check Object (Legacy/Simple workflow)
     elif obj.animation_data:
         anim_data = obj.animation_data
         source_label = f"Object ({obj.name})"
@@ -90,49 +92,23 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         
     print(f"[Export] Found animation source: {source_label}")
 
-    # --- 2. Identify Actions to Process ---
-    actions_to_process = [] # (Action, Name, FrameStart, FrameEnd)
-    
-    if anim_data.nla_tracks:
-        # Iterate tracks in reverse (Top-most track first) to match visual order and file order preference
-        for track in reversed(list(anim_data.nla_tracks)):
-            if track.mute: continue
-            for strip in track.strips:
-                # Store relevant data before we mute tracks
-                actions_to_process.append({
-                    'action': strip.action,
-                    'name': strip.action.name if strip.action else strip.name, # Use action name preferably
-                    'start': int(strip.action.frame_range[0]) if strip.action else int(strip.frame_start),
-                    'end': int(strip.action.frame_range[1]) if strip.action else int(strip.frame_end)
-                })
-
-    # Fallback: Active Action (if no NLA strips found or processed)
-    if not actions_to_process and anim_data.action:
-        actions_to_process.append({
-            'action': anim_data.action,
-            'name': anim_data.action.name,
-            'start': int(anim_data.action.frame_range[0]),
-            'end': int(anim_data.action.frame_range[1])
-        })
-
-    if not actions_to_process:
-        print("[Export] No actions/strips found to export.")
-        return []
-
     # --- STATE MANAGEMENT ---
     original_frame = scene.frame_current
     original_action = anim_data.action
     original_use_nla = anim_data.use_nla
     
+    # Store original mute states if NLA exists
+    original_mute_states = {}
+    if anim_data.nla_tracks:
+        for track in anim_data.nla_tracks:
+            original_mute_states[track] = track.mute
+
     # Shape Key Pinning Handling
     original_show_only_shape_key = False
     if obj.type == 'MESH' and obj.show_only_shape_key:
         original_show_only_shape_key = True
         obj.show_only_shape_key = False # Disable pinning to allow animation
         print("[Export] Temporarily disabled Shape Key Pinning for bake.")
-
-    # Disable NLA to force Action playback
-    anim_data.use_nla = False
 
     # Store Modifier States & Force Enable Deformers
     mod_states = {}
@@ -143,96 +119,126 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         else:
             mod.show_viewport = False # Disable others
 
-    print(f"[Export] Processing {len(actions_to_process)} animations...")
+    # --- Define Bake Helper ---
+    def bake_range(name, start, end, kps, sound_ptr):
+        print(f"[Export] Baking '{name}' ({start}-{end}) KPS:{kps}")
+        frames_data = []
+        
+        for frame in range(start, end + 1):
+            scene.frame_set(frame)
+            context.view_layer.update() # Ensure depsgraph is fully updated
+            
+            # Evaluate mesh (Deformed by Armature/Action/NLA)
+            depsgraph = context.evaluated_depsgraph_get()
+            eval_obj = obj.evaluated_get(depsgraph)
+            
+            # Use to_mesh() to get the deformed geometry with modifiers applied
+            mesh = eval_obj.to_mesh()
+            
+            try:
+                count = len(mesh.vertices)
+                if count != vertex_count:
+                    print(f"[Export] Error: Frame {frame} of '{name}' has {count} vertices, expected {vertex_count} (Base). Skipping animation.")
+                    eval_obj.to_mesh_clear()
+                    return None # Signal error
+                
+                # Bulk get coords
+                verts_co_flat = np.empty(count * 3, dtype=np.float32)
+                mesh.vertices.foreach_get("co", verts_co_flat)
+                verts_co = verts_co_flat.reshape(count, 3)
+                
+                # Transform
+                transformed_co = utils.apply_import_matrix(verts_co, export_matrix)
+                
+                # Quantize to fixed point 16.0
+                quantized = np.clip(transformed_co * 16.0, -32768, 32767).astype(np.int16)
+                frames_data.append(quantized)
+            
+            finally:
+                eval_obj.to_mesh_clear()
+
+        # Static Check
+        if len(frames_data) > 1:
+            if all(np.array_equal(f, frames_data[0]) for f in frames_data[1:]):
+                 print(f"[Export] Warning: Animation '{name}' appears to be static.")
+
+        return frames_data
 
     try:
-        for entry in actions_to_process:
-            action = entry['action']
-            if not action: 
-                print(f"[Export] Skipping entry {entry['name']} (No Action)")
-                continue
+        # --- PATH A: NLA TRACKS ---
+        if anim_data.nla_tracks:
+            print("[Export] Mode: NLA Tracks (Soloing)")
+            anim_data.use_nla = True # Ensure NLA is ON
             
-            # Activate Action
-            anim_data.action = action
+            # Mute ALL tracks first
+            for track in anim_data.nla_tracks:
+                track.mute = True
             
-            # Check for Sound
-            snd_ptr = getattr(action, 'carnivores_sound_ptr', None)
-            if snd_ptr:
-                print(f"[Export] Animation '{action.name}' has linked sound: {snd_ptr.name}")
-            else:
-                print(f"[Export] Animation '{action.name}' has NO linked sound.")
+            # Iterate Tracks in REVERSE (Top-most first? or whatever user requested)
+            # User requested "reversed order we handle them currently"
+            # Usually we want to export the list of animations.
+            for track in reversed(anim_data.nla_tracks):
+                
+                # Solo this track
+                track.mute = False
+                
+                for strip in track.strips:
+                    action = strip.action
+                    if not action: continue
+                    
+                    # Name
+                    anim_name = strip.name
+                    # Clean name (remove .001 etc implies using Action name? Or Strip name?)
+                    # User reference implies .vtl uses Action. Let's use strip name but clean it or Action Name.
+                    # If multiple strips use same Action, we might want distinct exports if they are cuts.
+                    # But if we use Action Name, they collide.
+                    # Let's use Action Name as base.
+                    clean_name = action.name.replace("_Action", "")
+                    
+                    # Range
+                    start = int(strip.frame_start)
+                    end = int(strip.frame_end)
+                    
+                    # KPS/Sound
+                    kps = action.get("carnivores_kps", int(scene.render.fps))
+                    snd_ptr = getattr(action, 'carnivores_sound_ptr', None)
+                    
+                    # Bake
+                    frames = bake_range(clean_name, start, end, kps, snd_ptr)
+                    
+                    if frames:
+                        animations.append({
+                            'name': clean_name,
+                            'kps': kps,
+                            'frames': frames,
+                            'sound_ptr': snd_ptr
+                        })
+                
+                # Re-mute after processing this track
+                track.mute = True
+
+        # --- PATH B: ACTIVE ACTION (Fallback) ---
+        elif anim_data.action:
+            print("[Export] Mode: Active Action (No NLA)")
+            anim_data.use_nla = False # Force Action
             
-            # Determine KPS (Frames per second)
-            # Priority: 1. Custom Property (imported) 2. Scene FPS (created in Blender)
+            action = anim_data.action
+            clean_name = action.name.replace("_Action", "")
+            start, end = int(action.frame_range[0]), int(action.frame_range[1])
             kps = action.get("carnivores_kps", int(scene.render.fps))
-
-            start = entry['start']
-            end = entry['end']
-            frames_data = []
+            snd_ptr = getattr(action, 'carnivores_sound_ptr', None)
             
-            print(f"[Export] Baking Action: {action.name} ({start}-{end})")
-
-            for frame in range(start, end + 1):
-                scene.frame_set(frame)
-                context.view_layer.update() # Ensure depsgraph is fully updated
-                
-                # Evaluate mesh (Deformed by Armature/Action)
-                depsgraph = context.evaluated_depsgraph_get()
-                eval_obj = obj.evaluated_get(depsgraph)
-                
-                # Use to_mesh() to get the deformed geometry with modifiers applied
-                mesh = eval_obj.to_mesh()
-                
-                try:
-                    count = len(mesh.vertices)
-                    if count != vertex_count:
-                        print(f"[Export] Error: Frame {frame} of '{action.name}' has {count} vertices, expected {vertex_count} (Base). Skipping animation.")
-                        eval_obj.to_mesh_clear()
-                        break
-                    
-                    # Bulk get coords
-                    verts_co_flat = np.empty(count * 3, dtype=np.float32)
-                    mesh.vertices.foreach_get("co", verts_co_flat)
-                    verts_co = verts_co_flat.reshape(count, 3)
-                    
-                    # Debug: Print first vertex position to verify animation
-                    if frame == start:
-                        print(f"         Frame {frame} v[0]: {verts_co[0]}")
-                    elif frame == start + 1:
-                        print(f"         Frame {frame} v[0]: {verts_co[0]}")
-
-                    # Transform
-                    transformed_co = utils.apply_import_matrix(verts_co, export_matrix)
-                    
-                    # Quantize to fixed point 16.0
-                    quantized = np.clip(transformed_co * 16.0, -32768, 32767).astype(np.int16)
-                    frames_data.append(quantized)
-                
-                finally:
-                    eval_obj.to_mesh_clear()
-
-            if len(frames_data) == (end - start + 1):
-                # Static Check
-                is_static = True
-                if len(frames_data) > 1:
-                    first_frame = frames_data[0]
-                    for f_data in frames_data[1:]:
-                        if not np.array_equal(f_data, first_frame):
-                            is_static = False
-                            break
-                if is_static and len(frames_data) > 1:
-                    print(f"[Export] Warning: Animation '{action.name}' appears to be static (all frames identical).")
-
-                # Strip Blender's "_Action" suffix for cleaner names in the .car file
-                clean_name = action.name.replace("_Action", "")
-
+            frames = bake_range(clean_name, start, end, kps, snd_ptr)
+            if frames:
                 animations.append({
                     'name': clean_name,
                     'kps': kps,
-                    'frames': frames_data,
+                    'frames': frames,
                     'sound_ptr': snd_ptr
                 })
-            # else: loop broke due to error
+                
+        else:
+            print("[Export] No NLA tracks and no Active Action. No animations exported.")
 
     except Exception as e:
         print(f"[Export] Critical Error during animation bake: {e}")
@@ -242,9 +248,15 @@ def gather_car_animations(obj, export_matrix, vertex_count):
     finally:
         # --- RESTORE STATE ---
         scene.frame_set(original_frame)
-        if anim_data: # Check if we found one
+        
+        if anim_data: 
             anim_data.action = original_action
             anim_data.use_nla = original_use_nla
+            
+            # Restore Mute States
+            if original_mute_states:
+                for track, state in original_mute_states.items():
+                    track.mute = state
         
         # Restore Modifiers
         for mod_name, state in mod_states.items():
