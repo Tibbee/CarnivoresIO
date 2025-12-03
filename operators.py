@@ -87,19 +87,19 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         layout.prop(self, "validate")
         layout.prop(self, 'flip_handedness')
         
-        layout.separator()
+        layout.separator() 
         
         layout.label(text="Bone Import")
         layout.prop(self, "bone_import_type")
         
-        layout.separator()
+        layout.separator() 
         
         box = layout.box()
         box.label(text="Axis Conversion")
         box.prop(self, "axis_forward")
         box.prop(self, "axis_up")
         
-        layout.separator()
+        layout.separator() 
         
     @utils.timed("CARNIVORES_OT_import_3df.execute", is_operator=True)
     def execute(self, context):
@@ -435,22 +435,22 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
     )
     normal_smooth: bpy.props.BoolProperty(
         name='Smooth Faces', 
-        description='Whether to smooth out faces or leave them flat (faceted) at import', 
+        description='Whether to smooth out faces or leave them flat (faceted) at import',
         default=True
     )
     validate: bpy.props.BoolProperty(
         name='Run Validations', 
-        description='Enable file validity and error checking and if possible automatic repairs', 
+        description='Enable file validity and error checking and if possible automatic repairs',
         default=False
     )
     flip_handedness: bpy.props.BoolProperty(
         name='Flip Handedness', 
-        description="Negate X-axis to match game's left-handed coordinate system (fixes mirroring)", 
+        description="Negate X-axis to match game\'s left-handed coordinate system (fixes mirroring)", 
         default=True
     )
     import_animations: bpy.props.BoolProperty(
         name='Import Animations', 
-        description='Import animations as shape keys', 
+        description='Import animations as shape keys',
         default=True
     )
     import_sounds: bpy.props.BoolProperty(
@@ -1072,52 +1072,156 @@ class VIEW3D_PT_carnivores_selection(bpy.types.Panel):
         col.label(text="Action: Apply Select/Deselect/Invert to matched faces")
         
 
-class VIEW3D_PT_carnivores_audio(bpy.types.Panel):                                                                                                                                 
-    bl_label = "Carnivores Audio"                                                                                                                                                  
-    bl_idname = "VIEW3D_PT_carnivores_audio"                                                                                                                                       
-    bl_space_type = 'VIEW_3D'                                                                                                                                                      
-    bl_region_type = 'UI'                                                                                                                                                          
-    bl_category = 'Carnivores'                                                                                                                                                     
-                                                                                                                                                                                   
-    def draw(self, context):                                                                                                                                                       
+def update_carnivores_kps_mode(self, context):
+    # 'self' here is the Action instance
+    if self.carnivores_kps_mode == 'OVERRIDE' and "carnivores_kps" not in self:
+        # Initialize custom KPS with scene FPS when switching to override for the first time
+        self["carnivores_kps"] = int(context.scene.render.fps)
+
+bpy.types.Action.carnivores_kps_mode: bpy.props.EnumProperty(
+    name="KPS Mode",
+    items=[
+        ('AUTO', "Auto (Scene FPS)", "Use the scene's frames per second (FPS) for this animation"),
+        ('OVERRIDE', "Override", "Use a custom Keys Per Second (KPS) value for this animation")
+    ],
+    default='AUTO',
+    description="Control how the animation's KPS is determined on export",
+    update=update_carnivores_kps_mode
+)
+
+
+class CARNIVORES_UL_animation_list(bpy.types.UIList):
+    """UIList for displaying NLA tracks in the Carnivores Animation Panel"""
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        track = item
+        if self.layout_type in {'DEFAULT', 'COMPACT'}:
+            row = layout.row(align=True)
+            # Mute Toggle (Eye Icon logic reversed: Mute=True -> Eye Closed)
+            icon = 'HIDE_OFF' if not track.mute else 'HIDE_ON'
+            row.prop(track, "mute", text="", icon=icon, emboss=False)
+            row.prop(track, "name", text="", emboss=False)
+        elif self.layout_type == 'GRID':
+            layout.alignment = 'CENTER'
+            layout.label(text="", icon='NLA')
+
+class CARNIVORES_OT_set_kps(bpy.types.Operator):
+    """Set a custom Keys Per Second (KPS) override for this animation"""
+    bl_idname = "carnivores.set_kps"
+    bl_label = "Set KPS"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    action_name: bpy.props.StringProperty()
+    default_value: bpy.props.IntProperty(default=30)
+
+    def execute(self, context):
+        action = bpy.data.actions.get(self.action_name)
+        if action:
+            action["carnivores_kps"] = self.default_value
+            return {'FINISHED'}
+        return {'CANCELLED'}
+
+class CARNIVORES_OT_reset_kps(bpy.types.Operator):
+    """Remove the KPS override and use Scene FPS (Auto)"""
+    bl_idname = "carnivores.reset_kps"
+    bl_label = "Reset KPS to Auto"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    action_name: bpy.props.StringProperty()
+
+    def execute(self, context):
+        action = bpy.data.actions.get(self.action_name)
+        if action and "carnivores_kps" in action:
+            del action["carnivores_kps"]
+            return {'FINISHED'}
+        return {'CANCELLED'}
+
+class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
+    bl_label = "Carnivores Animation"
+    bl_idname = "VIEW3D_PT_carnivores_animation"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Carnivores'
+
+    def draw(self, context):
         layout = self.layout
-        scene = context.scene                                                                                                                                                      
-                                                                                                                                                                                   
-        row = layout.row()                                                                                                                                                         
-        row.prop(scene, "carnivores_nla_sound_enabled", text="Enable NLA Sound", toggle=True)                                                                                      
-        row.operator(CARNIVORES_OT_toggle_nla_sound_playback.bl_idname, text="", icon='PLAY_SOUND' if not scene.carnivores_nla_sound_enabled else 'PAUSE')                         
-                                                                                                                                                                                   
-        layout.separator()                                                                                                                                                         
-        layout.label(text="NLA Sound Associations:")                                                                                                                               
-                                                                                                                                                                                   
-        obj = context.active_object                                                                                                                                                
-                                                                                                                                                                                   
-        if not obj or not obj.data or not hasattr(obj.data, 'shape_keys') or not obj.data.shape_keys:                                                                              
-            layout.label(text="Select an object with shape keys.", icon='INFO')                                                                                                    
-            return                                                                                                                                                                 
-                                                                                                                                                                                   
-        anim_data = obj.data.shape_keys.animation_data                                                                                                                             
-        if not anim_data or not anim_data.nla_tracks:                                                                                                                              
-            layout.label(text="Object has no NLA tracks.", icon='INFO')                                                                                                            
-            return                                                                                                                                                                 
-                                                                                                                                                                                   
-        box = layout.box()                                                                                                                                                         
-        for track in reversed(anim_data.nla_tracks):                                                                                                                                         
-            for strip in track.strips:                                                                                                                                             
+        scene = context.scene
+        obj = context.active_object
+
+        # --- Global Sound Settings ---
+        row = layout.row()
+        row.prop(scene, "carnivores_nla_sound_enabled", text="Enable NLA Sound", toggle=True)
+        row.operator(CARNIVORES_OT_toggle_nla_sound_playback.bl_idname, text="", icon='PLAY_SOUND' if not scene.carnivores_nla_sound_enabled else 'PAUSE')
+        layout.separator()
+
+        if not obj:
+            layout.label(text="Select an object", icon='INFO')
+            return
+
+        # Determine Animation Data Source
+        anim_data = None
+        source_label = ""
+        if obj.data and getattr(obj.data, 'shape_keys', None) and obj.data.shape_keys.animation_data:
+            anim_data = obj.data.shape_keys.animation_data
+            source_label = "Shape Keys"
+        elif obj.animation_data:
+            anim_data = obj.animation_data
+            source_label = "Object"
+
+        if not anim_data:
+            layout.label(text="No animation data found.", icon='INFO')
+            if obj.type == 'MESH' and obj.data.shape_keys:
+                 layout.operator("ops.shape_key_add_anim_data?", text="Init Anim Data") # Placeholder
+            return
+
+        layout.label(text=f"Source: {source_label}", icon='ANIM_DATA')
+
+        # --- NLA Track List ---
+        layout.label(text="NLA Tracks (Export Order):")
+        row = layout.row()
+        row.template_list(
+            "CARNIVORES_UL_animation_list", "", 
+            anim_data, "nla_tracks", 
+            obj, "carnivores_active_nla_index", 
+            rows=5
+        )
+
+        # --- Active Track Details ---
+        idx = obj.carnivores_active_nla_index
+        if 0 <= idx < len(anim_data.nla_tracks):
+            active_track = anim_data.nla_tracks[idx]
+            
+            if active_track and active_track.strips:
+                # For simplicity, assume 1 strip per track for .car workflow, or take the first one
+                strip = active_track.strips[0] 
                 action = strip.action
-                if not action:
-                     continue
-
-                row = box.row(align=True)                                                                                                                                                    
-                row.label(text=strip.name, icon='NLA')
                 
-                # Prop search / Dropdown for the pointer property
-                # This renders the sound datablock selector directly
-                row.prop(action, "carnivores_sound_ptr", text="")
+                if action:
+                    box = layout.box()
+                    
+                    # Header / Action Name
+                    row = box.row(align=True)
+                    row.prop(action, "name", text="", icon='ACTION')
+                    
+                    # Sound
+                    row = box.row(align=True)
+                    row.prop(action, "carnivores_sound_ptr", text="Sound")
+                    op = row.operator("carnivores.import_sound_for_action", text="", icon='FILE_FOLDER')
+                    op.action_name = action.name
+                    
+                    # KPS
+                    row = box.row(align=True)
+                    row.prop(action, "carnivores_kps_mode", text="") # Use the new EnumProperty
 
-                # Button to import a new sound file directly for this action
-                op = row.operator("carnivores.import_sound_for_action", text="", icon='FILE_FOLDER')
-                op.action_name = action.name
+                    if action.carnivores_kps_mode == 'OVERRIDE':
+                        # Only show the KPS input field if mode is OVERRIDE
+                        row.prop(action, '["carnivores_kps"]', text="KPS")
+                        # Add a reset button for the custom KPS value
+                        op = row.operator("carnivores.reset_kps", text="", icon='X')
+                        op.action_name = action.name
+                    else: # AUTO mode
+                        row.label(text=f"KPS: {scene.render.fps} (Scene FPS)")
+            elif active_track:
+                layout.label(text="Empty Track (No Strips)", icon='INFO')
 
 class CARNIVORES_OT_modify_3df_flag(bpy.types.Operator):                                                                                                                                                                                   
     bl_idname = 'carnivores.modify_3df_flag'

@@ -38,10 +38,15 @@ classes = [
     operators.CARNIVORES_OT_modal_message,
     operators.CARNIVORES_OT_toggle_nla_sound_playback,
     operators.CARNIVORES_OT_import_sound_for_action,
+    # Operators: Animation Management
+    operators.CARNIVORES_OT_set_kps,
+    operators.CARNIVORES_OT_reset_kps,
+    # UI Lists
+    operators.CARNIVORES_UL_animation_list,
     # Panels
     operators.VIEW3D_PT_carnivores_selection,
     operators.VIEW3D_PT_3df_face_flags,
-    operators.VIEW3D_PT_carnivores_audio,
+    operators.VIEW3D_PT_carnivores_animation,
 ]
 
 def register():
@@ -53,6 +58,25 @@ def register():
         name="Linked Sound",
         description="The sound data block linked to this action for Carnivores playback."
     )
+    
+    # Register Object property for UIList index
+    bpy.types.Object.carnivores_active_nla_index = bpy.props.IntProperty(
+        name="Active NLA Track Index",
+        default=0
+    )
+    # Register Action KPS mode property
+    # This property is defined in operators.py, but needs to be added to bpy.types.Action here.
+    if not hasattr(bpy.types.Action, "carnivores_kps_mode"):
+        bpy.types.Action.carnivores_kps_mode = operators.bpy.props.EnumProperty(
+            name="KPS Mode",
+            items=[
+                ('AUTO', "Auto (Scene FPS)", "Use the scene's frames per second (FPS) for this animation"),
+                ('OVERRIDE', "Override", "Use a custom Keys Per Second (KPS) value for this animation")
+            ],
+            default='AUTO',
+            description="Control how the animation's KPS is determined on export",
+            update=operators.update_carnivores_kps_mode # Reference the update function from operators
+        )
 
     for cls in classes:
         bpy.utils.register_class(cls)
@@ -123,6 +147,13 @@ def unregister():
     # Remove Action property
     if hasattr(bpy.types.Action, "carnivores_sound_ptr"):
         del bpy.types.Action.carnivores_sound_ptr
+        
+    # Remove Object property
+    if hasattr(bpy.types.Object, "carnivores_active_nla_index"):
+        del bpy.types.Object.carnivores_active_nla_index
+    # Remove Action KPS mode property
+    if hasattr(bpy.types.Action, "carnivores_kps_mode"):
+        del bpy.types.Action.carnivores_kps_mode
 
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
