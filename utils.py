@@ -777,7 +777,7 @@ def create_shape_key_action(obj, action_name="CarAnimation"):
     return action
 
 @timed('keyframe_shape_key_animation_as_action')
-def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, frame_step=1, kps=None):
+def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, kps=None, scene_fps=None):
     if not obj or obj.type != 'MESH':
         print('[Error] Selected object is not a mesh')
         return
@@ -788,19 +788,48 @@ def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, frame_
     sk_data = mesh.shape_keys
     sk_data.animation_data_create()
     action_name = f"{anim_name}_Action"
-    action = bpy.data.actions.new(name=action_name)
     
-    # Store Original KPS if provided
-    if kps is not None:
-        action["carnivores_kps"] = int(kps)
+    # Reuse existing action if possible to avoid duplicates (Action.001, etc.)
+    action = bpy.data.actions.get(action_name)
+    if action:
+        # Clear existing data to re-bake
+        action.fcurves.clear()
+    else:
+        action = bpy.data.actions.new(name=action_name)
+    
+    # Determine KPS and Step
+    # Default KPS to 15 if not provided (common Carnivores value) or derive? 
+    # Actually, usually caller provides it. If None, maybe default to scene FPS (1:1 mapping)
+    target_kps = int(kps) if kps is not None else 15 
+    
+    if scene_fps is None:
+        scene_fps = bpy.context.scene.render.fps
         
-    sk_data.animation_data.action = action
+    # Calculate frame_step: How many Blender frames represent 1 Game Frame
+    # e.g. 30 FPS / 10 KPS = 3.0 Blender frames per Game Frame.
+    frame_step = scene_fps / target_kps
+    
+    # Store KPS in action for reference
+    action["carnivores_kps"] = target_kps
+        
+    try:
+        sk_data.animation_data.action = action
+    except AttributeError:
+        print(f"[Warning] Could not set active action '{action.name}' (likely driven by NLA). Continuing update...")
+        
     key_blocks = [kb for kb in sk_data.key_blocks if re.match(f"^{re.escape(anim_name)}\\.Frame_\\d+", kb.name)]
     key_blocks.sort(key=lambda kb: kb.name)
     if not key_blocks:
         print(f"[Warning] No shape keys found for animation '{anim_name}'")
         return
-    print(f"[Keyframe] Creating Action '{action_name}' with {len(key_blocks)} frames")
+    
+    num_frames = len(key_blocks)
+    # Calculate total duration in Blender frames
+    duration_frames = (num_frames * frame_step)
+    
+    print(f"[Keyframe] Creating Action '{action_name}' for '{anim_name}'")
+    print(f"           KPS: {target_kps}, Scene FPS: {scene_fps} -> Step: {frame_step:.2f} frames")
+    print(f"           Total Duration: {duration_frames:.1f} frames ({duration_frames/scene_fps:.2f}s)")
     
     # Identify all shape keys, excluding Basis
     reference_key = sk_data.reference_key
@@ -813,37 +842,67 @@ def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, frame_
     for kb in other_keys + group_keys:
         data_path = f'key_blocks["{kb.name}"].value'
         fc = action.fcurves.new(data_path=data_path, index=-1)
-        fc.extrapolation = 'CONSTANT'  # Hold values constant between keys
         fcurves[kb.name] = fc
     
-    frame = frame_start
-    num_frames = len(group_keys)
+    current_frame = float(frame_start)
     
-    # At first frame: Other keys to 0, this group's future to 0, first to 1
-    # Batch insert and set CONSTANT interp
-    for kb in other_keys + group_keys[1:]:
-        fcurves[kb.name].keyframe_points.insert(frame, 0.0)
-        fcurves[kb.name].keyframe_points[-1].interpolation = 'CONSTANT'
-    fcurves[group_keys[0].name].keyframe_points.insert(frame, 1.0)
-    fcurves[group_keys[0].name].keyframe_points[-1].interpolation = 'CONSTANT'
+    # Initial State (Frame 0 of animation):
+    # 1. Force all "Other" keys to 0 (CONSTANT) so they don't interfere
+    # 2. Set First Frame of animation to 1.0
+    # 3. Set Remaining Frames of animation to 0.0
     
-    # Subsequent frames: Only this group (prev=0, curr=1)
-    prev = group_keys[0]
+    for kb in other_keys:
+        kp = fcurves[kb.name].keyframe_points.insert(current_frame, 0.0)
+        kp.interpolation = 'CONSTANT'
+
+    # Set first key to 1.0
+    kp = fcurves[group_keys[0].name].keyframe_points.insert(current_frame, 1.0)
+    kp.interpolation = 'LINEAR'
+    kp.handle_left_type = 'VECTOR'
+    kp.handle_right_type = 'VECTOR'
+    
+    # Set all other group keys to 0.0 at start to ensure they start from nothing
+    for kb in group_keys[1:]:
+        kp = fcurves[kb.name].keyframe_points.insert(current_frame, 0.0)
+        kp.interpolation = 'LINEAR'
+        kp.handle_left_type = 'VECTOR'
+        kp.handle_right_type = 'VECTOR'
+
+    # Animate the sequence
+    # Logic: Cross-fade. At each step, the previous key goes to 0, current goes to 1.
+    
+    prev_key = group_keys[0]
+    
     for i in range(1, num_frames):
-        frame += frame_step
-        fcurves[prev.name].keyframe_points.insert(frame, 0.0)
-        fcurves[prev.name].keyframe_points[-1].interpolation = 'CONSTANT'
-        curr = group_keys[i]
-        fcurves[curr.name].keyframe_points.insert(frame, 1.0)
-        fcurves[curr.name].keyframe_points[-1].interpolation = 'CONSTANT'
-        prev = curr
+        prev_frame_time = current_frame
+        current_frame += frame_step
+        curr_key = group_keys[i]
+        
+        # Previous key fades out to 0
+        kp_prev = fcurves[prev_key.name].keyframe_points.insert(current_frame, 0.0)
+        kp_prev.interpolation = 'LINEAR'
+        kp_prev.handle_left_type = 'VECTOR'
+        kp_prev.handle_right_type = 'VECTOR'
+        
+        # Current key ANCHOR: Force it to be 0 at the previous frame
+        # This prevents it from ramping up all the way from the start of the animation
+        kp_curr_anchor = fcurves[curr_key.name].keyframe_points.insert(prev_frame_time, 0.0)
+        kp_curr_anchor.interpolation = 'LINEAR'
+        kp_curr_anchor.handle_left_type = 'VECTOR'
+        kp_curr_anchor.handle_right_type = 'VECTOR'
+
+        # Current key fades in to 1
+        kp_curr = fcurves[curr_key.name].keyframe_points.insert(current_frame, 1.0)
+        kp_curr.interpolation = 'LINEAR'
+        kp_curr.handle_left_type = 'VECTOR'
+        kp_curr.handle_right_type = 'VECTOR'
+        
+        prev_key = curr_key
     
-    # Update all curves (bulk op, fast)
+    # Update all curves
     for fc in fcurves.values():
         fc.update()
     
-    frame_end = frame_start + (num_frames - 1) * frame_step
-    print(f"[Keyframe] Done: Action '{action_name}' for '{anim_name}' (frames {frame_start}-{frame_end})")
     return action
 
 @timed('push_shape_key_action_to_nla')
@@ -930,7 +989,8 @@ def auto_create_shape_key_actions_from_car(obj, frame_step=1, parsed_animations=
         # Retrieve KPS from map or default to None
         anim_kps = kps_map.get(anim_name)
         
-        action = keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, frame_step=frame_step, kps=anim_kps)
+        # Note: frame_step is now calculated internally based on KPS
+        action = keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, kps=anim_kps)
         if action:
             actions.append(action)
     

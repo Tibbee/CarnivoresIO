@@ -1135,6 +1135,90 @@ class CARNIVORES_OT_reset_kps(bpy.types.Operator):
             return {'FINISHED'}
         return {'CANCELLED'}
 
+class CARNIVORES_OT_resync_animation(bpy.types.Operator):
+    """Re-calculate keyframes for this animation based on current KPS and Scene FPS"""
+    bl_idname = "carnivores.resync_animation"
+    bl_label = "Re-Sync Timing"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    action_name: bpy.props.StringProperty()
+
+    def get_anim_data(self, obj):
+        if obj.type == 'MESH' and obj.data and obj.data.shape_keys:
+            return obj.data.shape_keys.animation_data
+        return None
+
+    def execute(self, context):
+        obj = context.active_object
+        action = bpy.data.actions.get(self.action_name)
+        if not action:
+            self.report({'ERROR'}, f"Action '{self.action_name}' not found.")
+            return {'CANCELLED'}
+        
+        # Extract base name (remove _Action suffix)
+        # This relies on the naming convention used by the importer
+        if action.name.endswith("_Action"):
+            anim_base_name = action.name[:-7]
+        else:
+            anim_base_name = action.name
+        
+        # Get KPS
+        # Respect the Mode selector
+        mode = getattr(action, "carnivores_kps_mode", "AUTO")
+        
+        if mode == 'AUTO':
+            # Auto means 1 Game Frame = 1 Blender Frame
+            # Effectively, KPS = Scene FPS
+            kps = context.scene.render.fps
+        else:
+            # Override mode
+            if "carnivores_kps" not in action:
+                 kps = 15 # Safe fallback
+                 self.report({'WARNING'}, f"No KPS found on action. Defaulting to {kps}.")
+            else:
+                kps = action["carnivores_kps"]
+        
+        utils.keyframe_shape_key_animation_as_action(
+            obj, 
+            anim_base_name, 
+            frame_start=1, 
+            kps=kps, 
+            scene_fps=context.scene.render.fps
+        )
+        
+        strip_updated = self.update_nla_strip(obj, action)
+        
+        # If the action is in the NLA, clear it from the active slot to prevent
+        # "Double Dipping" (Active + NLA = 200% intensity = Explosion)
+        anim_data = self.get_anim_data(obj)
+        if strip_updated and anim_data and anim_data.action == action:
+            try:
+                anim_data.action = None
+            except AttributeError:
+                self.report({'WARNING'}, f"Could not clear active action for '{action.name}' (likely NLA controlled).")
+            
+        self.report({'INFO'}, f"Resynced '{action.name}' at {kps} KPS.")
+        return {'FINISHED'}
+        
+    def update_nla_strip(self, obj, action):
+        # Find strip using this action and update its length
+        anim_data = self.get_anim_data(obj)
+        if anim_data and anim_data.nla_tracks:
+            for track in anim_data.nla_tracks:
+                for strip in track.strips:
+                    if strip.action == action:
+                        start, end = utils.get_action_frame_range(action)
+                        # Reset internal action range
+                        strip.action_frame_start = start
+                        strip.action_frame_end = end
+                        # Update strip duration on timeline
+                        # Keep the start frame, adjust the end frame
+                        strip.frame_end = strip.frame_start + (end - start)
+                        # Ensure sync length is on
+                        strip.use_sync_length = True
+                        return True
+        return False
+
 class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
     bl_label = "Carnivores Animation"
     bl_idname = "VIEW3D_PT_carnivores_animation"
@@ -1220,6 +1304,11 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
                         op.action_name = action.name
                     else: # AUTO mode
                         row.label(text=f"KPS: {scene.render.fps} (Scene FPS)")
+                    
+                    # Resync Button
+                    row = box.row()
+                    op = row.operator("carnivores.resync_animation", text="Re-Sync Timing", icon='FILE_REFRESH')
+                    op.action_name = action.name
             elif active_track:
                 layout.label(text="Empty Track (No Strips)", icon='INFO')
 
