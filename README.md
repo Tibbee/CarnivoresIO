@@ -1,39 +1,28 @@
 # CarnivoresIO Blender Add-on
 
-**CarnivoresIO** is a Blender add-on for importing and exporting Carnivores `.3df` model files, designed to work with Blender 4.0+. It provides tools for handling the custom `.3df` file format used in the Carnivores game series, including support for mesh geometry, face flags, textures, bones, and UV maps. The add-on integrates into Blender’s UI with dedicated panels for managing face flags and selection tools.
+**CarnivoresIO** is a Blender add-on for importing and exporting Carnivores `.3df` (static) and `.car` (animated) model files, designed to work with Blender 4.0+. It provides tools for handling the custom file formats used in the Carnivores game series, including support for mesh geometry, face flags, textures, bones, UV maps, animations, and embedded sounds.
 
 ## Features
 
-- **Import `.3df` Files**:
-  - Supports importing mesh geometry, vertices, faces, UVs, bones, and textures (16-bit ARGB1555 format).
-  - Configurable import options: scale, texture import, material creation, face smoothing, and bone import (as hooks or armatures).
-  - Optional validation to detect and report issues in `.3df` files (e.g., invalid vertex indices, bone cycles).
-  - Axis conversion for compatibility with different coordinate systems.
+- **Import/Export `.3df` Files**:
+  - **Geometry**: Vertices, faces, UVs, and face flags.
+  - **Textures**: 16-bit ARGB1555 format (imported as PNGs).
+  - **Bones**: Import as Hooks or Armatures.
+  - **Validation**: Checks for geometry errors (e.g., invalid indices).
 
-- **Export `.3df` Files**:
-  - Exports selected mesh objects to `.3df` format, with options for single or multiple file exports.
-  - Supports texture export in ARGB1555 format, with UV flipping options.
-  - Handles bone data from armatures or hook modifiers, with automatic vertex group assignment.
-  - Axis conversion and scaling for export.
+- **Import/Export `.car` Files**:
+  - **Animations**: Imports animations as Shape Keys with automatic NLA strip creation.
+  - **Sounds**: Imports embedded audio and links it to specific animations.
+  - **Smooth Playback**: Custom interpolation logic to ensure game-accurate, jitter-free motion.
+
+- **Animation Tools**:
+  - **Re-Sync Timing**: One-click operator to recalculate animation timing based on Scene FPS and KPS (Keys Per Second).
+  - **KPS Control**: Set playback speed per animation using **Auto** (Scene FPS) or **Override** (Custom KPS) modes.
+  - **NLA Sound Playback**: Real-time playback of linked sounds when scrubbing the timeline or playing animations.
 
 - **Face Flag Management**:
-  - UI panel (`Carnivores > 3DF Face Flags`) to set, clear, or toggle `.3df` face flags (e.g., Double Side, Transparent, Phong).
-  - Supports editing flags for selected faces in Edit Mode or all faces in Object Mode.
-  - Creates a `3df_flags` face-domain integer attribute if missing.
-
-- **Selection Tools**:
-  - UI panel (`Carnivores > Selection Tools`) for selecting faces based on `.3df` flags.
-  - Selection modes: `ANY` (OR), `ALL` (AND), `NONE` (NOT).
-  - Actions: Select, Deselect, or Invert matched faces.
-
-- **Validation and Error Handling**:
-  - Comprehensive validation during import to ensure file integrity (e.g., checks for valid vertex/face counts, texture sizes, bone hierarchies).
-  - Reports warnings for issues like high vertex counts or non-zero reserved fields.
-  - Displays import warnings in a modal dialog.
-
-- **Performance**:
-  - Uses NumPy for efficient data processing.
-  - Includes timing decorators to log operation performance.
+  - UI panel to set, clear, or toggle `.3df` face flags (e.g., Double Side, Transparent).
+  - Selection tools to find faces based on specific flag masks.
 
 ## Installation
 
@@ -44,105 +33,67 @@
 2. **Install in Blender**:
    - Open Blender (version 4.0 or higher).
    - Go to `Edit > Preferences > Add-ons > Install...`.
-   - Select the `__init__.py` file or the zipped folder containing the add-on.
-   - Enable the add-on by checking the box next to `Import-Export: CarnivoresIO`.
+   - Select the `__init__.py` file or the zipped folder.
+   - Enable the add-on: `Import-Export: CarnivoresIO`.
 
 3. **Verify Installation**:
-   - Check the `File > Import` and `File > Export` menus for `Carnivores 3DF (.3df)` options.
-   - In the 3D Viewport, look for the `Carnivores` tab in the Sidebar (`N` key).
+   - Check `File > Import` for `.3df` and `.car` options.
+   - Look for the `Carnivores` tab in the Sidebar (`N` key).
 
 ## Usage
 
-### Importing a `.3df` File
-1. Go to `File > Import > Carnivores 3DF (.3df)`.
-2. Select one or more `.3df` files.
-3. Adjust import options in the operator panel:
-   - **Scale**: Adjusts model size (default: 0.01).
-   - **Import Textures**: Imports ARGB1555 textures as images.
-   - **Create Materials**: Generates materials for the mesh and world.
-   - **Smooth Faces**: Enables face smoothing (default: True).
-   - **Bone Import Type**: Choose `None`, `Armature`, or `Hooks` (default: Hooks).
-   - **Run Validations**: Enables file validation (default: False).
-   - **Axis Conversion**: Set forward and up axes for coordinate system alignment.
-4. Click `Import` to load the model into a new collection.
+### Importing/Exporting Models
+- **.3df (Static)**: Use `File > Import/Export > Carnivores 3DF (.3df)`.
+  - Options: Scale, Texture Import, Axis Conversion.
+- **.car (Animated)**: Use `File > Import/Export > Carnivores CAR (.car)`.
+  - **Import Options**: 
+    - `Import Animations`: Converts game frames to Shape Keys.
+    - `Import Sounds`: Extracts embedded sounds to Blender Sound datablocks.
 
-### Exporting a `.3df` File
-1. Select one or more mesh objects in Blender.
-2. Go to `File > Export > Carnivores 3DF (.3df)`.
-3. Choose a file path and adjust export options:
-   - **Export Multiple Files**: Exports each selected mesh to a separate file (uses object names).
-   - **Scale**: Scales vertex coordinates (default: 100).
-   - **Export Textures**: Exports textures if a valid image is found (width must be 256 pixels).
-   - **Flip U/V**: Flips UV coordinates for compatibility with certain tools.
-   - **Axis Conversion**: Set forward and up axes.
-4. Click `Export` to save the `.3df` file(s).
+### Animation & Sound System
+*Manage animations in the `Carnivores > Carnivores Animation` panel.*
 
-### Managing Face Flags
-1. Select a mesh object in Object or Edit Mode.
-2. In the 3D Viewport Sidebar (`N` key), go to the `Carnivores` tab > `3DF Face Flags` panel.
-3. If no `3df_flags` attribute exists, click `Create '3df_flags'` to add it.
-4. Use the buttons next to each flag (e.g., Double Side, Transparent) to:
-   - **Checkmark**: Set the flag.
-   - **X**: Clear the flag.
-   - **Arrow**: Toggle the flag.
-5. In Edit Mode, flags apply only to selected faces; in Object Mode, they apply to all faces.
-6. Use `Clear All Flags` to reset all flags to 0.
+![Animation Panel Overview](PLACEHOLDER: Screenshot of the Carnivores Animation Panel showing NLA tracks and KPS controls)
 
-### Selecting Faces by Flags
-1. In the `Carnivores` tab, go to the `Selection Tools` panel.
-2. Expand the `Flag Selection` section and toggle desired flags (e.g., `Double Side`, `Transparent`).
-3. Choose a **Mode**:
-   - `Has Any (OR)`: Select faces with at least one chosen flag.
-   - `Has All (AND)`: Select faces with all chosen flags.
-   - `Has None (NOT)`: Select faces with none of the chosen flags.
-4. Choose an **Action**: `Select`, `Deselect`, or `Invert`.
-5. Click `Apply` to update the face selection.
+#### 1. Controlling Speed (KPS)
+Carnivores animations run at a specific **KPS (Keys Per Second)**.
+- **Auto Mode**: The animation plays at the Scene FPS (1 Blender Frame = 1 Game Frame).
+- **Override Mode**: Set a custom KPS (e.g., 15). The add-on will space keyframes to match this speed regardless of your Scene FPS.
 
-## File Format Support
+#### 2. Re-Syncing Timing
+If you change your Scene FPS or the KPS of an animation, the playback might become too fast or too slow.
+1. Select the animation in the panel.
+2. Click **Re-Sync Timing**.
+3. The add-on recalculates keyframes and updates the NLA strip length instantly.
 
-The add-on supports the `.3df` file format as specified in the provided documentation. Key details:
-- **Header**: 16 bytes (vertex, face, bone counts, texture size).
-- **Faces**: 64 bytes each, including vertex indices, UVs, flags, and reserved fields.
-- **Vertices**: 16 bytes each, with coordinates, bone owner, and hide flag.
-- **Bones**: 48 bytes each, with name, position, parent index, and hide flag.
-- **Texture**: ARGB1555 format, 256-pixel width, variable height.
+#### 3. Sound Integration
+- **Enable NLA Sound**: Toggle the speaker icon in the panel to hear footstep/sfx sounds while playing the animation in the viewport.
+- **Linking Sounds**:
+  - Select an animation track.
+  - Use the **Folder Icon** to import a `.wav` file.
+  - The sound is now linked to that animation and will export with the `.car` file.
 
-For a detailed specification, refer to the `.3df File Format Specification` in the code comments or documentation.
+### Face Flags & Selection
+*Manage flags in the `Carnivores > 3DF Face Flags` panel.*
+
+![Face Flags Panel](PLACEHOLDER: Screenshot of the 3DF Face Flags panel)
+
+1. **Set/Clear Flags**: Click the checkboxes or X buttons to modify flags on selected faces.
+2. **Select by Flags**: Use the **Selection Tools** panel to find faces with specific properties (e.g., "Select all Transparent faces").
+   - **Modes**: `Has Any`, `Has All`, `Has None`.
+
+## File Format Details
+
+- **.3df**: Static geometry. Texture size must be 256px wide.
+- **.car**: Animated geometry. Uses a "Stop Motion" style vertex compression. The add-on converts this to linear interpolation for smooth editing in Blender.
 
 ## Dependencies
-
-- **Blender**: Version 4.0 or higher (not yet tested or developed with older blender versions in mind).
-- **Python Libraries**: `numpy` (included with Blender’s Python).
-- **Blender Modules**: `bpy`, `bpy_extras.io_utils`, `mathutils`, `bmesh`.
-
-## Project Structure
-
-The add-on is organized into several Python modules:
-- `__init__.py`: Registers the add-on, defines UI properties, and integrates import/export menu options.
-- `operators.py`: Import/export operators and utilities for creating `3df_flags` and modal messages, 
-UI panels and operators for face flag management and face selection, toggling flags and clearing selections.
-- `utils.py`: Core utility functions for mesh creation, bone handling, UVs, and materials, world shaders, face selection, and texture conversion.
-- `parse_3df.py`: Parsing logic for `.3df` files with validation.
-- `export_3df.py`: Export logic for `.3df` files.
-- `core/constants.py`: Constants like `FACE_FLAG_OPTIONS` and `TEXTURE_WIDTH`.
-- `core/core.py`: NumPy dtype definitions for `.3df` file structure.
-
-## Known Limitations
-
-- **Texture Width**: Textures must be exactly 256 pixels wide.
-- **Vertex/Face Limits**: If you choose validation it enforces a maximum of 2048 vertices/faces, with warnings above 1024 due to compatibility issues with some tools (e.g., AltEdit).
-- **Bone Names**: Non-ASCII or overly long bone names are cleaned or truncated during import.
-- **Edit Mode**: Some operations (e.g., flag modification) temporarily switch to Object Mode to ensure data consistency.
-- **Alpha Bits**: Texture alpha is not fully supported in import/export due to limited in-game use.
+- **Blender 4.0+**
+- **NumPy** (Included with Blender)
 
 ## License
-Licensed under GNU GPL v3 (see the LICENSE file). See the `LICENSE` file for details.
+Licensed under GNU GPL v3 (see `LICENSE` file).
 
 ## Credits
-
 - **Author**: Tibor Harsányi (Strider)
-- **Support**: Community-driven, report issues or suggestions on the repository.
-
-## Contact
-
-For support or inquiries, please open an issue on the project’s GitHub repository or contact the author via the Carnivores Saga discord group.
+- **Support**: Open an issue on GitHub or contact via the Carnivores Saga Discord.

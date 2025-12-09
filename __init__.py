@@ -40,7 +40,6 @@ classes = [
     operators.CARNIVORES_OT_import_sound_for_action,
     # Operators: Animation Management
     operators.CARNIVORES_OT_set_kps,
-    operators.CARNIVORES_OT_reset_kps,
     operators.CARNIVORES_OT_resync_animation,
     # UI Lists
     operators.CARNIVORES_UL_animation_list,

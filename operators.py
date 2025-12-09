@@ -1072,21 +1072,26 @@ class VIEW3D_PT_carnivores_selection(bpy.types.Panel):
         col.label(text="Action: Apply Select/Deselect/Invert to matched faces")
         
 
-def update_carnivores_kps_mode(self, context):
-    # 'self' here is the Action instance
-    if self.carnivores_kps_mode == 'OVERRIDE' and "carnivores_kps" not in self:
-        # Initialize custom KPS with scene FPS when switching to override for the first time
-        self["carnivores_kps"] = int(context.scene.render.fps)
+def get_kps_mode(self):
+    return 1 if "carnivores_kps" in self else 0
 
-bpy.types.Action.carnivores_kps_mode: bpy.props.EnumProperty(
+def set_kps_mode(self, value):
+    if value == 1: # OVERRIDE
+        if "carnivores_kps" not in self:
+             self["carnivores_kps"] = int(bpy.context.scene.render.fps)
+    else: # AUTO
+        if "carnivores_kps" in self:
+            del self["carnivores_kps"]
+
+bpy.types.Action.carnivores_kps_mode = bpy.props.EnumProperty(
     name="KPS Mode",
     items=[
         ('AUTO', "Auto (Scene FPS)", "Use the scene's frames per second (FPS) for this animation"),
         ('OVERRIDE', "Override", "Use a custom Keys Per Second (KPS) value for this animation")
     ],
-    default='AUTO',
     description="Control how the animation's KPS is determined on export",
-    update=update_carnivores_kps_mode
+    get=get_kps_mode,
+    set=set_kps_mode
 )
 
 
@@ -1104,6 +1109,19 @@ class CARNIVORES_UL_animation_list(bpy.types.UIList):
             layout.alignment = 'CENTER'
             layout.label(text="", icon='NLA')
 
+    def filter_items(self, context, data, propname):
+        tracks = getattr(data, propname)
+        if not tracks:
+            return [], []
+        
+        # Default flags (all visible)
+        flt_flags = [self.bitflag_filter_item] * len(tracks)
+        
+        # Reverse order: Visual index 0 -> Data index N-1
+        flt_neworder = list(range(len(tracks) - 1, -1, -1))
+        
+        return flt_flags, flt_neworder
+
 class CARNIVORES_OT_set_kps(bpy.types.Operator):
     """Set a custom Keys Per Second (KPS) override for this animation"""
     bl_idname = "carnivores.set_kps"
@@ -1117,21 +1135,6 @@ class CARNIVORES_OT_set_kps(bpy.types.Operator):
         action = bpy.data.actions.get(self.action_name)
         if action:
             action["carnivores_kps"] = self.default_value
-            return {'FINISHED'}
-        return {'CANCELLED'}
-
-class CARNIVORES_OT_reset_kps(bpy.types.Operator):
-    """Remove the KPS override and use Scene FPS (Auto)"""
-    bl_idname = "carnivores.reset_kps"
-    bl_label = "Reset KPS to Auto"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    action_name: bpy.props.StringProperty()
-
-    def execute(self, context):
-        action = bpy.data.actions.get(self.action_name)
-        if action and "carnivores_kps" in action:
-            del action["carnivores_kps"]
             return {'FINISHED'}
         return {'CANCELLED'}
 
@@ -1164,19 +1167,11 @@ class CARNIVORES_OT_resync_animation(bpy.types.Operator):
         
         # Get KPS
         # Respect the Mode selector
-        mode = getattr(action, "carnivores_kps_mode", "AUTO")
-        
-        if mode == 'AUTO':
-            # Auto means 1 Game Frame = 1 Blender Frame
-            # Effectively, KPS = Scene FPS
-            kps = context.scene.render.fps
+        # With new get/set property, we can just check if key exists or trust the property
+        if "carnivores_kps" in action:
+            kps = action["carnivores_kps"]
         else:
-            # Override mode
-            if "carnivores_kps" not in action:
-                 kps = 15 # Safe fallback
-                 self.report({'WARNING'}, f"No KPS found on action. Defaulting to {kps}.")
-            else:
-                kps = action["carnivores_kps"]
+            kps = context.scene.render.fps
         
         utils.keyframe_shape_key_animation_as_action(
             obj, 
@@ -1271,6 +1266,23 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
 
         # --- Active Track Details ---
         idx = obj.carnivores_active_nla_index
+        # Since the list is reversed, we need to handle the index carefully.
+        # template_list with a custom order usually updates the index to match the VISUAL index.
+        # But we need to access the DATA index.
+        # The filter_items 'new_order' maps: VisualIndex -> DataIndex
+        # So: data_index = new_order[visual_index]
+        # BUT: template_list's active_index property logic is a bit opaque with reordering.
+        # Usually, the index stored in the property matches the collection index (Data Index) unless
+        # 'use_filter_sort_lock' is involved? No, checking docs/experience:
+        # If reordering is active, the index property usually refers to the index in the FILTERED list (Visual Index).
+        # Wait, actually: "The active_propname ... points to an integer property ... which holds the index of the active item in the collection."
+        # If we reorder, does it point to the collection index or list index?
+        # Generally it points to the Collection Index (Data Index).
+        # Let's assume it points to the Data Index (Track 0, Track 1...).
+        # BUT our visual list is reversed. If I click the top item (Visual 0), does it set index to (Data N-1)?
+        # Yes, usually.
+        
+        # However, to display the *correct* details for the selected item, we just use the index stored in the property.
         if 0 <= idx < len(anim_data.nla_tracks):
             active_track = anim_data.nla_tracks[idx]
             
@@ -1296,12 +1308,9 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
                     row = box.row(align=True)
                     row.prop(action, "carnivores_kps_mode", text="") # Use the new EnumProperty
 
-                    if action.carnivores_kps_mode == 'OVERRIDE':
-                        # Only show the KPS input field if mode is OVERRIDE
+                    # Check existence directly for UI state
+                    if "carnivores_kps" in action:
                         row.prop(action, '["carnivores_kps"]', text="KPS")
-                        # Add a reset button for the custom KPS value
-                        op = row.operator("carnivores.reset_kps", text="", icon='X')
-                        op.action_name = action.name
                     else: # AUTO mode
                         row.label(text=f"KPS: {scene.render.fps} (Scene FPS)")
                     

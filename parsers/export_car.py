@@ -124,8 +124,23 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         print(f"[Export] Baking '{name}' ({start}-{end}) KPS:{kps}")
         frames_data = []
         
-        for frame in range(start, end + 1):
-            scene.frame_set(frame)
+        # Calculate time step (Blender Frames per Game Frame)
+        # e.g. 60 FPS / 20 KPS = 3.0 step
+        scene_fps = scene.render.fps
+        if kps <= 0: kps = 1 # Safety
+        frame_step = scene_fps / kps
+        
+        # Robustly calculate number of samples
+        # Use explicit +0.5 for "round half up" logic to avoid Banker's Rounding (even/odd) issues
+        num_samples = int(((end - start) / frame_step) + 0.5) + 1
+        
+        print(f"         Step: {frame_step:.4f}, Samples: {num_samples}")
+
+        for i in range(num_samples):
+            current_frame = start + (i * frame_step)
+            
+            # Subframe support: passing float to frame_set works in Blender
+            scene.frame_set(int(current_frame), subframe=(current_frame % 1.0))
             context.view_layer.update() # Ensure depsgraph is fully updated
             
             # Evaluate mesh (Deformed by Armature/Action/NLA)
@@ -138,7 +153,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
             try:
                 count = len(mesh.vertices)
                 if count != vertex_count:
-                    print(f"[Export] Error: Frame {frame} of '{name}' has {count} vertices, expected {vertex_count} (Base). Skipping animation.")
+                    print(f"[Export] Error: Frame {current_frame:.2f} of '{name}' has {count} vertices, expected {vertex_count} (Base). Skipping animation.")
                     eval_obj.to_mesh_clear()
                     return None # Signal error
                 
@@ -156,7 +171,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
             
             finally:
                 eval_obj.to_mesh_clear()
-
+        
         # Static Check
         if len(frames_data) > 1:
             if all(np.array_equal(f, frames_data[0]) for f in frames_data[1:]):
@@ -250,8 +265,15 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         scene.frame_set(original_frame)
         
         if anim_data: 
-            anim_data.action = original_action
-            anim_data.use_nla = original_use_nla
+            try:
+                anim_data.action = original_action
+            except AttributeError:
+                print("[Export] Warning: Could not restore active action (likely NLA driven/read-only).")
+            
+            try:
+                anim_data.use_nla = original_use_nla
+            except AttributeError:
+                print("[Export] Warning: Could not restore use_nla state (likely NLA driven/read-only).")
             
             # Restore Mute States
             if original_mute_states:
