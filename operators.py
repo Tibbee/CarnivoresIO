@@ -6,6 +6,7 @@ import mathutils
 import bmesh
 import numpy as np
 import math # Added this import
+import re
 
 from .parsers.parse_3df import parse_3df
 from .parsers.parse_car import parse_car
@@ -847,15 +848,21 @@ _is_real_playback = False # Our reliable flag for actual playback state
 def get_aud_device():
     global _aud_device
     if _aud_device is None:
-        _aud_device = aud.Device()
+        print("AUDIO: Creating new aud.Device()")
+        try:
+            _aud_device = aud.Device()
+        except Exception as e:
+            print(f"AUDIO: Failed to create aud.Device(): {e}")
     return _aud_device
 
+@bpy.app.handlers.persistent
 def playback_started_handler(scene):
     """This handler is called by Blender right before animation playback starts."""
     global _is_real_playback
     _is_real_playback = True
     print("DEBUG: Playback STARTED. _is_real_playback = True")
 
+@bpy.app.handlers.persistent
 def playback_stopped_handler(scene):
     """This handler is called by Blender right after animation playback stops."""
     global _is_real_playback, _playing_sounds
@@ -865,21 +872,27 @@ def playback_stopped_handler(scene):
     # If there are any lingering sounds, stop them now.
     if _playing_sounds:
         print("DEBUG: Playback stopped, stopping all managed sounds.")
-        for handle, _ in _playing_sounds.values():
+        for handle, _, _ in _playing_sounds.values():
             handle.stop()
         _playing_sounds.clear()
 
+@bpy.app.handlers.persistent
 def carnivores_nla_sound_handler(scene):
-    global _playing_sounds, _is_real_playback, _preview_restore_state
+    global _playing_sounds, _is_real_playback, _preview_restore_state, _aud_device
     
     # This handler should ONLY run when our flag indicates real playback is happening.
     if not _is_real_playback:
+        print("AUDIO: Handler skipped (not real playback)") # Too verbose
         return
 
     if not scene.carnivores_nla_sound_enabled:
         return
 
     device = get_aud_device()
+    if not device:
+        print("AUDIO: No audio device available in handler")
+        return
+
     objects_with_active_sounds = {} # {obj: linked_sound_name}
 
     for obj in scene.objects:
@@ -902,11 +915,7 @@ def carnivores_nla_sound_handler(scene):
                          objects_with_active_sounds[obj] = sound_name
                          continue # Skip to next object
 
-        anim_data_container = None
-        if obj.animation_data:
-            anim_data_container = obj.animation_data
-        elif obj.data and obj.data.shape_keys and obj.data.shape_keys.animation_data:
-            anim_data_container = obj.data.shape_keys.animation_data
+        anim_data_container = utils.get_active_animation_data(obj)
         
         # 2. Standard Tweak Mode (Shift+Tab)
         if anim_data_container and anim_data_container.nla_tracks:
@@ -936,9 +945,13 @@ def carnivores_nla_sound_handler(scene):
 
     # Stop sounds that should no longer be playing
     for obj_playing in list(_playing_sounds.keys()):
-        current_handle, current_sound_name = _playing_sounds[obj_playing]
+        current_handle, current_sound_name, _ = _playing_sounds[obj_playing]
         if obj_playing not in objects_with_active_sounds or objects_with_active_sounds[obj_playing] != current_sound_name:
-            current_handle.stop()
+            print(f"AUDIO: Stopping sound '{current_sound_name}' for {obj_playing.name}")
+            try:
+                current_handle.stop()
+            except Exception as e:
+                print(f"AUDIO: Error stopping sound (cleanup): {e}")
             del _playing_sounds[obj_playing]
 
     # Start new sounds
@@ -946,8 +959,10 @@ def carnivores_nla_sound_handler(scene):
         if obj_active in _playing_sounds:
             continue
 
+        print(f"AUDIO: Triggering sound '{linked_sound_name}' for {obj_active.name}")
         linked_sound_data_block = bpy.data.sounds.get(linked_sound_name)
         if not linked_sound_data_block:
+            print(f"AUDIO: Sound datablock '{linked_sound_name}' not found")
             continue
 
         try:
@@ -967,13 +982,26 @@ def carnivores_nla_sound_handler(scene):
             if sound_factory:
                 # Play the sound without looping (looping handled by re-triggering or future features)
                 handle = device.play(sound_factory)
-                _playing_sounds[obj_active] = (handle, linked_sound_name)
+                _playing_sounds[obj_active] = (handle, linked_sound_name, sound_factory)
             else:
                 # Factory creation failed (broken file or invalid path)
                 print(f"NLA Sound Warning: Could not load audio factory for '{linked_sound_name}'")
 
         except Exception as e:
             print(f"NLA Sound Error: Could not play sound '{linked_sound_name}' for {obj_active.name}: {e}")
+            
+            # Check for critical OpenAL/Device errors that require a reset
+            err_str = str(e)
+            if "Buffer" in err_str or "OpenAL" in err_str:
+                print("AUDIO: Critical OpenAL Error detected. Resetting audio device to recover...")
+                try:
+                    # Invalidate global device so get_aud_device() creates a new one next frame
+                    _aud_device = None 
+                    # Clear handles as they belong to the dead device
+                    _playing_sounds.clear() 
+                except:
+                    pass
+            
             if obj_active in _playing_sounds:
                 del _playing_sounds[obj_active]
 
@@ -1031,7 +1059,7 @@ class CARNIVORES_OT_toggle_nla_sound_playback(bpy.types.Operator):
         else:
             # Stop all aud handles when disabling
             global _playing_sounds
-            for obj_id, (handle, sound_name) in list(_playing_sounds.items()): # Use list() to iterate over a copy
+            for obj_id, (handle, sound_name, _) in list(_playing_sounds.items()): # Use list() to iterate over a copy
                 handle.stop()
                 del _playing_sounds[obj_id]
             print("DEBUG: All playing sounds stopped and cleared.")
@@ -1219,9 +1247,68 @@ def preview_loop_handler(scene):
         # Loop audio: Stop current sound so handler restarts it
         obj = _preview_restore_state.get('obj')
         if obj and obj in _playing_sounds:
-            handle, _ = _playing_sounds[obj]
+            handle, _, _ = _playing_sounds[obj]
             handle.stop()
             del _playing_sounds[obj]
+
+@bpy.app.handlers.persistent
+def clear_aud_device_on_new_file(scene):
+    global _aud_device, _playing_sounds, _is_real_playback
+
+    print(f"AUDIO: clear_aud_device_on_new_file called. Scene: {scene.name if scene else 'None'}")
+    print(f"AUDIO: Current Handlers (load_post): {len(bpy.app.handlers.load_post)}")
+
+    print("AUDIO: New file loaded — resetting audio system")
+
+    # Stop all currently playing sounds
+    for handle, _, _ in _playing_sounds.values():
+        try:
+            handle.stop()
+        except Exception as e:
+            print(f"WARNING: Error stopping audio handle on new file load: {e}")
+    _playing_sounds.clear()
+
+    # Hard reset playback flag
+    _is_real_playback = False
+
+    # Properly shut down aud device
+    if _aud_device is not None:
+        try:
+            print("AUDIO: Stopping aud device...")
+            _aud_device.stopAll()
+        except Exception as e:
+            print(f"WARNING: Error stopping aud device on new file load: {e}")
+        _aud_device = None
+
+    # Re-enable sound playback for new scene if property exists
+    # This might not exist immediately after `File > New` if the addon's `register()` hasn't run for the new blend file data.
+    # The property is registered in `__init__.py` (module level), so it *should* exist.
+    # We use bpy.context.scene because `scene` passed to handler might be the old scene data.
+    if hasattr(bpy.context.scene, "carnivores_nla_sound_enabled"):
+        bpy.context.scene.carnivores_nla_sound_enabled = True
+        print("AUDIO: Re-enabled carnivores_nla_sound_enabled for new scene.")
+    else:
+        print("AUDIO: 'carnivores_nla_sound_enabled' property not found in new scene. It will be re-registered on addon enable.")
+
+    # Re-add handlers (if missing)
+    h = bpy.app.handlers
+    print(f"AUDIO: Checking handlers... frame_change_post len: {len(h.frame_change_post)}")
+    
+    if carnivores_nla_sound_handler not in h.frame_change_post:
+        h.frame_change_post.append(carnivores_nla_sound_handler)
+        print("AUDIO: Re-added carnivores_nla_sound_handler")
+    else:
+        print("AUDIO: carnivores_nla_sound_handler already present")
+
+    if playback_started_handler not in h.animation_playback_pre:
+        h.animation_playback_pre.append(playback_started_handler)
+        print("AUDIO: Re-added playback_started_handler")
+        
+    if playback_stopped_handler not in h.animation_playback_post:
+        h.animation_playback_post.append(playback_stopped_handler)
+        print("AUDIO: Re-added playback_stopped_handler")
+
+    print("AUDIO: Audio system reset complete.")
 
 class CARNIVORES_OT_play_track_preview(bpy.types.Operator):
     """Solo this track and play it in a loop with sound. Stops when you pause playback."""
@@ -1238,7 +1325,16 @@ class CARNIVORES_OT_play_track_preview(bpy.types.Operator):
 
         # Restore State
         obj = _preview_restore_state.get('obj')
-        if obj and obj.animation_data:
+        
+        # Check if obj is still valid (Blender objects can be invalid if deleted)
+        is_obj_valid = False
+        try:
+            if obj and obj.name: # Accessing name is a safe way to check struct validity
+                is_obj_valid = True
+        except ReferenceError:
+            pass
+
+        if is_obj_valid and obj.animation_data:
              for track_name, mute_state in _preview_restore_state['track_mutes'].items():
                  track = obj.animation_data.nla_tracks.get(track_name)
                  if track:
@@ -1282,11 +1378,7 @@ class CARNIVORES_OT_play_track_preview(bpy.types.Operator):
         target_track = None
         target_strip = None
         
-        anim_data = None
-        if obj.animation_data:
-            anim_data = obj.animation_data
-        elif obj.data and obj.data.shape_keys and obj.data.shape_keys.animation_data:
-            anim_data = obj.data.shape_keys.animation_data
+        anim_data = utils.get_active_animation_data(obj)
             
         if not anim_data:
             self.report({'ERROR'}, "No animation data.")
@@ -1360,9 +1452,13 @@ class CARNIVORES_OT_resync_animation(bpy.types.Operator):
     action_name: bpy.props.StringProperty()
 
     def get_anim_data(self, obj):
-        if obj.type == 'MESH' and obj.data and obj.data.shape_keys:
-            return obj.data.shape_keys.animation_data
-        return None
+        # Helper to find where this action is used (ShapeKey or Object)
+        datas = []
+        if obj.type == 'MESH' and obj.data and obj.data.shape_keys and obj.data.shape_keys.animation_data:
+            datas.append(obj.data.shape_keys.animation_data)
+        if obj.animation_data:
+            datas.append(obj.animation_data)
+        return datas
 
     def execute(self, context):
         obj = context.active_object
@@ -1371,61 +1467,80 @@ class CARNIVORES_OT_resync_animation(bpy.types.Operator):
             self.report({'ERROR'}, f"Action '{self.action_name}' not found.")
             return {'CANCELLED'}
         
-        # Extract base name (remove _Action suffix)
-        # This relies on the naming convention used by the importer
-        if action.name.endswith("_Action"):
-            anim_base_name = action.name[:-7]
-        else:
-            anim_base_name = action.name
-        
         # Get KPS
-        # Respect the Mode selector
-        # With new get/set property, we can just check if key exists or trust the property
         if "carnivores_kps" in action:
             kps = action["carnivores_kps"]
         else:
             kps = context.scene.render.fps
+            
+        # Determine Type: Shape Key vs Standard
+        is_shape_key = False
+        if action.fcurves:
+            # Check first curve path
+            path = action.fcurves[0].data_path
+            if path.startswith("key_blocks"):
+                is_shape_key = True
         
-        utils.keyframe_shape_key_animation_as_action(
-            obj, 
-            anim_base_name, 
-            frame_start=1, 
-            kps=kps, 
-            scene_fps=context.scene.render.fps
-        )
+        # Fallback for empty actions: Check if matching shape keys exist
+        if not action.fcurves and obj.type == 'MESH' and obj.data.shape_keys:
+            if action.name.endswith("_Action"):
+                base = action.name[:-7]
+            else:
+                base = action.name
+            # Simple check without complex regex for fallback
+            # utils.keyframe... uses regex, here we just guess
+            pattern = f"{base}.Frame_"
+            if any(pattern in kb.name for kb in obj.data.shape_keys.key_blocks):
+                is_shape_key = True
+
+        if is_shape_key:
+            # SHAPE KEY LOGIC
+            if action.name.endswith("_Action"):
+                anim_base_name = action.name[:-7]
+            else:
+                anim_base_name = action.name
+            
+            utils.keyframe_shape_key_animation_as_action(
+                obj, 
+                anim_base_name, 
+                frame_start=1, 
+                kps=kps, 
+                scene_fps=context.scene.render.fps
+            )
+        else:
+            # STANDARD LOGIC
+            utils.rescale_standard_action(action, kps, context.scene.render.fps)
         
+        # Update NLA Strips
         strip_updated = self.update_nla_strip(obj, action)
         
-        # If the action is in the NLA, clear it from the active slot to prevent
-        # "Double Dipping" (Active + NLA = 200% intensity = Explosion)
-        anim_data = self.get_anim_data(obj)
-        if strip_updated and anim_data and anim_data.action == action:
-            try:
-                anim_data.action = None
-            except AttributeError:
-                self.report({'WARNING'}, f"Could not clear active action for '{action.name}' (likely NLA controlled).")
+        # Clear Active Action if it matches (to prevent double-transform)
+        for ad in self.get_anim_data(obj):
+            if strip_updated and ad.action == action:
+                try:
+                    ad.action = None
+                except AttributeError:
+                    self.report({'WARNING'}, f"Could not clear active action for '{action.name}' (likely NLA controlled).")
             
         self.report({'INFO'}, f"Resynced '{action.name}' at {kps} KPS.")
         return {'FINISHED'}
         
     def update_nla_strip(self, obj, action):
-        # Find strip using this action and update its length
-        anim_data = self.get_anim_data(obj)
-        if anim_data and anim_data.nla_tracks:
-            for track in anim_data.nla_tracks:
-                for strip in track.strips:
-                    if strip.action == action:
-                        start, end = utils.get_action_frame_range(action)
-                        # Reset internal action range
-                        strip.action_frame_start = start
-                        strip.action_frame_end = end
-                        # Update strip duration on timeline
-                        # Keep the start frame, adjust the end frame
-                        strip.frame_end = strip.frame_start + (end - start)
-                        # Ensure sync length is on
-                        strip.use_sync_length = True
-                        return True
-        return False
+        updated = False
+        datas = self.get_anim_data(obj)
+        for anim_data in datas:
+            if anim_data.nla_tracks:
+                for track in anim_data.nla_tracks:
+                    for strip in track.strips:
+                        if strip.action == action:
+                            start, end = utils.get_action_frame_range(action)
+                            # Update Strip
+                            strip.action_frame_start = start
+                            strip.action_frame_end = end
+                            strip.frame_end = strip.frame_start + (end - start)
+                            strip.use_sync_length = True
+                            updated = True
+        return updated
 
 class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
     bl_label = "Carnivores Animation"
@@ -1449,23 +1564,22 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
             layout.label(text="Select an object", icon='INFO')
             return
 
+        # Source Selection
+        row = layout.row()
+        row.prop(obj, "carnivores_anim_source", text="Source")
+
         # Determine Animation Data Source
-        anim_data = None
-        source_label = ""
-        if obj.data and getattr(obj.data, 'shape_keys', None) and obj.data.shape_keys.animation_data:
-            anim_data = obj.data.shape_keys.animation_data
-            source_label = "Shape Keys"
-        elif obj.animation_data:
-            anim_data = obj.animation_data
-            source_label = "Object"
+        anim_data = utils.get_active_animation_data(obj)
 
         if not anim_data:
-            layout.label(text="No animation data found.", icon='INFO')
-            if obj.type == 'MESH' and obj.data.shape_keys:
-                 layout.operator("ops.shape_key_add_anim_data?", text="Init Anim Data") # Placeholder
+            source_mode = getattr(obj, "carnivores_anim_source", "AUTO")
+            if source_mode == 'SHAPE_KEYS':
+                 layout.label(text="No Shape Key Animation Data", icon='INFO')
+            elif source_mode == 'OBJECT':
+                 layout.label(text="No Object Animation Data", icon='INFO')
+            else:
+                 layout.label(text="No animation data found.", icon='INFO')
             return
-
-        layout.label(text=f"Source: {source_label}", icon='ANIM_DATA')
 
         # --- NLA Track List ---
         layout.label(text="NLA Tracks (Export Order):")
@@ -1507,9 +1621,9 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
                 if action:
                     box = layout.box()
                     
-                    # Header / Action Name
+                    # Header / Strip Name
                     row = box.row(align=True)
-                    row.prop(action, "name", text="", icon='ACTION')
+                    row.prop(strip, "name", text="", icon='NLA_PUSHDOWN')
                     
                     # Sound
                     row = box.row(align=True)

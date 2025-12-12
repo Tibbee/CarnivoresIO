@@ -66,6 +66,17 @@ def register():
         name="Active NLA Track Index",
         default=0
     )
+    # New: Property for animation source selection
+    bpy.types.Object.carnivores_anim_source = bpy.props.EnumProperty(
+        name="Animation Source",
+        items=[
+            ('AUTO', "Auto-Detect", "Automatically choose Shape Keys if present, else Object animation"),
+            ('SHAPE_KEYS', "Shape Keys", "Display Shape Key animations"),
+            ('OBJECT', "Object", "Display Object/Armature animations"),
+        ],
+        default='AUTO',
+        description="Select the type of animation data to display and manage"
+    )
     # Register Action KPS mode property
     # This property is defined in operators.py, but needs to be added to bpy.types.Action here.
 
@@ -127,6 +138,9 @@ def register():
     if operators.playback_stopped_handler not in bpy.app.handlers.animation_playback_post:
         bpy.app.handlers.animation_playback_post.append(operators.playback_stopped_handler)
     
+    if operators.clear_aud_device_on_new_file not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(operators.clear_aud_device_on_new_file)
+    
 def unregister():
     print("DEBUG: CarnivoresIO unregister() called.")
     for attr in [f"cf_flag_{i}" for i, _ in enumerate(FACE_FLAG_OPTIONS)] + ['cf_flag_section', 'cf_select_mode', 'cf_select_action', 'carnivores_nla_sound_enabled']:
@@ -143,6 +157,9 @@ def unregister():
     # Remove Object property
     if hasattr(bpy.types.Object, "carnivores_active_nla_index"):
         del bpy.types.Object.carnivores_active_nla_index
+    # New: Remove animation source property
+    if hasattr(bpy.types.Object, "carnivores_anim_source"):
+        del bpy.types.Object.carnivores_anim_source
     # Remove Action KPS mode property
     if hasattr(bpy.types.Action, "carnivores_kps_mode"):
         del bpy.types.Action.carnivores_kps_mode
@@ -156,6 +173,9 @@ def unregister():
         bpy.app.handlers.animation_playback_pre.remove(operators.playback_started_handler)
     if operators.playback_stopped_handler in bpy.app.handlers.animation_playback_post:
         bpy.app.handlers.animation_playback_post.remove(operators.playback_stopped_handler)
+    
+    if operators.clear_aud_device_on_new_file in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(operators.clear_aud_device_on_new_file)
     
     # Cleanup temporary sound files
     print("DEBUG: Cleaning up temporary sound files...")
@@ -177,3 +197,4 @@ def unregister():
     
 if __name__ == "__main__":
     register()
+

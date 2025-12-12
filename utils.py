@@ -1114,3 +1114,82 @@ def associate_sounds_with_animations(self, obj, animations, cross_ref, imported_
             print({'INFO'}, f"Associated sound '{linked_sound.name}' with animation '{anim['name']}'.")
         else:
             print({'WARNING'}, f"Action '{action_name}' not found for sound association.")
+
+@timed('rescale_standard_action')
+def rescale_standard_action(action, kps, scene_fps):
+    """
+    Rescales a standard Object/Armature action so that its keyframes 
+    align with the timing dictated by KPS and Scene FPS.
+    
+    Assumption: The existing keyframes represent sequential 'Game Frames'.
+    We map the i-th unique keyframe time to: StartFrame + (i * FrameStep).
+    """
+    if not action or not action.fcurves:
+        return
+
+    # Calculate target step
+    if kps <= 0: kps = 1
+    frame_step = scene_fps / kps
+    
+    print(f"[Rescale] Rescaling '{action.name}' to {kps} KPS (Step: {frame_step:.2f})")
+
+    # 1. Collect all unique frame times
+    unique_frames = set()
+    for fc in action.fcurves:
+        for kp in fc.keyframe_points:
+            unique_frames.add(kp.co[0])
+    
+    sorted_frames = sorted(list(unique_frames))
+    if not sorted_frames:
+        return
+
+    start_frame = sorted_frames[0]
+    
+    # 2. Build Mapping: Old Time -> New Time
+    # We treat the existing sorted frames as indices 0, 1, 2...
+    frame_map = {}
+    for i, old_frame in enumerate(sorted_frames):
+        new_frame = start_frame + (i * frame_step)
+        frame_map[old_frame] = new_frame
+
+    # 3. Apply Mapping
+    for fc in action.fcurves:
+        for kp in fc.keyframe_points:
+            old_time = kp.co[0]
+            if old_time in frame_map:
+                new_time = frame_map[old_time]
+                kp.co[0] = new_time
+                
+                # Shift handles to preserve relative offset
+                # (Simple shift; does not scale handle influence, effectively making curves 'sharper' if slowing down)
+                kp.handle_left[0] = new_time + (kp.handle_left[0] - old_time)
+                kp.handle_right[0] = new_time + (kp.handle_right[0] - old_time)
+
+        fc.update()
+        
+    action["carnivores_kps"] = kps
+
+def get_active_animation_data(obj):
+    """
+    Returns the animation data container (obj.animation_data or obj.data.shape_keys.animation_data)
+    based on the object's 'carnivores_anim_source' setting.
+    """
+    if not obj:
+        return None
+        
+    source = getattr(obj, "carnivores_anim_source", "AUTO")
+    
+    sk_anim = None
+    if obj.type == 'MESH' and obj.data and obj.data.shape_keys:
+        sk_anim = obj.data.shape_keys.animation_data
+        
+    obj_anim = obj.animation_data
+    
+    if source == 'SHAPE_KEYS':
+        return sk_anim
+    elif source == 'OBJECT':
+        return obj_anim
+    else: # AUTO
+        if sk_anim:
+            return sk_anim
+        return obj_anim
