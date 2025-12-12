@@ -5,6 +5,7 @@ import os
 import mathutils
 import bmesh
 import numpy as np
+import math # Added this import
 
 from .parsers.parse_3df import parse_3df
 from .parsers.parse_car import parse_car
@@ -869,7 +870,7 @@ def playback_stopped_handler(scene):
         _playing_sounds.clear()
 
 def carnivores_nla_sound_handler(scene):
-    global _playing_sounds, _is_real_playback
+    global _playing_sounds, _is_real_playback, _preview_restore_state
     
     # This handler should ONLY run when our flag indicates real playback is happening.
     if not _is_real_playback:
@@ -882,12 +883,32 @@ def carnivores_nla_sound_handler(scene):
     objects_with_active_sounds = {} # {obj: linked_sound_name}
 
     for obj in scene.objects:
+        # 1. Priority: Preview Playback (Programmatic Tweak Mode)
+        if _preview_restore_state and _preview_restore_state.get('obj') == obj:
+             action_name = _preview_restore_state.get('action_name')
+             if action_name:
+                 action = bpy.data.actions.get(action_name)
+                 
+                 # Check if we are within the preview range (simple loop check)
+                 # The handler loop ensures we stay in range, but for sound triggering:
+                 if action:
+                     sound_name = None
+                     if getattr(action, 'carnivores_sound_ptr', None):
+                         sound_name = action.carnivores_sound_ptr.name
+                     elif 'carnivores_sound' in action:
+                         sound_name = action['carnivores_sound']
+                     
+                     if sound_name:
+                         objects_with_active_sounds[obj] = sound_name
+                         continue # Skip to next object
+
         anim_data_container = None
         if obj.animation_data:
             anim_data_container = obj.animation_data
         elif obj.data and obj.data.shape_keys and obj.data.shape_keys.animation_data:
             anim_data_container = obj.data.shape_keys.animation_data
         
+        # 2. Standard Tweak Mode (Shift+Tab)
         if anim_data_container and anim_data_container.nla_tracks:
             current_action = None
             if scene.is_nla_tweakmode:
@@ -1105,6 +1126,21 @@ class CARNIVORES_UL_animation_list(bpy.types.UIList):
             icon = 'HIDE_OFF' if not track.mute else 'HIDE_ON'
             row.prop(track, "mute", text="", icon=icon, emboss=False)
             row.prop(track, "name", text="", emboss=False)
+            
+            # Play Preview Button
+            if track.strips:
+                strip = track.strips[0]
+                if strip.action:
+                    # Check if this action is currently being previewed
+                    is_previewing = False
+                    global _preview_restore_state
+                    if _preview_restore_state and _preview_restore_state.get('action_name') == strip.action.name:
+                        is_previewing = True
+                    
+                    icon = 'PAUSE' if is_previewing else 'PLAY'
+                    op = row.operator("carnivores.play_track_preview", text="", icon=icon)
+                    op.action_name = strip.action.name
+                    
         elif self.layout_type == 'GRID':
             layout.alignment = 'CENTER'
             layout.label(text="", icon='NLA')
@@ -1137,6 +1173,183 @@ class CARNIVORES_OT_set_kps(bpy.types.Operator):
             action["carnivores_kps"] = self.default_value
             return {'FINISHED'}
         return {'CANCELLED'}
+
+class CARNIVORES_OT_reset_kps(bpy.types.Operator):
+    """Remove the KPS override and use Scene FPS (Auto)"""
+    bl_idname = "carnivores.reset_kps"
+    bl_label = "Reset KPS to Auto"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    action_name: bpy.props.StringProperty()
+
+    def execute(self, context):
+        action = bpy.data.actions.get(self.action_name)
+        if action and "carnivores_kps" in action:
+            del action["carnivores_kps"]
+            return {'FINISHED'}
+        return {'CANCELLED'}
+
+# --- Preview Playback State & Handlers ---
+_preview_restore_state = None
+
+def preview_loop_handler(scene):
+    """Loops playback within the preview range"""
+    global _preview_restore_state, _playing_sounds
+    if not _preview_restore_state:
+        return
+
+    start = _preview_restore_state['preview_start']
+    end = _preview_restore_state['preview_end']
+    last = _preview_restore_state.get('last_frame', start)
+    current = scene.frame_current
+    
+    should_restart = False
+
+    if current > end:
+        scene.frame_set(int(start))
+        current = int(start)
+        should_restart = True
+    elif current < last:
+        # Detected a loop (e.g. wrap around from end to start)
+        should_restart = True
+        
+    _preview_restore_state['last_frame'] = current
+
+    if should_restart:
+        # Loop audio: Stop current sound so handler restarts it
+        obj = _preview_restore_state.get('obj')
+        if obj and obj in _playing_sounds:
+            handle, _ = _playing_sounds[obj]
+            handle.stop()
+            del _playing_sounds[obj]
+
+class CARNIVORES_OT_play_track_preview(bpy.types.Operator):
+    """Solo this track and play it in a loop with sound. Stops when you pause playback."""
+    bl_idname = "carnivores.play_track_preview"
+    bl_label = "Play Preview"
+    bl_options = {'REGISTER'}
+
+    action_name: bpy.props.StringProperty()
+
+    def stop_preview(self, context):
+        global _preview_restore_state
+        if not _preview_restore_state:
+            return
+
+        # Restore State
+        obj = _preview_restore_state.get('obj')
+        if obj and obj.animation_data:
+             for track_name, mute_state in _preview_restore_state['track_mutes'].items():
+                 track = obj.animation_data.nla_tracks.get(track_name)
+                 if track:
+                     track.mute = mute_state
+        
+        context.scene.frame_start = _preview_restore_state['original_start']
+        context.scene.frame_end = _preview_restore_state['original_end']
+        context.scene.frame_current = _preview_restore_state['original_frame']
+        
+        context.scene.carnivores_nla_sound_enabled = _preview_restore_state['original_sound_enabled']
+        
+        # Remove Loop Handler
+        if preview_loop_handler in bpy.app.handlers.frame_change_post:
+            bpy.app.handlers.frame_change_post.remove(preview_loop_handler)
+            
+        # Stop Playback
+        if context.screen.is_animation_playing:
+            bpy.ops.screen.animation_cancel(restore_frame=False)
+            
+        _preview_restore_state = None
+        self.report({'INFO'}, "Preview stopped.")
+
+    def execute(self, context):
+        global _preview_restore_state
+        
+        # Check if we are already previewing
+        if _preview_restore_state:
+            if _preview_restore_state.get('action_name') == self.action_name:
+                # Toggle OFF (Stop)
+                self.stop_preview(context)
+                return {'FINISHED'}
+            else:
+                # Switch Preview (Stop current, Start new)
+                self.stop_preview(context)
+        
+        obj = context.active_object
+        if not obj:
+            return {'CANCELLED'}
+            
+        # Find the track associated with this action
+        target_track = None
+        target_strip = None
+        
+        anim_data = None
+        if obj.animation_data:
+            anim_data = obj.animation_data
+        elif obj.data and obj.data.shape_keys and obj.data.shape_keys.animation_data:
+            anim_data = obj.data.shape_keys.animation_data
+            
+        if not anim_data:
+            self.report({'ERROR'}, "No animation data.")
+            return {'CANCELLED'}
+            
+        action = bpy.data.actions.get(self.action_name)
+        if not action:
+            return {'CANCELLED'}
+
+        for track in anim_data.nla_tracks:
+            for strip in track.strips:
+                if strip.action == action:
+                    target_track = track
+                    target_strip = strip
+                    break
+            if target_track:
+                break
+        
+        if not target_track:
+            self.report({'ERROR'}, "Could not find NLA track for this action.")
+            return {'CANCELLED'}
+
+        start_frame = target_strip.frame_start
+        end_frame = target_strip.frame_end
+        
+        kps = action.get("carnivores_kps", context.scene.render.fps)
+        # Store State
+        _preview_restore_state = {
+            'obj': obj,
+            'action_name': self.action_name,
+            'original_frame': context.scene.frame_current,
+            'original_start': context.scene.frame_start,
+            'original_end': context.scene.frame_end,
+            'track_mutes': {t.name: t.mute for t in anim_data.nla_tracks},
+            'preview_start': start_frame,
+            'preview_end': int(math.ceil(end_frame)),
+            'last_frame': int(start_frame) # Initialize last_frame for the handler
+        }
+        
+        # Apply Mutes (Solo)
+        for track in anim_data.nla_tracks:
+            track.mute = (track != target_track)
+            
+        # Set Range & Frame
+        context.scene.frame_start = int(start_frame)
+        context.scene.frame_end = int(math.ceil(end_frame))
+        
+        context.scene.frame_current = int(start_frame)
+        
+        # Add Loop Handler (insert at 0 to ensure it runs first)
+        if preview_loop_handler not in bpy.app.handlers.frame_change_post:
+            bpy.app.handlers.frame_change_post.insert(0, preview_loop_handler)
+            
+        # Ensure Audio is ON
+        _preview_restore_state['original_sound_enabled'] = context.scene.carnivores_nla_sound_enabled
+        context.scene.carnivores_nla_sound_enabled = True
+        
+        # Start Playback
+        if not context.screen.is_animation_playing:
+            bpy.ops.screen.animation_play()
+            
+        self.report({'INFO'}, f"Previewing '{action.name}' ({kps} KPS)")
+        return {'FINISHED'}
 
 class CARNIVORES_OT_resync_animation(bpy.types.Operator):
     """Re-calculate keyframes for this animation based on current KPS and Scene FPS"""

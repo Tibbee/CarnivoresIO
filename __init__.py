@@ -40,7 +40,9 @@ classes = [
     operators.CARNIVORES_OT_import_sound_for_action,
     # Operators: Animation Management
     operators.CARNIVORES_OT_set_kps,
+    operators.CARNIVORES_OT_reset_kps,
     operators.CARNIVORES_OT_resync_animation,
+    operators.CARNIVORES_OT_play_track_preview,
     # UI Lists
     operators.CARNIVORES_UL_animation_list,
     # Panels
@@ -66,17 +68,7 @@ def register():
     )
     # Register Action KPS mode property
     # This property is defined in operators.py, but needs to be added to bpy.types.Action here.
-    if not hasattr(bpy.types.Action, "carnivores_kps_mode"):
-        bpy.types.Action.carnivores_kps_mode = operators.bpy.props.EnumProperty(
-            name="KPS Mode",
-            items=[
-                ('AUTO', "Auto (Scene FPS)", "Use the scene's frames per second (FPS) for this animation"),
-                ('OVERRIDE', "Override", "Use a custom Keys Per Second (KPS) value for this animation")
-            ],
-            default='AUTO',
-            description="Control how the animation's KPS is determined on export",
-            update=operators.update_carnivores_kps_mode # Reference the update function from operators
-        )
+
 
     for cls in classes:
         bpy.utils.register_class(cls)
