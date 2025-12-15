@@ -16,7 +16,7 @@ from .core.constants import FACE_FLAG_OPTIONS
 
 from . import utils
 
-@bpy_extras.io_utils.orientation_helper(axis_forward='-Z', axis_up='Y')
+@bpy_extras.io_utils.orientation_helper(axis_forward='Z', axis_up='Y')
 class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHelper):
     bl_idname = "carnivores.import_3df"
     bl_label = "Import .3DF Model"
@@ -175,7 +175,7 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
             
         return {'FINISHED'}
 
-@bpy_extras.io_utils.orientation_helper(axis_forward='-Z', axis_up='Y')
+@bpy_extras.io_utils.orientation_helper(axis_forward='Z', axis_up='Y')
 class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
     bl_idname = "carnivores.export_3df"
     bl_label = "Export .3DF Model(s)"
@@ -299,7 +299,7 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
             self.report({'ERROR'}, "No files were exported due to errors.")
         return {'FINISHED'}
 
-@bpy_extras.io_utils.orientation_helper(axis_forward='-Z', axis_up='Y')
+@bpy_extras.io_utils.orientation_helper(axis_forward='Z', axis_up='Y')
 class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
     bl_idname = "carnivores.export_car"
     bl_label = "Export .CAR Model"
@@ -402,7 +402,7 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
             self.report({'ERROR'}, f"Export failed: {e}")
             return {'CANCELLED'}
 
-@bpy_extras.io_utils.orientation_helper(axis_forward='-Z', axis_up='Y')
+@bpy_extras.io_utils.orientation_helper(axis_forward='Z', axis_up='Y')
 class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHelper):
     bl_idname = 'carnivores.import_car'
     bl_label = 'Import .CAR Model'
