@@ -1,9 +1,7 @@
-doc/CarnivoresIOSession
-doc/repo_index.txt
-doc/Minified
+pack/
+doc/
 backup/
 tools/
 else/
-GEMINI.md
 .vscode
-
+.gemini

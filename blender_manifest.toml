@@ -1,0 +1,33 @@
+schema_version = "1.0.0"
+
+id = "carnivores_io"
+version = "2.0.0"
+name = "CarnivoresIO"
+tagline = "Import/Export Carnivores .3DF and .CAR models with animations"
+maintainer = "Tibor Harsanyi <hkmahk0as@mozmail.com>"
+type = "add-on"
+website = "https://github.com/Tibbee/CarnivoresIO"
+tags = ["Import-Export", "Game Engine", "Animation", "UV"]
+
+blender_version_min = "4.2.0"
+blender_version_max = "5.0.0"
+license = ["SPDX:GPL-3.0-or-later"]
+copyright = ["2024-2025 Tibor Harsanyi"]
+
+[permissions]
+files = "Required for importing and exporting model and texture files"
+
+[build]
+paths_exclude_pattern = [
+    "__pycache__/",
+    "/.git/",
+    "/.gitignore",
+    "/.vscode/",
+    "/tools/",
+    "/*.zip",
+    "/public_repo/",
+    "/my_extension_repo/",
+    "/.gemini/",
+    "/*.patch",
+    "/doc/"
+]
