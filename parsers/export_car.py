@@ -8,6 +8,7 @@ from ..core.core import CAR_HEADER_DTYPE, VERTEX_DTYPE, FACE_DTYPE
 from ..core.constants import TEXTURE_WIDTH
 from .. import utils
 from .export_3df import gather_mesh_data
+from ..utils.logger import info, debug, warn, error
 
 # Helper for sound conversion
 def convert_sound_to_22khz_mono(sound_datablock):
@@ -27,7 +28,7 @@ def convert_sound_to_22khz_mono(sound_datablock):
             if os.path.exists(abs_path):
                 factory = aud.Sound.file(abs_path)
             else:
-                print(f"Warning: Could not load factory for sound {sound_datablock.name}")
+                warn(f"Could not load factory for sound {sound_datablock.name}")
                 return None, 0
 
         # Resample: 22050 Hz
@@ -55,7 +56,7 @@ def convert_sound_to_22khz_mono(sound_datablock):
         return data.tobytes(), len(data) * 2 # 2 bytes per sample
         
     except Exception as e:
-        print(f"Error converting sound {sound_datablock.name}: {e}")
+        error(f"Error converting sound {sound_datablock.name}: {e}")
         return None, 0
 
 def gather_car_animations(obj, export_matrix, vertex_count):
@@ -87,10 +88,10 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         source_label = f"Object ({obj.name})"
         
     if not anim_data:
-        print("[Export] No animation data found on Object, ShapeKeys, or Parent Armature.")
+        warn("No animation data found on Object, ShapeKeys, or Parent Armature.")
         return []
         
-    print(f"[Export] Found animation source: {source_label}")
+    debug(f"Found animation source: {source_label}")
 
     # --- STATE MANAGEMENT ---
     original_frame = scene.frame_current
@@ -108,7 +109,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
     if obj.type == 'MESH' and obj.show_only_shape_key:
         original_show_only_shape_key = True
         obj.show_only_shape_key = False # Disable pinning to allow animation
-        print("[Export] Temporarily disabled Shape Key Pinning for bake.")
+        debug("Temporarily disabled Shape Key Pinning for bake.")
 
     # Store Modifier States & Force Enable Deformers
     mod_states = {}
@@ -121,7 +122,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
 
     # --- Define Bake Helper ---
     def bake_range(name, start, end, kps, sound_ptr):
-        print(f"[Export] Baking '{name}' ({start}-{end}) KPS:{kps}")
+        debug(f"Baking '{name}' ({start}-{end}) KPS:{kps}")
         frames_data = []
         
         # Calculate time step (Blender Frames per Game Frame)
@@ -134,7 +135,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         # Use explicit +0.5 for "round half up" logic to avoid Banker's Rounding (even/odd) issues
         num_samples = int(((end - start) / frame_step) + 0.5) + 1
         
-        print(f"         Step: {frame_step:.4f}, Samples: {num_samples}")
+        debug(f"         Step: {frame_step:.4f}, Samples: {num_samples}")
 
         for i in range(num_samples):
             current_frame = start + (i * frame_step)
@@ -153,7 +154,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
             try:
                 count = len(mesh.vertices)
                 if count != vertex_count:
-                    print(f"[Export] Error: Frame {current_frame:.2f} of '{name}' has {count} vertices, expected {vertex_count} (Base). Skipping animation.")
+                    error(f"Frame {current_frame:.2f} of '{name}' has {count} vertices, expected {vertex_count} (Base). Skipping animation.")
                     eval_obj.to_mesh_clear()
                     return None # Signal error
                 
@@ -175,14 +176,14 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         # Static Check
         if len(frames_data) > 1:
             if all(np.array_equal(f, frames_data[0]) for f in frames_data[1:]):
-                 print(f"[Export] Warning: Animation '{name}' appears to be static.")
+                 warn(f"Animation '{name}' appears to be static.")
 
         return frames_data
 
     try:
         # --- PATH A: NLA TRACKS ---
         if anim_data.nla_tracks:
-            print("[Export] Mode: NLA Tracks (Soloing)")
+            debug("Mode: NLA Tracks (Soloing)")
             anim_data.use_nla = True # Ensure NLA is ON
             
             # Mute ALL tracks first
@@ -234,7 +235,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
 
         # --- PATH B: ACTIVE ACTION (Fallback) ---
         elif anim_data.action:
-            print("[Export] Mode: Active Action (No NLA)")
+            debug("Mode: Active Action (No NLA)")
             anim_data.use_nla = False # Force Action
             
             action = anim_data.action
@@ -253,10 +254,10 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                 })
                 
         else:
-            print("[Export] No NLA tracks and no Active Action. No animations exported.")
+            warn("No NLA tracks and no Active Action. No animations exported.")
 
     except Exception as e:
-        print(f"[Export] Critical Error during animation bake: {e}")
+        error(f"Critical Error during animation bake: {e}")
         import traceback
         traceback.print_exc()
 
@@ -268,12 +269,12 @@ def gather_car_animations(obj, export_matrix, vertex_count):
             try:
                 anim_data.action = original_action
             except AttributeError:
-                print("[Export] Warning: Could not restore active action (likely NLA driven/read-only).")
+                warn("Could not restore active action (likely NLA driven/read-only).")
             
             try:
                 anim_data.use_nla = original_use_nla
             except AttributeError:
-                print("[Export] Warning: Could not restore use_nla state (likely NLA driven/read-only).")
+                warn("Could not restore use_nla state (likely NLA driven/read-only).")
             
             # Restore Mute States
             if original_mute_states:
@@ -311,7 +312,7 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
     # Process sounds
     for i, anim in enumerate(anims):
         if i >= 64: 
-            print("Warning: More than 64 animations, truncation will occur in cross-ref.")
+            warn("More than 64 animations, truncation will occur in cross-ref.")
             break
             
         snd = anim['sound_ptr']
@@ -396,4 +397,4 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
         # Cross Ref
         cross_ref.tofile(f)
         
-    print(f"[Export] Finished .car export: {filepath}")
+    info(f"Finished .car export: {filepath}")

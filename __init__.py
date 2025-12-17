@@ -14,9 +14,24 @@ from .operators import classes as operator_classes
 from .operators import animation as anim_ops
 from .utils import animation as anim_utils
 from .operators.animation import set_kps_mode, get_kps_mode
+from .utils.logger import info
+
+class CarnivoresPreferences(bpy.types.AddonPreferences):
+    bl_idname = __package__
+
+    debug_mode: bpy.props.BoolProperty(
+        name="Debug Mode",
+        description="Enable verbose logging in the console",
+        default=False,
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "debug_mode")
 
 def register():
     # Register Classes
+    bpy.utils.register_class(CarnivoresPreferences)
     for cls in operator_classes:
         bpy.utils.register_class(cls)
 
@@ -89,10 +104,10 @@ def register():
     if anim_ops.clear_aud_device_on_new_file not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(anim_ops.clear_aud_device_on_new_file)
         
-    print("CarnivoresIO: Registered")
+    info("CarnivoresIO: Registered")
 
 def unregister():
-    print("CarnivoresIO: Unregistering...")
+    info("CarnivoresIO: Unregistering...")
     
     # Cleanup Audio
     if anim_ops._aud_device:
@@ -119,9 +134,9 @@ def unregister():
         try:
             if os.path.exists(path):
                 os.remove(path)
-                print(f"Removed temp sound: {path}")
+                info(f"Removed temp sound: {path}")
         except Exception as e:
-            print(f"Failed to remove temp sound {path}: {e}")
+            info(f"Failed to remove temp sound {path}: {e}")
     anim_utils._temp_sound_files.clear()
 
     # Unregister Menus
@@ -131,6 +146,7 @@ def unregister():
     # Unregister Classes
     for cls in reversed(operator_classes):
         bpy.utils.unregister_class(cls)
+    bpy.utils.unregister_class(CarnivoresPreferences)
         
     # Unregister Properties
     del bpy.types.Scene.cf_flag_section
@@ -147,7 +163,7 @@ def unregister():
     del bpy.types.Action.carnivores_sound_ptr
     del bpy.types.Scene.carnivores_nla_sound_enabled
     
-    print("CarnivoresIO: Unregistered")
+    info("CarnivoresIO: Unregistered")
 
 def menu_func_import(self, context):
     self.layout.operator("carnivores.import_3df", text="Carnivores .3DF (.3df)")

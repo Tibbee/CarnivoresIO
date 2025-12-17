@@ -1,4 +1,3 @@
-
 import numpy as np
 import os
 
@@ -6,6 +5,7 @@ from . import validate as validator
 from ..utils import timed
 from ..core.core import HEADER_DTYPE, FACE_DTYPE, VERTEX_DTYPE, BONE_DTYPE
 from ..core.constants import TEXTURE_WIDTH
+from ..utils.logger import debug, warn, info, error
 
 class ParserContext:
     def __init__(self):
@@ -53,10 +53,10 @@ def parse_3df_bones(file, bone_count):
             bone_names[i] = f"Bone_{i}"
         elif len(name.encode('ascii', errors='ignore')) > 32:
             bone_names[i] = name[:32]
-            print(f"[Warning] Bone name '{name}' truncated to 32 characters.")
+            warn(f"Bone name '{name}' truncated to 32 characters.")
         elif not name.isascii():
             bone_names[i] = ''.join(c for c in name if c.isascii())
-            print(f"[Warning] Bone name '{name}' contains non-ASCII characters; cleaned.")
+            warn(f"Bone name '{name}' contains non-ASCII characters; cleaned.")
     
     return bones, bone_names
     
@@ -84,42 +84,42 @@ def parse_3df_texture(file, texture_size, texture_height):
     
 #@utils.timed('print_parse_preview') 
 """def print_parse_preview(header, faces, uvs, vertices, bones, texture, texture_height):
-    print("=== PARSE PREVIEW ===")
+    debug("=== PARSE PREVIEW ===")
 
-    print("\n[Header]")
-    print(header)
+    debug("\n[Header]")
+    debug(header)
 
-    print("\n[Vertices]")
-    print("First:", vertices[0])
-    print("Last :", vertices[-1])
+    debug("\n[Vertices]")
+    debug(f"First: {vertices[0]}")
+    debug(f"Last : {vertices[-1]}")
 
-    print("\n[Faces]")
-    print("First:", faces[0])
-    print("Last :", faces[-1])
+    debug("\n[Faces]")
+    debug(f"First: {faces[0]}")
+    debug(f"Last : {faces[-1]}")
 
-    print("\n[UVs]")
-    print("First:", uvs[0])
-    print("Last :", uvs[-1])
+    debug("\n[UVs]")
+    debug(f"First: {uvs[0]}")
+    debug(f"Last : {uvs[-1]}")
 
-    print("\n[Bones]")
-    print("First:", bones[0])
-    print("Last :", bones[-1])
+    debug("\n[Bones]")
+    debug(f"First: {bones[0]}")
+    debug(f"Last : {bones[-1]}")
 
-    print("\n[Texture]")
-    print(f"Shape: {texture.shape}, dtype: {texture.dtype}")
+    debug("\n[Texture]")
+    debug(f"Shape: {texture.shape}, dtype: {texture.dtype}")
 
     # Find first and last non-zero pixel
     non_zero_indices = np.nonzero(np.any(texture != 0.0, axis=-1))[0]
     if non_zero_indices.size > 0:
         first_idx = non_zero_indices[0]
         last_idx = non_zero_indices[-1]
-        print(f"First non-zero pixel at {first_idx}: {texture[first_idx]}")
-        print(f"Last  non-zero pixel at {last_idx}: {texture[last_idx]}")
+        debug(f"First non-zero pixel at {first_idx}: {texture[first_idx]}")
+        debug(f"Last  non-zero pixel at {last_idx}: {texture[last_idx]}")
     else:
-        print("Texture is completely zero (black/transparent).")
+        debug("Texture is completely zero (black/transparent).")
 
-    print(f"\n[Texture Height Estimate] → {texture_height} px")
-    print("=========================")"""
+    debug(f"\n[Texture Height Estimate] → {texture_height} px")
+    debug("=========================")"""
     
 @timed('parse_3df')      
 def parse_3df(filepath, validate=True, parse_texture=True, flip_handedness=True):
@@ -136,7 +136,7 @@ def parse_3df(filepath, validate=True, parse_texture=True, flip_handedness=True)
             vertices = validator.validate_3df_vertices(vertices, header['vertex_count'], header['bone_count'], context)
             bones, bone_names = parse_3df_bones(file, header['bone_count'])
             bones = validator.validate_3df_bones(bones, header['bone_count'], context)
-            texture, texture_raw = parse_3df_texture(file, header['texture_size'])
+            texture, texture_raw = parse_3df_texture(file, header['texture_size'], texture_height)
             texture_raw = validator.validate_3df_texture(texture_raw, header['texture_size'], context) 
      
             # print_parse_preview(header, faces, uvs, vertices, bones, texture, texture_height)

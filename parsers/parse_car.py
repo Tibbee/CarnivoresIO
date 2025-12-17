@@ -4,6 +4,7 @@ from . import validate as validator  # Reuse 3DF validations
 from ..utils import timed, handle_car_owners
 from ..core.core import FACE_DTYPE, VERTEX_DTYPE, CAR_HEADER_DTYPE  # Reuse dtypes
 from ..core.constants import TEXTURE_WIDTH
+from ..utils.logger import debug, warn, info, error
 
 class ParserContext:
     def __init__(self):
@@ -42,7 +43,7 @@ def parse_car_animations(file, header, context):
     used_names = {}  # Map base_name -> count
     
     if header['ani_count'] > 0:
-        print(f"[Debug] Starting animation parsing: {header['ani_count']} animations, {vcount} vertices")
+        debug(f"Starting animation parsing: {header['ani_count']} animations, {vcount} vertices")
         for anim_idx in range(header['ani_count']):
             # Read 32-byte name
             ani_name_raw = np.fromfile(file, dtype='S32', count=1)[0]
@@ -56,7 +57,7 @@ def parse_car_animations(file, header, context):
                 count = used_names[ani_name]
                 used_names[ani_name] += 1
                 unique_name = f"{ani_name}_{count}" # e.g., Ms_die_1, Ms_die_2
-                print(f"[Debug] Renaming duplicate animation '{ani_name}' to '{unique_name}'")
+                debug(f"Renaming duplicate animation '{ani_name}' to '{unique_name}'")
                 ani_name = unique_name
             else:
                 used_names[ani_name] = 1
@@ -70,7 +71,7 @@ def parse_car_animations(file, header, context):
             raw_data = np.fromfile(file, dtype='<i2', count=expected_count)
             if raw_data.size != expected_count:
                 context.warnings.append(f"Truncated data for {ani_name}: expected {expected_count}, got {raw_data.size}")
-                print(f"[Debug] Warning: Truncated {ani_name} (skipping)")
+                warn(f"Truncated {ani_name} (skipping)")
                 continue
             # Decode to absolute positions (float32)
             positions = raw_data.reshape(frames_count, vcount, 3).astype(np.float32) / 16.0
@@ -80,16 +81,16 @@ def parse_car_animations(file, header, context):
                 'frames_count': int(frames_count),
                 'positions': positions
             })
-            print(f"[Debug] Parsed anim '{ani_name}': {frames_count} frames, {ani_kps} kps, shape {positions.shape}")
-        print(f"[Debug] Finished animations: {len(animations)} parsed, total frames {sum(a['frames_count'] for a in animations)}")
+            debug(f"Parsed anim '{ani_name}': {frames_count} frames, {ani_kps} kps, shape {positions.shape}")
+        debug(f"Finished animations: {len(animations)} parsed, total frames {sum(a['frames_count'] for a in animations)}")
     else:
-        print("[Debug] No animations (AniCount=0)")
+        debug("No animations (AniCount=0)")
     return animations
 
 def skip_car_sounds_and_crossref(file, header, context):
     # Skip sounds (read headers, seek data)
     if header['sfx_count'] > 0:
-        print(f"[Debug] Skipping {header['sfx_count']} sounds")
+        debug(f"Skipping {header['sfx_count']} sounds")
         for sfx_idx in range(header['sfx_count']):
             # Read 32-byte name + 4-byte length
             _ = np.fromfile(file, dtype='S32', count=1)  # name
@@ -97,14 +98,14 @@ def skip_car_sounds_and_crossref(file, header, context):
             # Seek past data
             file.seek(sfx_length, 1)
             if sfx_idx < 3:  # Limit debug spam
-                print(f"[Debug] Skipped sound {sfx_idx}: length {sfx_length} bytes")
+                debug(f"Skipped sound {sfx_idx}: length {sfx_length} bytes")
     else:
-        print("[Debug] No sounds (SfxCount=0)")
+        debug("No sounds (SfxCount=0)")
 
     # Skip cross-ref table (always 256 bytes)
     cross_ref_size = 256
     file.seek(cross_ref_size, 1)
-    print(f"[Debug] Skipped cross-ref table: {cross_ref_size} bytes")
+    debug(f"Skipped cross-ref table: {cross_ref_size} bytes")
 
 def parse_car_sounds_and_crossref(file, header, context, validate=True):
     """

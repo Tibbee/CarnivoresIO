@@ -6,6 +6,7 @@ import os
 from ..utils import animation as anim_utils
 from ..utils import io as io_utils
 from ..utils import common
+from ..utils.logger import info, debug, warn, error
 
 # Global dictionary to track playing sounds for each object
 _playing_sounds = {}
@@ -16,11 +17,11 @@ _preview_restore_state = None
 def get_aud_device():
     global _aud_device
     if _aud_device is None:
-        print("AUDIO: Creating new aud.Device()")
+        debug("AUDIO: Creating new aud.Device()")
         try:
             _aud_device = aud.Device()
         except Exception as e:
-            print(f"AUDIO: Failed to create aud.Device(): {e}")
+            error(f"AUDIO: Failed to create aud.Device(): {e}")
     return _aud_device
 
 class CARNIVORES_OT_play_linked_sound(bpy.types.Operator):
@@ -59,8 +60,8 @@ class CARNIVORES_OT_play_linked_sound(bpy.types.Operator):
         # We'll place it on channel 1 and start it at the current frame
         # The name of the strip will be the sound's name
         try:
-            print(f"DEBUG: Sound data block exists. Sound name: {linked_sound.name}")
-            print(f"DEBUG: Attempting to play new sound '{linked_sound.name}' for {obj.name}.")
+            debug(f"Sound data block exists. Sound name: {linked_sound.name}")
+            debug(f"Attempting to play new sound '{linked_sound.name}' for {obj.name}.")
 
             # Check if a strip with the same name already exists to avoid duplicates
             existing_strip = context.scene.sequence_editor.sequences.get(linked_sound.name)
@@ -89,18 +90,18 @@ def playback_started_handler(scene):
     """This handler is called by Blender right before animation playback starts."""
     global _is_real_playback
     _is_real_playback = True
-    print("DEBUG: Playback STARTED. _is_real_playback = True")
+    debug("Playback STARTED. _is_real_playback = True")
 
 @bpy.app.handlers.persistent
 def playback_stopped_handler(scene):
     """This handler is called by Blender right after animation playback stops."""
     global _is_real_playback, _playing_sounds
     _is_real_playback = False
-    print("DEBUG: Playback STOPPED. _is_real_playback = False")
+    debug("Playback STOPPED. _is_real_playback = False")
     
     # If there are any lingering sounds, stop them now.
     if _playing_sounds:
-        print("DEBUG: Playback stopped, stopping all managed sounds.")
+        debug("Playback stopped, stopping all managed sounds.")
         for handle, _, _ in _playing_sounds.values():
             handle.stop()
         _playing_sounds.clear()
@@ -111,7 +112,7 @@ def carnivores_nla_sound_handler(scene):
     
     # This handler should ONLY run when our flag indicates real playback is happening.
     if not _is_real_playback:
-        print("AUDIO: Handler skipped (not real playback)") # Too verbose
+        # debug("AUDIO: Handler skipped (not real playback)")
         return
 
     if not scene.carnivores_nla_sound_enabled:
@@ -119,7 +120,7 @@ def carnivores_nla_sound_handler(scene):
 
     device = get_aud_device()
     if not device:
-        print("AUDIO: No audio device available in handler")
+        # debug("AUDIO: No audio device available in handler")
         return
 
     objects_with_active_sounds = {} # {obj: linked_sound_name}
@@ -176,11 +177,11 @@ def carnivores_nla_sound_handler(scene):
     for obj_playing in list(_playing_sounds.keys()):
         current_handle, current_sound_name, _ = _playing_sounds[obj_playing]
         if obj_playing not in objects_with_active_sounds or objects_with_active_sounds[obj_playing] != current_sound_name:
-            print(f"AUDIO: Stopping sound '{current_sound_name}' for {obj_playing.name}")
+            debug(f"AUDIO: Stopping sound '{current_sound_name}' for {obj_playing.name}")
             try:
                 current_handle.stop()
             except Exception as e:
-                print(f"AUDIO: Error stopping sound (cleanup): {e}")
+                warn(f"AUDIO: Error stopping sound (cleanup): {e}")
             del _playing_sounds[obj_playing]
 
     # Start new sounds
@@ -188,10 +189,10 @@ def carnivores_nla_sound_handler(scene):
         if obj_active in _playing_sounds:
             continue
 
-        print(f"AUDIO: Triggering sound '{linked_sound_name}' for {obj_active.name}")
+        debug(f"AUDIO: Triggering sound '{linked_sound_name}' for {obj_active.name}")
         linked_sound_data_block = bpy.data.sounds.get(linked_sound_name)
         if not linked_sound_data_block:
-            print(f"AUDIO: Sound datablock '{linked_sound_name}' not found")
+            debug(f"AUDIO: Sound datablock '{linked_sound_name}' not found")
             continue
 
         try:
@@ -204,9 +205,9 @@ def carnivores_nla_sound_handler(scene):
                 if os.path.exists(abs_path):
                     try:
                         sound_factory = aud.Sound.file(abs_path)
-                        print(f"DEBUG: Loaded sound factory from file fallback: {abs_path}")
+                        debug(f"Loaded sound factory from file fallback: {abs_path}")
                     except Exception as e:
-                        print(f"NLA Sound Warning: Fallback load failed for '{linked_sound_name}': {e}")
+                        warn(f"NLA Sound Warning: Fallback load failed for '{linked_sound_name}': {e}")
 
             if sound_factory:
                 # Play the sound without looping (looping handled by re-triggering or future features)
@@ -214,15 +215,15 @@ def carnivores_nla_sound_handler(scene):
                 _playing_sounds[obj_active] = (handle, linked_sound_name, sound_factory)
             else:
                 # Factory creation failed (broken file or invalid path)
-                print(f"NLA Sound Warning: Could not load audio factory for '{linked_sound_name}'")
+                warn(f"NLA Sound Warning: Could not load audio factory for '{linked_sound_name}'")
 
         except Exception as e:
-            print(f"NLA Sound Error: Could not play sound '{linked_sound_name}' for {obj_active.name}: {e}")
+            error(f"NLA Sound Error: Could not play sound '{linked_sound_name}' for {obj_active.name}: {e}")
             
             # Check for critical OpenAL/Device errors that require a reset
             err_str = str(e)
             if "Buffer" in err_str or "OpenAL" in err_str:
-                print("AUDIO: Critical OpenAL Error detected. Resetting audio device to recover...")
+                error("AUDIO: Critical OpenAL Error detected. Resetting audio device to recover...")
                 try:
                     # Invalidate global device so get_aud_device() creates a new one next frame
                     _aud_device = None 
@@ -291,7 +292,7 @@ class CARNIVORES_OT_toggle_nla_sound_playback(bpy.types.Operator):
             for obj_id, (handle, sound_name, _) in list(_playing_sounds.items()): # Use list() to iterate over a copy
                 handle.stop()
                 del _playing_sounds[obj_id]
-            print("DEBUG: All playing sounds stopped and cleared.")
+            debug("All playing sounds stopped and cleared.")
             self.report({'INFO'}, "NLA Sound Playback Disabled.")
 
         return {'FINISHED'}
@@ -418,17 +419,17 @@ def preview_loop_handler(scene):
 def clear_aud_device_on_new_file(scene):
     global _aud_device, _playing_sounds, _is_real_playback
 
-    print(f"AUDIO: clear_aud_device_on_new_file called. Scene: {scene.name if scene else 'None'}")
-    print(f"AUDIO: Current Handlers (load_post): {len(bpy.app.handlers.load_post)}")
+    debug(f"AUDIO: clear_aud_device_on_new_file called. Scene: {scene.name if scene else 'None'}")
+    debug(f"AUDIO: Current Handlers (load_post): {len(bpy.app.handlers.load_post)}")
 
-    print("AUDIO: New file loaded — resetting audio system")
+    debug("AUDIO: New file loaded — resetting audio system")
 
     # Stop all currently playing sounds
     for handle, _, _ in _playing_sounds.values():
         try:
             handle.stop()
         except Exception as e:
-            print(f"WARNING: Error stopping audio handle on new file load: {e}")
+            warn(f"Error stopping audio handle on new file load: {e}")
     _playing_sounds.clear()
 
     # Hard reset playback flag
@@ -437,41 +438,38 @@ def clear_aud_device_on_new_file(scene):
     # Properly shut down aud device
     if _aud_device is not None:
         try:
-            print("AUDIO: Stopping aud device...")
+            debug("AUDIO: Stopping aud device...")
             _aud_device.stopAll()
         except Exception as e:
-            print(f"WARNING: Error stopping aud device on new file load: {e}")
+            warn(f"Error stopping aud device on new file load: {e}")
         _aud_device = None
 
     # Re-enable sound playback for new scene if property exists
-    # This might not exist immediately after `File > New` if the addon's `register()` hasn't run for the new blend file data.
-    # The property is registered in `__init__.py` (module level), so it *should* exist.
-    # We use bpy.context.scene because `scene` passed to handler might be the old scene data.
     if hasattr(bpy.context.scene, "carnivores_nla_sound_enabled"):
         bpy.context.scene.carnivores_nla_sound_enabled = True
-        print("AUDIO: Re-enabled carnivores_nla_sound_enabled for new scene.")
+        debug("AUDIO: Re-enabled carnivores_nla_sound_enabled for new scene.")
     else:
-        print("AUDIO: 'carnivores_nla_sound_enabled' property not found in new scene. It will be re-registered on addon enable.")
+        debug("AUDIO: 'carnivores_nla_sound_enabled' property not found in new scene.")
 
     # Re-add handlers (if missing)
     h = bpy.app.handlers
-    print(f"AUDIO: Checking handlers... frame_change_post len: {len(h.frame_change_post)}")
+    debug(f"AUDIO: Checking handlers... frame_change_post len: {len(h.frame_change_post)}")
     
     if carnivores_nla_sound_handler not in h.frame_change_post:
         h.frame_change_post.append(carnivores_nla_sound_handler)
-        print("AUDIO: Re-added carnivores_nla_sound_handler")
+        debug("AUDIO: Re-added carnivores_nla_sound_handler")
     else:
-        print("AUDIO: carnivores_nla_sound_handler already present")
+        debug("AUDIO: carnivores_nla_sound_handler already present")
 
     if playback_started_handler not in h.animation_playback_pre:
         h.animation_playback_pre.append(playback_started_handler)
-        print("AUDIO: Re-added playback_started_handler")
+        debug("AUDIO: Re-added playback_started_handler")
         
     if playback_stopped_handler not in h.animation_playback_post:
         h.animation_playback_post.append(playback_stopped_handler)
-        print("AUDIO: Re-added playback_stopped_handler")
+        debug("AUDIO: Re-added playback_stopped_handler")
 
-    print("AUDIO: Audio system reset complete.")
+    debug("AUDIO: Audio system reset complete.")
 
 class CARNIVORES_OT_play_track_preview(bpy.types.Operator):
     """Solo this track and play it in a loop with sound. Stops when you pause playback."""

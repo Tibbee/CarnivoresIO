@@ -6,6 +6,7 @@ import numpy as np
 from ..utils import io as io_utils
 from ..utils import animation as anim_utils
 from ..utils import common
+from ..utils.logger import info, debug, warn, error
 from ..parsers.parse_3df import parse_3df
 from ..parsers.parse_car import parse_car
 from ..parsers.export_3df import export_3df
@@ -497,11 +498,12 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                     flip_handedness=self.flip_handedness,
                     import_sounds=self.import_sounds
                 )
-                print("SOUNDS:", len(sounds))
+                
+                debug(f"SOUNDS: {len(sounds)}")
                 for s in sounds:
-                    print("  ->", s['name'], s['data'].size, "samples")
-                print("CROSS_REF (first 10):", cross_ref[:10])
-                # print(animations)  # Should show list of dicts
+                    debug(f"  -> {s['name']} {s['data'].size} samples")
+                debug(f"CROSS_REF (first 10): {cross_ref[:10]}")
+                
                 verticesTransformedPos = io_utils.apply_import_matrix(vertices['coord'], import_matrix_np)
                 # Use bone_names from parser (already handles dummies/offset if needed)
                 obj = io_utils.create_mesh_object(mesh_name, verticesTransformedPos, faces['v'], model_name, self.normal_smooth, faces['flags'])

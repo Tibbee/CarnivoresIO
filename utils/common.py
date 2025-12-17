@@ -1,5 +1,6 @@
 import time
 import functools
+from .logger import debug
 
 def timed(label="Function", is_operator=False):
     def decorator(func):
@@ -9,7 +10,7 @@ def timed(label="Function", is_operator=False):
                 start = time.perf_counter()
                 result = func(self, context, *args, **kwargs)
                 end = time.perf_counter()
-                print(f"[Timing] {label} took {end - start:.6f} seconds")
+                debug(f"[Timing] {label} took {end - start:.6f} seconds")
                 return result
         else:
             @functools.wraps(func)
@@ -17,7 +18,7 @@ def timed(label="Function", is_operator=False):
                 start = time.perf_counter()
                 result = func(*args, **kwargs)
                 end = time.perf_counter()
-                print(f"[Timing] {label} took {end - start:.6f} seconds")
+                debug(f"[Timing] {label} took {end - start:.6f} seconds")
                 return result
         return wrapper
     return decorator

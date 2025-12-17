@@ -3,9 +3,11 @@ import mathutils
 import numpy as np
 import os
 import re
+import bmesh
 from ..core.constants import TEXTURE_WIDTH
 from .common import timed
 from .flags import assign_face_flag_int
+from .logger import info, warn, error
 
 @timed("create_mesh_object")
 def create_mesh_object(mesh_name, verticesTransformedPos, faces, object_name, smooth_faces, face_flags):
@@ -320,7 +322,7 @@ def setup_custom_world_shader():
 
     world["CustomWorldShaderSet"] = True
 
-    print("✅ Custom world shader setup complete.")
+    info("Custom world shader setup complete.")
 
 @timed("triangulated_mesh_copy")    
 def triangulated_mesh_copy(mesh):
@@ -423,14 +425,14 @@ def collect_bones_and_owners(obj, export_matrix):
                     unmatched_vertices.append(v.index)
 
             if unmatched_vertices:
-                print(f"[Export] Warning: {len(unmatched_vertices)} vertices have vertex groups not matching any bone names: {unmatched_vertices}")
+                warn(f"{len(unmatched_vertices)} vertices have vertex groups not matching any bone names: {unmatched_vertices}")
                 # Assign unmatched vertices to bone 0 to avoid invalid owners
                 vertex_owners[unmatched_vertices] = 0
 
             return bone_names, bone_positions, bone_parents, vertex_owners
 
         except Exception as e:
-            print(f"[Export] Armature processing failed: {e}")
+            error(f"Armature processing failed: {e}")
             return None  # Keep this to maintain compatibility, but handled in operator
 
     elif obj.parent is None:  # Hooks case (no armature)

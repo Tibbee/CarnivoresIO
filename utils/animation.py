@@ -7,6 +7,7 @@ import aud
 import numpy as np
 from .common import timed
 from .io import apply_import_matrix
+from .logger import info, debug, warn, error
 
 # Global state for sound files
 _temp_sound_files = set()
@@ -14,14 +15,14 @@ _temp_sound_files = set()
 @timed('create_shape_keys_from_car_animations')
 def create_shape_keys_from_car_animations(obj, animations, import_matrix_np):
     if not animations:
-        print("[ShapeKeys] No animations to import")
+        debug("No animations to import")
         return
     mesh = obj.data
     vcount = len(mesh.vertices)
     total_keys = 0
     # Initialize shape keys if needed (first add creates Basis from current verts)
     if mesh.shape_keys is None:
-        print("[ShapeKeys] Initializing shape keys (creating Basis)")
+        debug("Initializing shape keys (creating Basis)")
         obj.shape_key_add(name="Basis")  # Auto-creates obj.data.shape_keys
     sk_data = mesh.shape_keys
     for anim in animations:
@@ -29,7 +30,7 @@ def create_shape_keys_from_car_animations(obj, animations, import_matrix_np):
         frames_count = anim['frames_count']
         positions = anim['positions']  # (frames_count, vcount, 3) float32
         if positions.shape != (frames_count, vcount, 3):
-            print(f"[ShapeKeys] Warning: Skipping {anim_name} (invalid positions shape {positions.shape})")
+            warn(f"Skipping {anim_name} (invalid positions shape {positions.shape})")
             continue
         for frame_i in range(frames_count):  # All frames as keys (Basis is static verts)
             key_name = f"{anim_name}.Frame_{frame_i+1:03d}"
@@ -40,20 +41,20 @@ def create_shape_keys_from_car_animations(obj, animations, import_matrix_np):
             flat_pos = frame_pos.ravel()
             key.data.foreach_set('co', flat_pos)
             total_keys += 1
-        print(f"[ShapeKeys] Added {frames_count} keys for '{anim_name}'")
+        debug(f"Added {frames_count} keys for '{anim_name}'")
     mesh.update()
-    print(f"[ShapeKeys] Total keys added: {total_keys} across {len(animations)} animations")
+    info(f"Total keys added: {total_keys} across {len(animations)} animations")
 
 @timed('create_shape_key_action')
 def create_shape_key_action(obj, action_name="CarAnimation"):
     """Ensure the object has a shape key action assigned."""
     if not obj or obj.type != 'MESH':
-        print('[Error] Selected object is not a mesh')
+        error('Selected object is not a mesh')
         return None
 
     mesh = obj.data
     if not mesh.shape_keys:
-        print('[Error] Object has no shape keys')
+        error('Object has no shape keys')
         return None
 
     sk_data = mesh.shape_keys
@@ -63,22 +64,22 @@ def create_shape_key_action(obj, action_name="CarAnimation"):
     action = bpy.data.actions.get(action_name)
     if action is None:
         action = bpy.data.actions.new(name=action_name)
-        print(f"[Action] Created new action: {action.name}")
+        debug(f"Created new action: {action.name}")
     else:
-        print(f"[Action] Reusing existing action: {action.name}")
+        debug(f"Reusing existing action: {action.name}")
 
     sk_data.animation_data.action = action
-    print(f"[Action] Assigned to shape keys of '{obj.name}'")
+    debug(f"Assigned to shape keys of '{obj.name}'")
     return action
 
 @timed('keyframe_shape_key_animation_as_action')
 def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, kps=None, scene_fps=None):
     if not obj or obj.type != 'MESH':
-        print('[Error] Selected object is not a mesh')
+        error('Selected object is not a mesh')
         return
     mesh = obj.data
     if not mesh.shape_keys:
-        print('[Error] Object has no shape keys')
+        error('Object has no shape keys')
         return
     sk_data = mesh.shape_keys
     sk_data.animation_data_create()
@@ -110,21 +111,21 @@ def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, kps=No
     try:
         sk_data.animation_data.action = action
     except AttributeError:
-        print(f"[Warning] Could not set active action '{action.name}' (likely driven by NLA). Continuing update...")
+        warn(f"Could not set active action '{action.name}' (likely driven by NLA). Continuing update...")
         
     key_blocks = [kb for kb in sk_data.key_blocks if re.match(f"^{re.escape(anim_name)}\.Frame_\\d+", kb.name)]
     key_blocks.sort(key=lambda kb: kb.name)
     if not key_blocks:
-        print(f"[Warning] No shape keys found for animation '{anim_name}'")
+        warn(f"No shape keys found for animation '{anim_name}'")
         return
     
     num_frames = len(key_blocks)
     # Calculate total duration in Blender frames
     duration_frames = (num_frames * frame_step) 
     
-    print(f"[Keyframe] Creating Action '{action_name}' for '{anim_name}'")
-    print(f"           KPS: {target_kps}, Scene FPS: {scene_fps} -> Step: {frame_step:.2f} frames")
-    print(f"           Total Duration: {duration_frames:.1f} frames ({duration_frames/scene_fps:.2f}s)")
+    debug(f"Creating Action '{action_name}' for '{anim_name}'")
+    debug(f"           KPS: {target_kps}, Scene FPS: {scene_fps} -> Step: {frame_step:.2f} frames")
+    debug(f"           Total Duration: {duration_frames:.1f} frames ({duration_frames/scene_fps:.2f}s)")
     
     # Identify all shape keys, excluding Basis
     reference_key = sk_data.reference_key
@@ -206,12 +207,12 @@ def push_shape_key_action_to_nla(obj, strip_name=None, frame_start=1, frame_end=
 Pushes the current shape key Action of the object into the NLA as a new strip.
     """
     if not obj or obj.type != 'MESH':
-        print('[Error] Selected object is not a mesh')
+        error('Selected object is not a mesh')
         return None
 
     sk_data = obj.data.shape_keys
     if not sk_data or not sk_data.animation_data or not sk_data.animation_data.action:
-        print('[Error] No active Action on shape keys. Create and keyframe first.')
+        error('No active Action on shape keys. Create and keyframe first.')
         return None
 
     anim_data = sk_data.animation_data
@@ -242,17 +243,17 @@ Pushes the current shape key Action of the object into the NLA as a new strip.
     strip.frame_end = frame_end
     anim_data.action = None  # Unlink active action (push down)
 
-    print(f"[NLA] Action '{action.name}' pushed to NLA strip '{strip.name}' ({frame_start}-{frame_end})")
+    debug(f"Action '{action.name}' pushed to NLA strip '{strip.name}' ({frame_start}-{frame_end})")
     return strip
 
 @timed('auto_create_shape_key_actions_from_car')
 def auto_create_shape_key_actions_from_car(obj, frame_step=1, parsed_animations=None):
     if not obj or obj.type != 'MESH':
-        print('[Error] Selected object is not a mesh')
+        error('Selected object is not a mesh')
         return
     mesh = obj.data
     if not mesh.shape_keys:
-        print('[Info] No shape keys on object; skipping animation setup.')
+        info('No shape keys on object; skipping animation setup.')
         return
     sk_data = mesh.shape_keys
     names = [kb.name for kb in sk_data.key_blocks if '.' in kb.name]
@@ -274,13 +275,13 @@ def auto_create_shape_key_actions_from_car(obj, frame_step=1, parsed_animations=
                 base_names.append(base)
                 
     if not base_names:
-        print('[Info] No animation-style shape keys found (no .Frame_### pattern).')
+        info('No animation-style shape keys found (no .Frame_### pattern).')
         return
-    print(f"[AutoAction] Found {len(base_names)} animation groups: {base_names}")
+    debug(f"Found {len(base_names)} animation groups: {base_names}")
     
     actions = []
     for anim_name in base_names:
-        print(f"[AutoAction] Processing animation '{anim_name}'...")
+        debug(f"Processing animation '{anim_name}'...")
         # Retrieve KPS from map or default to None
         anim_kps = kps_map.get(anim_name)
         
@@ -322,16 +323,16 @@ def auto_create_shape_key_actions_from_car(obj, frame_step=1, parsed_animations=
                 strip.use_sync_length = True  # Tighten eval for discrete steps
             
             anim_data.action = None  # Clear active action
-            print(f"[AutoAction] Pushed {len(actions)} actions to NLA batch (using {num_tracks_used} tracks).")
+            debug(f"Pushed {len(actions)} actions to NLA batch (using {num_tracks_used} tracks).")
     except Exception as e:
-        print(f"[AutoAction] NLA batch push failed (non-fatal): {e}")
+        warn(f"NLA batch push failed (non-fatal): {e}")
         import traceback
         traceback.print_exc()  # Log full stack for debug (remove if noisy)
     
     # Single update at end (key for perf)
     bpy.context.view_layer.update()
     bpy.context.scene.frame_set(bpy.context.scene.frame_current)
-    print('[AutoAction] Completed all animations.')
+    info('Completed all animations.')
     return actions
 
 def get_action_frame_range(action):
@@ -347,7 +348,7 @@ def import_car_sounds(self, sounds, model_name, context):
         sound_name = s['name']
         data = s['data']
         if data.size == 0:
-            print({'WARNING'}, f"Skipping empty sound '{sound_name}' (0 samples).")
+            warn(f"Skipping empty sound '{sound_name}' (0 samples).")
             continue
         # Create temp WAV
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
@@ -374,9 +375,9 @@ def import_car_sounds(self, sounds, model_name, context):
                 sound_block.pack()
 
             imported_sounds.append(sound_block)
-            print({'INFO'}, f"Imported and packed sound '{sound_block.name}' ({data.size} samples).")
+            info(f"Imported and packed sound '{sound_block.name}' ({data.size} samples).")
         except Exception as e:
-            print({'ERROR'}, f"Failed to import sound '{sound_name}': {str(e)}")
+            error(f"Failed to import sound '{sound_name}': {str(e)}")
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)  # Cleanup (safe now that it's packed)
@@ -406,9 +407,9 @@ def associate_sounds_with_animations(self, obj, animations, cross_ref, imported_
         if action:
             # Use the PointerProperty registered on bpy.types.Action
             action.carnivores_sound_ptr = linked_sound
-            print({'INFO'}, f"Associated sound '{linked_sound.name}' with animation '{anim['name']}'.")
+            info(f"Associated sound '{linked_sound.name}' with animation '{anim['name']}'.")
         else:
-            print({'WARNING'}, f"Action '{action_name}' not found for sound association.")
+            warn(f"Action '{action_name}' not found for sound association.")
 
 @timed('rescale_standard_action')
 def rescale_standard_action(action, kps, scene_fps):
@@ -426,7 +427,7 @@ def rescale_standard_action(action, kps, scene_fps):
     if kps <= 0: kps = 1
     frame_step = scene_fps / kps
     
-    print(f"[Rescale] Rescaling '{action.name}' to {kps} KPS (Step: {frame_step:.2f})")
+    debug(f"Rescaling '{action.name}' to {kps} KPS (Step: {frame_step:.2f})")
 
     # 1. Collect all unique frame times
     unique_frames = set()

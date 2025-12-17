@@ -3,6 +3,7 @@ import numpy as np
 from .. import utils
 from ..core.core import HEADER_DTYPE, FACE_DTYPE, VERTEX_DTYPE, BONE_DTYPE
 from ..core.constants import TEXTURE_WIDTH
+from ..utils.logger import info, debug, warn, error
 
 import bpy_extras.io_utils
 
@@ -140,4 +141,4 @@ def export_3df(filepath, obj, export_matrix, export_textures=False, flip_u=False
         if texture_raw is not None:
             texture_raw.tofile(f)
 
-    print(f"[Export] Finished: {filepath}")
+    info(f"Finished: {filepath}")

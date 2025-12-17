@@ -1,0 +1,36 @@
+{
+  "version": "v1",
+  "blocklist": [],
+  "data": [
+    {
+      "schema_version": "1.0.0",
+      "id": "carnivores_io",
+      "name": "CarnivoresIO",
+      "tagline": "Import/Export Carnivores .3DF and .CAR models with animations",
+      "version": "2.0.0",
+      "type": "add-on",
+      "maintainer": "Tibor Harsanyi <hkmahk0as@mozmail.com>",
+      "license": [
+        "SPDX:GPL-3.0-or-later"
+      ],
+      "blender_version_min": "4.2.0",
+      "blender_version_max": "5.0.0",
+      "website": "https://github.com/Tibbee/CarnivoresIO",
+      "copyright": [
+        "2024-2025 Tibor Harsanyi"
+      ],
+      "permissions": {
+        "files": "Required for importing and exporting model and texture files"
+      },
+      "tags": [
+        "Import-Export",
+        "Game Engine",
+        "Animation",
+        "UV"
+      ],
+      "archive_url": "./carnivores_io-2.0.0.zip",
+      "archive_size": 66084,
+      "archive_hash": "sha256:8f5f4512665506a4fed7736073f987ac89e5ca444357f72af6e345bac19d7774"
+    }
+  ]
+}
