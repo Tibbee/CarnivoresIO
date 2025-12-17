@@ -129,3 +129,129 @@ def bulk_modify_flag(mesh, selected_indices, mask, op):
     after_sel = vals[selected_indices]
     changed = int(np.count_nonzero(before_sel != after_sel))
     return changed
+
+def get_flag_color(flags):
+    """
+    Calculate RGBA color based on 3DF flags.
+    Based on io_carnivores.py logic but adapted for bitmasks.
+    """
+    # Base color: White
+    color = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+
+    # Define tint colors for each bit
+    # Format: (Bit Mask, Tint Color RGBA)
+    # Using the same color scheme as the reference implementation
+    tints = [
+        (1 << 0, [1.0, 0.0, 1.0, 1.0]),  # Double Side -> Magenta
+        (1 << 1, [0.0, 1.0, 0.0, 1.0]),  # Dark Back -> Green
+        (1 << 2, [0.0, 0.0, 1.0, 1.0]),  # Opacity -> Blue
+        (1 << 3, [1.0, 1.0, 0.0, 1.0]),  # Transparent -> Yellow
+        (1 << 4, [1.0, 0.0, 0.0, 1.0]),  # Mortal -> Red
+        (1 << 5, [0.0, 1.0, 1.0, 1.0]),  # Phong -> Cyan
+        (1 << 6, [0.5, 0.5, 0.5, 1.0]),  # Env Map -> Gray
+        (1 << 7, [1.0, 0.5, 0.0, 1.0]),  # Need VC -> Orange
+        (1 << 8, [0.0, 0.0, 0.0, 1.0]),  # Dark -> Black
+    ]
+
+    for mask, tint in tints:
+        if flags & mask:
+            # Simple averaging blend (matches reference)
+            # (current + tint) / 2
+            color = (color + np.array(tint, dtype=np.float32)) * 0.5
+
+    return color
+
+@timed("update_flag_colors")
+def update_flag_colors(mesh):
+    """
+    Updates the 'FlagColors' vertex color attribute based on '3df_flags'.
+    Creates the attribute if it doesn't exist.
+    """
+    if not mesh:
+        return
+
+    # Ensure 3df_flags exists
+    attr_flags = mesh.attributes.get("3df_flags")
+    if not attr_flags or attr_flags.domain != 'FACE' or attr_flags.data_type != 'INT':
+        return
+
+    # Get flags as numpy array
+    face_count = len(mesh.polygons)
+    flags = np.zeros(face_count, dtype=np.int32)
+    attr_flags.data.foreach_get("value", flags)
+
+    # Ensure FlagColors attribute exists (Color Attribute in newer Blender)
+    # domain='CORNER' is standard for vertex colors
+    if "FlagColors" not in mesh.attributes:
+        mesh.attributes.new(name="FlagColors", type='BYTE_COLOR', domain='CORNER')
+    
+    attr_colors = mesh.attributes["FlagColors"]
+
+    # Calculate colors for all faces
+    # Vectorization Strategy:
+    # 1. Pre-calculate the color for every unique flag combination found?
+    #    OR just iterate. Iterating Python might be slow for high poly.
+    #    Let's try a numpy approach.
+    
+    # Construct an array of shape (face_count, 4) initialized to white
+    colors = np.ones((face_count, 4), dtype=np.float32)
+
+    # Apply tints vectorially
+    # Tints logic: color = (color + tint) / 2  => color * 0.5 + tint * 0.5
+    
+    tints_map = [
+        (1 << 0, np.array([1.0, 0.0, 1.0, 1.0])), # Magenta
+        (1 << 1, np.array([0.0, 1.0, 0.0, 1.0])), # Green
+        (1 << 2, np.array([0.0, 0.0, 1.0, 1.0])), # Blue
+        (1 << 3, np.array([1.0, 1.0, 0.0, 1.0])), # Yellow
+        (1 << 4, np.array([1.0, 0.0, 0.0, 1.0])), # Red
+        (1 << 5, np.array([0.0, 1.0, 1.0, 1.0])), # Cyan
+        (1 << 6, np.array([0.5, 0.5, 0.5, 1.0])), # Gray
+        (1 << 7, np.array([1.0, 0.5, 0.0, 1.0])), # Orange
+        (1 << 8, np.array([0.0, 0.0, 0.0, 1.0])), # Black
+    ]
+
+    for mask, tint in tints_map:
+        # Find indices where this flag is set
+        mask_indices = (flags & mask) != 0
+        if np.any(mask_indices):
+            # Apply blend
+            colors[mask_indices] = (colors[mask_indices] + tint) * 0.5
+
+    # Prepare Loop Colors
+    # Vertex Colors are stored per Loop (Corner).
+    # We need to map Face Index -> Loop Indices.
+    # Mesh.loops has 'vertex_index' and 'edge_index'.
+    # Mesh.polygons has 'loop_start' and 'loop_total'.
+    
+    loop_count = len(mesh.loops)
+    
+    # We need an array of colors matching the loop count.
+    # We can create a mapping from Loop Index -> Face Index.
+    # Or simpler: Expand face colors to loops.
+    
+    # 1. Get loop counts per face to repeat the face colors appropriately
+    # loop_totals = np.zeros(face_count, dtype=np.int32)
+    # mesh.polygons.foreach_get("loop_total", loop_totals)
+    
+    # 2. Repeat face colors. `np.repeat` repeats elements.
+    # loop_colors_float = np.repeat(colors, loop_totals, axis=0)
+    
+    # Wait! The above assumes the loops are stored contiguously per face (0,1,2 then 3,4,5).
+    # Blender guarantees this for `mesh.loops` when accessed sequentially via polygon.loop_start
+    # ONLY IF the mesh is compact. Usually yes.
+    # Let's verify: mesh.polygons[i] uses loops[loop_start : loop_start + loop_total].
+    # So yes, if we iterate faces in order, we encounter loops in order.
+    # BUT `np.repeat` works on the array logic.
+    
+    # Let's check if loop_totals is constant? No, can be quads/tris.
+    loop_totals = np.zeros(face_count, dtype=np.int32)
+    mesh.polygons.foreach_get("loop_total", loop_totals)
+    
+    loop_colors_float = np.repeat(colors, loop_totals, axis=0)
+    
+    # Flatten to 1D array for foreach_set
+    loop_colors_flat = loop_colors_float.flatten()
+    
+    # Set the colors
+    attr_colors.data.foreach_set("color", loop_colors_flat)

@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CarnivoresIO",
     "author": "StriderTibe",
-    "version": (0, 7, 0),
+    "version": (2, 0, 0),
     "blender": (4, 0, 0),
     "location": "File > Import-Export",
     "description": "Import/Export Carnivores .3DF and .CAR models with animations",
@@ -9,6 +9,7 @@ bl_info = {
 }
 
 import bpy
+import os
 from .operators import classes as operator_classes
 from .operators import animation as anim_ops
 from .utils import animation as anim_utils

@@ -64,6 +64,11 @@ class VIEW3D_PT_3df_face_flags(bpy.types.Panel):
             row.operator('carnivores.create_3df_flags', icon='ADD', text="Create '3df_flags'")
             layout.label(text='Creates a face-domain INT attribute set to 0')
             return
+        
+        # New: Visualize Colors button
+        layout.operator("carnivores.visualize_flags", text="Visualize Flags (Colors)", icon="COLOR")
+        layout.separator()
+        
         counts, total = flag_utils.count_flag_hits(obj)
         if total == 0:
             layout.label(text='Mesh has no faces', icon='INFO')
@@ -93,6 +98,25 @@ class VIEW3D_PT_3df_face_flags(bpy.types.Panel):
             op.flag_bit = bit
         layout.separator()
         layout.operator('carnivores.modify_3df_flag', text='Clear All Flags', icon='X').action = 'CLEAR_ALL'
+
+class CARNIVORES_OT_visualize_flags(bpy.types.Operator):
+    """Generates Vertex Colors on the 'FlagColors' layer to visualize face flags"""
+    bl_idname = "carnivores.visualize_flags"
+    bl_label = "Visualize Flags"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    def execute(self, context):
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            self.report({'ERROR'}, "Active object must be a mesh.")
+            return {'CANCELLED'}
+        
+        flag_utils.update_flag_colors(obj.data)
+        
+        # Optionally switch viewport mode to show colors?
+        # That might be intrusive. Let's just report.
+        self.report({'INFO'}, "Updated 'FlagColors' attribute.")
+        return {'FINISHED'}
 
 class CARNIVORES_OT_select_by_flags(bpy.types.Operator):
     """Select/Deselect/Invert faces on the active mesh by 3DF flag mask"""
@@ -285,6 +309,9 @@ class CARNIVORES_OT_modify_3df_flag(bpy.types.Operator):
                     attr.data.foreach_set('value', vals)
                     mesh.update()
                     self.report({'INFO'}, f"Cleared all flags on {face_count} faces.")
+                
+                # Auto-Update Colors
+                flag_utils.update_flag_colors(mesh)
                 return {'FINISHED'}
             else:
                 selected_indices = flag_utils.get_selected_face_indices(obj)
@@ -293,6 +320,10 @@ class CARNIVORES_OT_modify_3df_flag(bpy.types.Operator):
                     return {'CANCELLED'}
                 changed = flag_utils.bulk_modify_flag(mesh, selected_indices, self.flag_bit, self.action.lower())
                 mesh.update()
+                
+                # Auto-Update Colors
+                flag_utils.update_flag_colors(mesh)
+                
                 action_name = {'SET': 'Set', 'CLEAR': 'Cleared', 'TOGGLE': 'Toggled'}[self.action]
                 self.report({'INFO'}, f"{action_name} flag 0x{self.flag_bit:04X} on {changed} faces.")
                 return {'FINISHED'}

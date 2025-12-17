@@ -12,6 +12,7 @@ classes = (
     flags.CARNIVORES_OT_select_by_flags,
     flags.CARNIVORES_OT_modify_3df_flag,
     flags.CARNIVORES_OT_clear_flag_selections,
+    flags.CARNIVORES_OT_visualize_flags,
     flags.VIEW3D_PT_carnivores_selection,
     
     animation.CARNIVORES_OT_play_linked_sound,
