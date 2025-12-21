@@ -99,8 +99,18 @@ def gather_mesh_data(obj, export_matrix, export_textures=False, flip_u=False, fl
         tmp_mesh.vertices.foreach_get("co", verts_co_flat)
         verts_co = verts_co_flat.reshape(vertex_count, 3)
 
+        # 1. Coordinate Space Transformation
+        # We want to export vertices in the SAME space as the bones (Armature-Relative).
+        # This keeps the mesh and skeleton perfectly synced regardless of scene position.
+        full_matrix = export_matrix
+        if obj.parent and obj.parent.type == 'ARMATURE':
+            # Mesh to Armature transform
+            mesh_to_arm = np.array(obj.parent.matrix_world.inverted() @ obj.matrix_world)
+            # Combine matrices
+            full_matrix = export_matrix @ mesh_to_arm
+
         # Homogeneous transform
-        verts_arr['coord'] = utils.apply_import_matrix(verts_co, export_matrix)
+        verts_arr['coord'] = utils.apply_import_matrix(verts_co, full_matrix)
         verts_arr['owner'] = vertex_owners
         verts_arr['hide'] = 0
 

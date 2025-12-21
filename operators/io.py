@@ -70,6 +70,30 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         description='Negate X-axis to match game\'s left-handed coordinate system (fixes mirroring)',
         default=True
     )
+    smooth_weights: bpy.props.BoolProperty(
+        name="Smooth Weights",
+        description="Procedurally smooth vertex weights for more organic deformation",
+        default=False
+    )
+    smooth_iterations: bpy.props.IntProperty(
+        name="Smoothing Iterations",
+        description="Number of smoothing passes. Higher values mean softer joints",
+        default=3,
+        min=1,
+        max=10
+    )
+    smooth_factor: bpy.props.FloatProperty(
+        name="Smoothing Factor",
+        description="Intensity of smoothing per pass (0.1 = subtle, 0.9 = aggressive)",
+        default=0.5,
+        min=0.01,
+        max=1.0
+    )
+    smooth_joints_only: bpy.props.BoolProperty(
+        name="Smooth Joints Only",
+        description="Only smooth areas where different bone influences meet (preserves limb rigidity)",
+        default=True
+    )
     
     def draw (self, context):
         layout = self.layout
@@ -88,6 +112,12 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         
         layout.label(text="Bone Import")
         layout.prop(self, "bone_import_type")
+        if self.bone_import_type != 'NONE':
+            layout.prop(self, "smooth_weights")
+            if self.smooth_weights:
+                layout.prop(self, "smooth_iterations")
+                layout.prop(self, "smooth_factor")
+                layout.prop(self, "smooth_joints_only")
         
         layout.separator() 
         
@@ -148,12 +178,24 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
 
                 if self.bone_import_type == 'HOOKS':
                     vertex_groups_by_index = io_utils.create_vertex_groups_from_bones(obj, bone_names, vertices['owner'])
+                    if self.smooth_weights:
+                        io_utils.smooth_vertex_weights(obj, iterations=self.smooth_iterations, factor=self.smooth_factor, joints_only=self.smooth_joints_only)
                     hook_objects = io_utils.create_hooks(bone_names, bonesTransformedPos, bones['parent'], object_name, obj, coll)
                     io_utils.assign_hook_modifiers(obj, hook_objects, vertex_groups_by_index)
 
                 elif self.bone_import_type == 'ARMATURE':
                     io_utils.create_vertex_groups_from_bones(obj, bone_names, vertices['owner'])
-                    armature_obj = io_utils.create_armature(bone_names, bonesTransformedPos, bones['parent'], object_name, coll)
+                    if self.smooth_weights:
+                        io_utils.smooth_vertex_weights(obj, iterations=self.smooth_iterations, factor=self.smooth_factor, joints_only=self.smooth_joints_only)
+                    armature_obj = io_utils.create_armature(
+                        bone_names, 
+                        bonesTransformedPos, 
+                        bones['parent'], 
+                        object_name, 
+                        coll,
+                        verticesTransformedPos=verticesTransformedPos,
+                        vertex_owners=vertices['owner']
+                    )
                     io_utils.assign_armature_modifier(obj, armature_obj)
 
                 if warnings:
@@ -455,6 +497,30 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         description='Import embedded sounds as sound datablocks',
         default=True
     )
+    smooth_weights: bpy.props.BoolProperty(
+        name="Smooth Weights",
+        description="Procedurally smooth vertex weights for more organic deformation",
+        default=False
+    )
+    smooth_iterations: bpy.props.IntProperty(
+        name="Smoothing Iterations",
+        description="Number of smoothing passes. Higher values mean softer joints",
+        default=3,
+        min=1,
+        max=10
+    )
+    smooth_factor: bpy.props.FloatProperty(
+        name="Smoothing Factor",
+        description="Intensity of smoothing per pass (0.1 = subtle, 0.9 = aggressive)",
+        default=0.5,
+        min=0.01,
+        max=1.0
+    )
+    smooth_joints_only: bpy.props.BoolProperty(
+        name="Smooth Joints Only",
+        description="Only smooth areas where different bone influences meet (preserves limb rigidity)",
+        default=True
+    )
 
     def draw(self, context):
         layout = self.layout
@@ -469,6 +535,11 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         layout.prop(self, 'flip_handedness')
         layout.prop(self, 'import_animations')
         layout.prop(self, 'import_sounds')
+        layout.prop(self, "smooth_weights")
+        if self.smooth_weights:
+            layout.prop(self, "smooth_iterations")
+            layout.prop(self, "smooth_factor")
+            layout.prop(self, "smooth_joints_only")
         layout.separator()
         box = layout.box()
         box.label(text='Axis Conversion')
@@ -529,6 +600,8 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                 # Vertex groups from owners (dummy bones if needed)
                 if len(bone_names) > 0:
                     io_utils.create_vertex_groups_from_bones(obj, bone_names, vertices['owner'])
+                    if self.smooth_weights:
+                        io_utils.smooth_vertex_weights(obj, iterations=self.smooth_iterations, factor=self.smooth_factor, joints_only=self.smooth_joints_only)
                 # No hooks/armature for .CAR (owners only; no positions/parents)
                 if warnings:
                     bpy.ops.carnivores.modal_message('INVOKE_DEFAULT', message='\n'.join(warnings))

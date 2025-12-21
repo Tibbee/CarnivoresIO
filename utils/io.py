@@ -80,6 +80,73 @@ def create_vertex_groups_from_bones(obj, bone_names, vertex_owners):
             vg.add(vertex_indices.tolist(), 1.0, 'REPLACE')
         
     return vertex_groups_by_index
+
+@timed("smooth_vertex_weights")
+def smooth_vertex_weights(obj, iterations=3, factor=0.5, joints_only=False):
+    """
+    Smooths vertex weights using a topology-based Laplacian approach.
+    """
+    if not obj.vertex_groups or iterations <= 0:
+        return
+
+    mesh = obj.data
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    
+    deform_layer = bm.verts.layers.deform.active
+    if not deform_layer:
+        # Verify if any groups exist, if so verify the layer
+        if obj.vertex_groups:
+            deform_layer = bm.verts.layers.deform.verify()
+        else:
+            bm.free()
+            return
+
+    for _ in range(iterations):
+        # Store changes to apply at the end of the iteration
+        all_new_weights = []
+        
+        for v in bm.verts:
+            if not v.link_edges:
+                continue
+            
+            neighbors = [edge.other_vert(v) for edge in v.link_edges]
+            
+            # Find all group indices present in this vertex and its neighbors
+            v_groups = set(v[deform_layer].keys())
+            neighbor_groups = set()
+            for n in neighbors:
+                neighbor_groups.update(n[deform_layer].keys())
+                
+            all_groups = v_groups.union(neighbor_groups)
+            
+            # "Joints Only" logic:
+            # If all neighbors and the vertex itself belong to the same SINGLE group, skip.
+            if joints_only and len(all_groups) <= 1:
+                continue
+
+            new_v_weights = {}
+            for g_idx in all_groups:
+                self_w = v[deform_layer][g_idx] if g_idx in v[deform_layer] else 0.0
+                neighbor_w_sum = sum(n[deform_layer][g_idx] if g_idx in n[deform_layer] else 0.0 for n in neighbors)
+                avg_neighbor_w = neighbor_w_sum / len(neighbors)
+                
+                # Apply user-defined factor
+                new_v_weights[g_idx] = self_w + factor * (avg_neighbor_w - self_w)
+                
+            all_new_weights.append((v, new_v_weights))
+            
+        # Apply updates
+        for v, weights in all_new_weights:
+            dv = v[deform_layer]
+            for g_idx, w in weights.items():
+                if w > 0.0001:
+                    dv[g_idx] = w
+                elif g_idx in dv:
+                    del dv[g_idx]
+
+    bm.to_mesh(mesh)
+    bm.free()
             
 @timed("create_hooks")
 def create_hooks(bone_names, bonesTransformedPos, parent_indices, object_name, mesh_obj, target_coll):
@@ -112,7 +179,8 @@ def create_hooks(bone_names, bonesTransformedPos, parent_indices, object_name, m
     return hook_objects
     
 @timed("create_armature")
-def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name, target_coll):
+def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name, target_coll, 
+                    verticesTransformedPos=None, vertex_owners=None):
     arm_data = bpy.data.armatures.new(f"{object_name}_Armature")
     arm_obj = bpy.data.objects.new(f"{object_name}_ArmatureObj", arm_data)
     coll = target_coll or bpy.context.scene.collection
@@ -121,32 +189,139 @@ def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name
     bpy.ops.object.mode_set(mode='EDIT')
     edit_bones = arm_obj.data.edit_bones
 
-    # Precompute first child for each bone
-    first_child = [-1] * len(bone_names)
-    for i, parent_idx in enumerate(parent_indices):
-        if parent_idx != -1 and first_child[parent_idx] == -1:
-            first_child[parent_idx] = i
-
-    # Create bones in bulk
-    bone_list = [None] * len(bone_names)
+    # 1. Create all bones first (Heads only)
+    bone_list = []
     for i, name in enumerate(bone_names):
         bone = edit_bones.new(name)
         x, y, z = bonesTransformedPos[i]
         bone.head = (x, y, z)
-        
-        if first_child[i] != -1:
-            cx, cy, cz = bonesTransformedPos[first_child[i]]
-            bone.tail = (cx, cy, cz)
-            bone.use_connect = True
-        else:
-            bone.tail = (x, y, z + 0.1)
-        
-        bone_list[i] = bone
+        bone_list.append(bone)
 
-    # Assign parents in bulk
+    # 2. Analyze Model Basis (Strict Grid Alignment)
+    model_forward = mathutils.Vector((0, 1, 0)) # Default Blender Y-Forward
+    model_side = mathutils.Vector((1, 0, 0))
+    
+    if verticesTransformedPos is not None and len(verticesTransformedPos) > 0:
+        v_arr = np.array(verticesTransformedPos)
+        v_min = np.min(v_arr, axis=0)
+        v_max = np.max(v_arr, axis=0)
+        v_size = v_max - v_min
+        
+        # Identify the dominant horizontal world axis
+        if v_size[0] > v_size[1]:
+            # Model is longer on the X axis
+            model_forward = mathutils.Vector((1, 0, 0))
+            model_side = mathutils.Vector((0, 1, 0))
+        else:
+            # Model is longer on the Y axis (Standard)
+            model_forward = mathutils.Vector((0, 1, 0))
+            model_side = mathutils.Vector((1, 0, 0))
+            
+        # Refine Direction: Point toward the 'heavier' side (where the head likely is)
+        # We check the average position relative to the center
+        v_center = (v_min + v_max) * 0.5
+        v_mean = np.mean(v_arr, axis=0)
+        if (v_mean - v_center).dot(np.array(model_forward)) < 0:
+            model_forward *= -1
+
+    # 3. Map children and vertices for orientation
+    children_map = {i: [] for i in range(len(bone_names))}
     for i, parent_idx in enumerate(parent_indices):
         if parent_idx != -1:
-            bone_list[i].parent = bone_list[parent_idx]
+            children_map[parent_idx].append(i)
+            
+    bone_vertices = {i: [] for i in range(len(bone_names))}
+    if verticesTransformedPos is not None and vertex_owners is not None:
+        for v_idx, b_idx in enumerate(vertex_owners):
+            if b_idx < len(bone_names):
+                bone_vertices[b_idx].append(mathutils.Vector(verticesTransformedPos[v_idx]))
+
+    # 4. Calculate heuristic lengths
+    all_distances = []
+    for i, bone in enumerate(bone_list):
+        children = children_map[i]
+        for c_idx in children:
+            d = (mathutils.Vector(bonesTransformedPos[c_idx]) - mathutils.Vector(bone.head)).length
+            if d > 0.001:
+                all_distances.append(d)
+    
+    global_median = np.median(all_distances) if all_distances else 0.1
+    if global_median < 0.001: global_median = 0.1
+
+    # 5. Set Parents and Calculate Tails
+    for i, bone in enumerate(bone_list):
+        name = bone.name
+        parent_idx = parent_indices[i]
+        if parent_idx != -1:
+            bone.parent = bone_list[parent_idx]
+
+        children = children_map[i]
+        my_head = mathutils.Vector(bone.head)
+        my_verts = bone_vertices[i]
+        
+        # Priority 1: Child-driven orientation
+        if children:
+            child_heads = [mathutils.Vector(bonesTransformedPos[c]) for c in children]
+            if len(children) == 1:
+                target_head = child_heads[0]
+                bone.tail = target_head
+                bone_list[children[0]].use_connect = ((target_head - my_head).length > 0.001)
+            else:
+                centroid = sum(child_heads, mathutils.Vector()) / len(children)
+                vec = centroid - my_head
+                dist = vec.length
+                is_terminal_target = all(len(children_map[c]) == 0 for c in children)
+                threshold = global_median * (5.0 if is_terminal_target else 15.0)
+                if dist > threshold or dist < 0.001:
+                    bone.tail = my_head + (model_forward * global_median)
+                else:
+                    bone.tail = centroid
+                for c_idx in children:
+                    bone_list[c_idx].use_connect = False
+        
+        # Priority 2: Vertex-driven orientation (For leaf deform bones)
+        elif my_verts:
+            max_dist = -1.0
+            furthest_v = None
+            for v in my_verts:
+                d = (v - my_head).length
+                if d > max_dist:
+                    max_dist = d
+                    furthest_v = v
+            if furthest_v and max_dist > 0.001:
+                v_vec = furthest_v - my_head
+                bone.tail = my_head + (v_vec.normalized() * min(max_dist, global_median * 5.0))
+            else:
+                bone.tail = my_head + (model_forward * global_median)
+            bone.use_connect = False
+            
+        # Priority 3: Basis-Aware Fallback for Control Bones (IK/Floor)
+        else:
+            bone.use_connect = False
+            # Floor bone is strictly identified by name OR root+leaf signature
+            is_floor = "floor" in name.lower() or (parent_idx == -1 and len(children) == 0)
+            control_len = 0.1 if is_floor else (global_median * 0.4)
+            
+            if is_floor:
+                bone.tail = my_head + (model_forward * control_len)
+            elif parent_idx != -1:
+                p_bone = bone_list[parent_idx]
+                direction = my_head - mathutils.Vector(p_bone.head)
+                if direction.length < 0.001:
+                    bone.tail = my_head + (model_forward * control_len)
+                else:
+                    # Snap to dino's local axes (Forward, Side, or Up)
+                    d = direction.normalized()
+                    dot_f = d.dot(model_forward)
+                    dot_s = d.dot(model_side)
+                    dot_u = d.z # Z is always world up in this importer
+                    scores = [(abs(dot_f), model_forward * (1 if dot_f > 0 else -1)),
+                              (abs(dot_s), model_side * (1 if dot_s > 0 else -1)),
+                              (abs(dot_u), mathutils.Vector((0,0,1 if dot_u > 0 else -1)))]
+                    best_axis = max(scores, key=lambda x: x[0])[1]
+                    bone.tail = my_head + (best_axis * control_len)
+            else:
+                bone.tail = my_head + (model_forward * control_len)
 
     bpy.ops.object.mode_set(mode='OBJECT')
     return arm_obj
@@ -263,7 +438,7 @@ def create_texture_material(image, object_name):
     
     #links
     links.new(image_texture.outputs[0], diffuse_bsdf.inputs[0])
-    links.new(image_texture_001.outputs[0], diffuse_bsdf_001.inputs[0])
+    links.new(image_texture_001.outputs[0], diffuse_bsdf_001.inputs[1])
     links.new(image_texture_001.outputs[0], math.inputs[0])
     links.new(math.outputs[0], mix_shader.inputs[0])
     links.new(diffuse_bsdf_001.outputs[0], mix_shader.inputs[1])
@@ -383,165 +558,132 @@ def collect_bones_and_owners(obj, export_matrix):
     bone_positions = []
     bone_parents = []
     vertex_owners = np.zeros(len(obj.data.vertices), dtype=np.uint16)
-    bone_index_map = {}  # For quick lookup
+    bone_index_map = {} # Maps Blender Name -> Integer Index
+    clean_name_map = {} # Maps Clean Name -> List of Indices
 
     if obj.parent and obj.parent.type == 'ARMATURE':
         try:
             arm = obj.parent
-            bone_index_map = {}  # Maps clean bone name to list of (index, blender_name) pairs to handle duplicates
             bone_pos_array = np.empty((len(arm.data.bones), 3), dtype=np.float32)
             
-            # Collect bones in original order
+            # 1. Collect Bones and Unique Positions (Armature-Space)
             for i, bone in enumerate(arm.data.bones):
-                # Strip Blender's .001, .002, etc. suffixes
                 name = bone.name
-                clean_name = name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', name) else name
-                bone_names.append(clean_name)
-                bone_pos_array[i] = arm.matrix_world @ bone.head_local
-                bone_parents.append(arm.data.bones.find(bone.parent.name) if bone.parent else -1)
-                # Store both index and Blender name to handle duplicates
-                if clean_name not in bone_index_map:
-                    bone_index_map[clean_name] = []
-                bone_index_map[clean_name].append((i, name))
+                bone_names.append(name)
+                
+                # Use bones in their own local space (relative to Armature origin)
+                bone_pos_array[i] = bone.head_local
+                
+                # Setup hierarchy
+                parent_idx = arm.data.bones.find(bone.parent.name) if bone.parent else -1
+                bone_parents.append(parent_idx)
+                
+                # Map for vertex ownership (Fuzzy matching support)
+                bone_index_map[name] = i
+                clean = name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', name) else name
+                if clean not in clean_name_map:
+                    clean_name_map[clean] = []
+                clean_name_map[clean].append(i)
 
-            # Transform all bone positions at once
+            # Transform all bone positions at once into the final export space (Scale/Axis)
             bone_positions = apply_import_matrix(bone_pos_array, export_matrix).tolist()
 
-            # Assign vertex owners, handling duplicates and unmatched groups
+            # 2. Assign Vertex Owners (Dominant Weight + Fuzzy Matching)
             unmatched_vertices = []
             for v in obj.data.vertices:
-                assigned = False
+                winning_bone_idx = -1
+                highest_weight = -1.0
+                
                 for g in v.groups:
                     vg_name = obj.vertex_groups[g.group].name
-                    vg_name_clean = vg_name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', vg_name) else vg_name
-                    if vg_name_clean in bone_index_map:
-                        # Find the correct bone index by matching the exact Blender vertex group name
-                        for bone_idx, blender_name in bone_index_map[vg_name_clean]:
-                            if blender_name == vg_name:
-                                vertex_owners[v.index] = bone_idx
-                                assigned = True
-                                break
-                if not assigned and v.groups:
+                    
+                    # Exact Match
+                    target_idx = -1
+                    if vg_name in bone_index_map:
+                        target_idx = bone_index_map[vg_name]
+                    else:
+                        # Fuzzy Match (handles cases where groups or bones have different suffixes)
+                        vg_clean = vg_name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', vg_name) else vg_name
+                        if vg_clean in clean_name_map:
+                            target_idx = clean_name_map[vg_clean][0]
+                    
+                    if target_idx != -1:
+                        if g.weight > highest_weight:
+                            highest_weight = g.weight
+                            winning_bone_idx = target_idx
+                
+                if winning_bone_idx != -1:
+                    vertex_owners[v.index] = winning_bone_idx
+                elif v.groups:
                     unmatched_vertices.append(v.index)
 
             if unmatched_vertices:
-                warn(f"{len(unmatched_vertices)} vertices have vertex groups not matching any bone names: {unmatched_vertices}")
-                # Assign unmatched vertices to bone 0 to avoid invalid owners
+                warn(f"{len(unmatched_vertices)} vertices assigned to root bone (no matching bone found).")
                 vertex_owners[unmatched_vertices] = 0
 
-            return bone_names, bone_positions, bone_parents, vertex_owners
+            # 3. Cleanup Names for File Format (Strip suffixes ONLY at return)
+            final_names = []
+            for name in bone_names:
+                clean = name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', name) else name
+                final_names.append(clean[:31])
+
+            return final_names, bone_positions, bone_parents, vertex_owners
 
         except Exception as e:
             error(f"Armature processing failed: {e}")
-            return None  # Keep this to maintain compatibility, but handled in operator
+            return None
 
-    elif obj.parent is None:  # Hooks case (no armature)
+    elif obj.parent is None:  # Hooks case
         hook_mods = [m for m in obj.modifiers if m.type == 'HOOK' and m.object and m.vertex_group]
         if hook_mods:
             temp_list = []
             bone_pos_array = []
+            
+            # Use mesh's world matrix to bring hooks into local space
+            world_to_obj = obj.matrix_world.inverted()
+            
             for mod in hook_mods:
                 hook_obj = mod.object
-                # Strip suffix from name
                 name = hook_obj.name
-                clean_name = name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', name) else name
-                bone_pos_array.append(hook_obj.matrix_world.translation)
-                temp_list.append((clean_name, hook_obj))
+                
+                # Transform hook world position into mesh local space
+                local_pos = world_to_obj @ hook_obj.matrix_world.translation
+                bone_pos_array.append(local_pos)
+                temp_list.append((name, hook_obj))
+                
             bone_pos_array = np.array(bone_pos_array, dtype=np.float32)
             bone_positions = apply_import_matrix(bone_pos_array, export_matrix).tolist()
-            temp_list = [(name, pos, hook_obj) for (name, hook_obj), pos in zip(temp_list, bone_positions)]
 
-            # Do NOT sort temp_list to preserve original .3df bone order
             bone_names = []
-            bone_positions = []
             bone_parents = [-1] * len(temp_list)
             vertex_owners = np.zeros(len(obj.data.vertices), dtype=np.uint16)
-            bone_index_map = {}  # Maps clean_name to list of (index, blender_name) pairs
+            bone_index_map = {}
 
-            for i, (name, pos, hook_obj) in enumerate(temp_list):
+            for i, (name, hook_obj) in enumerate(temp_list):
                 bone_names.append(name)
-                bone_positions.append(pos)
-                # Store both index and Blender name to handle duplicates
-                if name not in bone_index_map:
-                    bone_index_map[name] = []
-                bone_index_map[name].append((i, hook_obj.name))
+                bone_index_map[name] = i
 
-            # Set parents
-            for i, (name, pos, hook_obj) in enumerate(temp_list):
+            for i, (name, hook_obj) in enumerate(temp_list):
                 if hook_obj.parent:
-                    parent_name = hook_obj.parent.name
-                    clean_parent_name = parent_name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', parent_name) else parent_name
-                    if clean_parent_name in bone_index_map:
-                        # Find the exact parent by matching Blender name
-                        for parent_idx, blender_name in bone_index_map[clean_parent_name]:
-                            if blender_name == parent_name:
-                                bone_parents[i] = parent_idx
-                                break
+                    p_name = hook_obj.parent.name
+                    if p_name in bone_index_map:
+                        bone_parents[i] = bone_index_map[p_name]
 
-            # Assign vertex owners, handling duplicates by matching Blender vertex group names
             for v in obj.data.vertices:
+                winning_idx = 0
+                max_w = -1.0
                 for g in v.groups:
                     vg_name = obj.vertex_groups[g.group].name
-                    vg_name_clean = vg_name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', vg_name) else vg_name
-                    if vg_name_clean in bone_index_map:
-                        # Find the correct bone index by matching the exact Blender vertex group name
-                        for bone_idx, blender_name in bone_index_map[vg_name_clean]:
-                            if blender_name == vg_name:
-                                vertex_owners[v.index] = bone_idx
-                                break
+                    if vg_name in bone_index_map:
+                        if g.weight > max_w:
+                            max_w = g.weight
+                            winning_idx = bone_index_map[vg_name]
+                vertex_owners[v.index] = winning_idx
 
-            return bone_names, bone_positions, bone_parents, vertex_owners
+            final_names = [n.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', n) else n for n in bone_names]
+            return final_names, bone_positions, bone_parents, vertex_owners
 
-    # If no armature or hook modifiers, but has vertex groups,
-    # interpret these vertex groups as "bones" for the .car format.
-    # Vertex owner indices will be based on the alphabetical order of vertex group names.
-    if not obj.parent or obj.parent.type != 'ARMATURE': # No armature parent
-        hook_mods = [m for m in obj.modifiers if m.type == 'HOOK' and m.object and m.vertex_group]
-        if not hook_mods and obj.vertex_groups: # No hooks, but has vertex groups
-            
-            # Filter for non-empty vertex groups and sort them alphabetically for consistent indexing
-            # We assume any existing VG could be used for ownership.
-            active_vgs = []
-            for vg in obj.vertex_groups:
-                # To check if a VG is empty without iterating all vertices,
-                # we could check if vg.add or vg.remove has been called, but this is more complex.
-                # For now, we'll assume any existing VG is a candidate for owner.
-                active_vgs.append(vg)
-            
-            if active_vgs: # Only proceed if there are actual vertex groups
-                # Helper for natural sorting (handles CarBone_2 vs CarBone_10 correctly)
-                def natural_sort_key(vg):
-                    return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', vg.name)]
-
-                # Sort naturally to get a deterministic index for 'bone'
-                active_vgs.sort(key=natural_sort_key)
-                
-                bone_names = [vg.name for vg in active_vgs]
-                
-                # Create a map for quick lookup from vg.index (Blender's internal VG index)
-                # to our new 'bone_idx' (based on sorted alphabetical order)
-                vg_blender_idx_to_bone_idx = {vg.index: i for i, vg in enumerate(active_vgs)}
-                
-                bone_positions = [(0.0, 0.0, 0.0)] * len(bone_names) # Dummy positions for carbones
-                bone_parents = [-1] * len(bone_names) # No parents for carbones
-                
-                vertex_owners = np.zeros(len(obj.data.vertices), dtype=np.uint16)
-                
-                for v_idx, vertex in enumerate(obj.data.vertices):
-                    winning_bone_idx = 0 # Default to bone 0 if no recognized group found for this vertex
-                    highest_weight = 0.0
-                    
-                    for g in vertex.groups: # Iterate groups vertex belongs to
-                        if g.group in vg_blender_idx_to_bone_idx: # Check if this group is one of our active_vgs
-                            if g.weight > highest_weight:
-                                highest_weight = g.weight
-                                winning_bone_idx = vg_blender_idx_to_bone_idx[g.group]
-                    
-                    vertex_owners[v_idx] = winning_bone_idx
-                
-                return bone_names, bone_positions, bone_parents, vertex_owners
-    
-    # Fallback: No bones at all (original behavior for truly bone-less meshes)
+    # Fallback for carbones / no bones
     bone_names = ["Default"]
     bone_positions = [(0.0, 0.0, 0.0)]
     bone_parents = [-1]

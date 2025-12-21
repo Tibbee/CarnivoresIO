@@ -14,6 +14,7 @@ from .io import (
     create_image_texture,
     create_texture_material,
     create_vertex_groups_from_bones,
+    smooth_vertex_weights,
     create_hooks,
     assign_hook_modifiers,
     create_armature,

@@ -163,8 +163,14 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                 mesh.vertices.foreach_get("co", verts_co_flat)
                 verts_co = verts_co_flat.reshape(count, 3)
                 
-                # Transform
-                transformed_co = utils.apply_import_matrix(verts_co, export_matrix)
+                # Transform into Armature-local space if armature exists
+                full_matrix = export_matrix
+                if obj.parent and obj.parent.type == 'ARMATURE':
+                    # Mesh to Armature transform (using evaluated matrices for animation accuracy)
+                    mesh_to_arm = eval_obj.parent.matrix_world.inverted() @ eval_obj.matrix_world
+                    full_matrix = export_matrix @ np.array(mesh_to_arm)
+
+                transformed_co = utils.apply_import_matrix(verts_co, full_matrix)
                 
                 # Quantize to fixed point 16.0
                 quantized = np.clip(transformed_co * 16.0, -32768, 32767).astype(np.int16)
@@ -204,12 +210,10 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                     
                     # Name
                     anim_name = strip.name
-                    # Clean name (remove .001 etc implies using Action name? Or Strip name?)
-                    # User reference implies .vtl uses Action. Let's use strip name but clean it or Action Name.
-                    # If multiple strips use same Action, we might want distinct exports if they are cuts.
-                    # But if we use Action Name, they collide.
-                    # Let's use Action Name as base.
-                    clean_name = action.name.replace("_Action", "")
+                    # Use the NLA Strip name as the exported animation name.
+                    # This allows users to reuse the same Action multiple times (e.g. loops)
+                    # or rename animations for export without changing the source Action.
+                    clean_name = strip.name
                     
                     # Range
                     start = int(strip.frame_start)
