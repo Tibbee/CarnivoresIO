@@ -207,121 +207,87 @@ def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name
         v_max = np.max(v_arr, axis=0)
         v_size = v_max - v_min
         
-        # Identify the dominant horizontal world axis
         if v_size[0] > v_size[1]:
-            # Model is longer on the X axis
             model_forward = mathutils.Vector((1, 0, 0))
             model_side = mathutils.Vector((0, 1, 0))
         else:
-            # Model is longer on the Y axis (Standard)
             model_forward = mathutils.Vector((0, 1, 0))
             model_side = mathutils.Vector((1, 0, 0))
             
-        # Refine Direction: Point toward the 'heavier' side (where the head likely is)
-        # We check the average position relative to the center
         v_center = (v_min + v_max) * 0.5
         v_mean = np.mean(v_arr, axis=0)
         if (v_mean - v_center).dot(np.array(model_forward)) < 0:
             model_forward *= -1
 
-    # 3. Map children and vertices for orientation
+    # 3. Map children
     children_map = {i: [] for i in range(len(bone_names))}
     for i, parent_idx in enumerate(parent_indices):
         if parent_idx != -1:
             children_map[parent_idx].append(i)
-            
-    bone_vertices = {i: [] for i in range(len(bone_names))}
-    if verticesTransformedPos is not None and vertex_owners is not None:
-        for v_idx, b_idx in enumerate(vertex_owners):
-            if b_idx < len(bone_names):
-                bone_vertices[b_idx].append(mathutils.Vector(verticesTransformedPos[v_idx]))
 
-    # 4. Calculate heuristic lengths
+    # 4. Global heuristics
     all_distances = []
     for i, bone in enumerate(bone_list):
         children = children_map[i]
         for c_idx in children:
             d = (mathutils.Vector(bonesTransformedPos[c_idx]) - mathutils.Vector(bone.head)).length
-            if d > 0.001:
-                all_distances.append(d)
+            if d > 0.001: all_distances.append(d)
     
     global_median = np.median(all_distances) if all_distances else 0.1
-    if global_median < 0.001: global_median = 0.1
+    min_len = 0.01 # Safety to prevent mesh corruption
 
     # 5. Set Parents and Calculate Tails
     for i, bone in enumerate(bone_list):
-        name = bone.name
         parent_idx = parent_indices[i]
         if parent_idx != -1:
             bone.parent = bone_list[parent_idx]
 
         children = children_map[i]
         my_head = mathutils.Vector(bone.head)
-        my_verts = bone_vertices[i]
         
-        # Priority 1: Child-driven orientation
+        # Priority 1: Parent-Child Chain (Standard)
         if children:
             child_heads = [mathutils.Vector(bonesTransformedPos[c]) for c in children]
             if len(children) == 1:
-                target_head = child_heads[0]
-                bone.tail = target_head
-                bone_list[children[0]].use_connect = ((target_head - my_head).length > 0.001)
+                target_tail = child_heads[0]
+                dist = (target_tail - my_head).length
+                if dist > min_len:
+                    bone.tail = target_tail
+                    bone_list[children[0]].use_connect = True
+                else:
+                    # Bone too short to connect, fallback to heuristic
+                    bone.tail = my_head + (model_forward * max(dist, min_len))
+                    bone_list[children[0]].use_connect = False
             else:
+                # Branching bone: Point toward centroid of children
                 centroid = sum(child_heads, mathutils.Vector()) / len(children)
                 vec = centroid - my_head
-                dist = vec.length
-                is_terminal_target = all(len(children_map[c]) == 0 for c in children)
-                threshold = global_median * (5.0 if is_terminal_target else 15.0)
-                if dist > threshold or dist < 0.001:
-                    bone.tail = my_head + (model_forward * global_median)
-                else:
+                if vec.length > min_len:
                     bone.tail = centroid
+                else:
+                    bone.tail = my_head + (model_forward * min_len)
                 for c_idx in children:
                     bone_list[c_idx].use_connect = False
         
-        # Priority 2: Vertex-driven orientation (For leaf deform bones)
-        elif my_verts:
-            max_dist = -1.0
-            furthest_v = None
-            for v in my_verts:
-                d = (v - my_head).length
-                if d > max_dist:
-                    max_dist = d
-                    furthest_v = v
-            if furthest_v and max_dist > 0.001:
-                v_vec = furthest_v - my_head
-                bone.tail = my_head + (v_vec.normalized() * min(max_dist, global_median * 5.0))
-            else:
-                bone.tail = my_head + (model_forward * global_median)
-            bone.use_connect = False
-            
-        # Priority 3: Basis-Aware Fallback for Control Bones (IK/Floor)
+        # Priority 2: Leaf Bone (Pointing consistent with Parent)
         else:
             bone.use_connect = False
-            # Floor bone is strictly identified by name OR root+leaf signature
-            is_floor = "floor" in name.lower() or (parent_idx == -1 and len(children) == 0)
-            control_len = 0.1 if is_floor else (global_median * 0.4)
-            
-            if is_floor:
-                bone.tail = my_head + (model_forward * control_len)
-            elif parent_idx != -1:
+            if parent_idx != -1:
                 p_bone = bone_list[parent_idx]
-                direction = my_head - mathutils.Vector(p_bone.head)
-                if direction.length < 0.001:
-                    bone.tail = my_head + (model_forward * control_len)
+                p_head = mathutils.Vector(p_bone.head)
+                # Direction from parent to me
+                direction = my_head - p_head
+                if direction.length > 0.001:
+                    bone.tail = my_head + (direction.normalized() * max(direction.length * 0.5, min_len))
                 else:
-                    # Snap to dino's local axes (Forward, Side, or Up)
-                    d = direction.normalized()
-                    dot_f = d.dot(model_forward)
-                    dot_s = d.dot(model_side)
-                    dot_u = d.z # Z is always world up in this importer
-                    scores = [(abs(dot_f), model_forward * (1 if dot_f > 0 else -1)),
-                              (abs(dot_s), model_side * (1 if dot_s > 0 else -1)),
-                              (abs(dot_u), mathutils.Vector((0,0,1 if dot_u > 0 else -1)))]
-                    best_axis = max(scores, key=lambda x: x[0])[1]
-                    bone.tail = my_head + (best_axis * control_len)
+                    bone.tail = my_head + (model_forward * min_len)
             else:
-                bone.tail = my_head + (model_forward * control_len)
+                # Root leaf (rare): Floor bone or single bone model
+                bone.tail = my_head + (model_forward * global_median * 0.5)
+
+        # Final safety check for tail position
+        if (mathutils.Vector(bone.tail) - my_head).length < min_len:
+            bone.tail = my_head + (model_forward * min_len)
 
     bpy.ops.object.mode_set(mode='OBJECT')
     return arm_obj

@@ -703,6 +703,91 @@ class CARNIVORES_OT_resync_animation(bpy.types.Operator):
                             updated = True
         return updated
 
+class CARNIVORES_OT_reconstruct_armature(bpy.types.Operator):
+    """Reconstruct a skeletal rig from vertex groups (bone owners). Useful for .car models."""
+    bl_idname = "carnivores.reconstruct_armature"
+    bl_label = "Reconstruct Rig from Owners"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj and obj.type == 'MESH' and obj.vertex_groups
+
+    def execute(self, context):
+        obj = context.active_object
+        try:
+            anim_utils.reconstruct_armature(obj)
+            self.report({'INFO'}, "Armature reconstructed and assigned.")
+            return {'FINISHED'}
+        except Exception as e:
+            self.report({'ERROR'}, f"Reconstruction failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {'CANCELLED'}
+
+class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
+    """Log detailed skeletal information to a text datablock for debugging."""
+    bl_idname = "carnivores.debug_rig_info"
+    bl_label = "Log Rig Debug Info"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            self.report({'ERROR'}, "Select a mesh object.")
+            return {'CANCELLED'}
+
+        lines = []
+        lines.append(f"DEBUG REPORT: {obj.name}")
+        lines.append("="*40)
+        
+        # Vertex Group Info
+        lines.append("\nVERTEX GROUPS:")
+        v_counts = {vg.index: 0 for vg in obj.vertex_groups}
+        for v in obj.data.vertices:
+            for g in v.groups:
+                if g.group in v_counts:
+                    v_counts[g.group] += 1
+        
+        for vg in obj.vertex_groups:
+            lines.append(f"ID {vg.index:02d}: {vg.name:<20} | Verts: {v_counts[vg.index]}")
+
+        # Armature Info
+        arm = None
+        if obj.parent and obj.parent.type == 'ARMATURE':
+            arm = obj.parent
+        else:
+            # Check modifier
+            for mod in obj.modifiers:
+                if mod.type == 'ARMATURE' and mod.object:
+                    arm = mod.object
+                    break
+        
+        if arm:
+            lines.append(f"\nARMATURE: {arm.name}")
+            lines.append("-" * 20)
+            for bone in arm.data.bones:
+                p_name = bone.parent.name if bone.parent else "NONE"
+                h = bone.head_local
+                t = bone.tail_local
+                lines.append(f"Bone: {bone.name:<20} | Parent: {p_name:<20}")
+                lines.append(f"      Head: ({h.x:7.3f}, {h.y:7.3f}, {h.z:7.3f})")
+                lines.append(f"      Tail: ({t.x:7.3f}, {t.y:7.3f}, {t.z:7.3f})")
+                lines.append(f"      Length: {(t-h).length:7.3f}")
+        else:
+            lines.append("\nNO ARMATURE FOUND.")
+
+        # Write to Text Editor
+        txt_name = "Carnivores_Rig_Debug"
+        txt = bpy.data.texts.get(txt_name) or bpy.data.texts.new(txt_name)
+        txt.clear()
+        txt.write("\n".join(lines))
+        
+        # Switch area to Text Editor if possible, or just report
+        self.report({'INFO'}, f"Debug info written to text datablock: {txt_name}")
+        return {'FINISHED'}
+
 class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
     bl_label = "Carnivores Animation"
     bl_idname = "VIEW3D_PT_carnivores_animation"
@@ -732,7 +817,17 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
         # Determine Animation Data Source
         anim_data = anim_utils.get_active_animation_data(obj)
 
+        def draw_rigging_utilities():
+            box = layout.box()
+            box.label(text="Rigging Utilities:", icon='ARMATURE_DATA')
+            col = box.column(align=True)
+            col.operator(CARNIVORES_OT_reconstruct_armature.bl_idname, icon='BONE_DATA')
+            col.operator(CARNIVORES_OT_debug_rig_info.bl_idname, icon='TEXT')
+
         if not anim_data:
+            draw_rigging_utilities()
+            layout.separator()
+            
             source_mode = getattr(obj, "carnivores_anim_source", "AUTO")
             if source_mode == 'SHAPE_KEYS':
                  layout.label(text="No Shape Key Animation Data", icon='INFO')
@@ -791,3 +886,6 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
                     op.action_name = action.name
             elif active_track:
                 layout.label(text="Empty Track (No Strips)", icon='INFO')
+        
+        layout.separator()
+        draw_rigging_utilities()

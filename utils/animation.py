@@ -7,6 +7,7 @@ import aud
 import numpy as np
 from .common import timed
 from .io import apply_import_matrix
+from . import io as io_utils
 from .logger import info, debug, warn, error
 
 # Global state for sound files
@@ -327,7 +328,7 @@ def auto_create_shape_key_actions_from_car(obj, frame_step=1, parsed_animations=
     except Exception as e:
         warn(f"NLA batch push failed (non-fatal): {e}")
         import traceback
-        traceback.print_exc()  # Log full stack for debug (remove if noisy)
+        traceback.print_exc()  # Log full stack for debug (remove if noisy) 
     
     # Single update at end (key for perf)
     bpy.context.view_layer.update()
@@ -489,3 +490,154 @@ def get_active_animation_data(obj):
         if sk_anim:
             return sk_anim
         return obj_anim
+
+@timed('calculate_vertex_group_centroids')
+def calculate_vertex_group_centroids(obj):
+    """
+    Calculates the weighted centroid for each vertex group.
+    Returns: list of (x, y, z) positions in group order.
+    """
+    mesh = obj.data
+    num_groups = len(obj.vertex_groups)
+    if num_groups == 0:
+        return []
+
+    # Initialize accumulators
+    centroids = np.zeros((num_groups, 3), dtype=np.float64)
+    weights_sum = np.zeros(num_groups, dtype=np.float64)
+
+    # Get vertex positions
+    v_count = len(mesh.vertices)
+    v_pos = np.empty(v_count * 3, dtype=np.float32)
+    mesh.vertices.foreach_get('co', v_pos) # FIXED: Use foreach_get, not foreach_set
+    v_pos = v_pos.reshape((v_count, 3))
+
+    # Process weights
+    for v_idx, v in enumerate(mesh.vertices):
+        for g in v.groups:
+            g_idx = g.group
+            w = g.weight
+            if g_idx < num_groups:
+                centroids[g_idx] += v_pos[v_idx] * w
+                weights_sum[g_idx] += w
+
+    # Avoid division by zero (for groups with no assigned vertices)
+    for i in range(num_groups):
+        if weights_sum[i] > 0:
+            centroids[i] /= weights_sum[i]
+        else:
+            # Fallback to mesh center if group is empty
+            centroids[i] = np.mean(v_pos, axis=0) if v_count > 0 else (0, 0, 0)
+
+    return centroids.tolist()
+
+@timed('infer_hierarchy_mst')
+def infer_hierarchy_mst(centroids, bone_names=None):
+    """
+    Infers a parent-child hierarchy from centroids using Prim's MST algorithm.
+    Symmetry-Aware: Heavily penalizes crossing the X=0 center plane.
+    Root selection: Priority given to 'floor' bone or ID 0.
+    """
+    num_bones = len(centroids)
+    if num_bones <= 1:
+        return [-1] * num_bones
+
+    parents = [-1] * num_bones
+    connected = [False] * num_bones
+    all_pos = np.array(centroids)
+    
+    # 1. Identify Root
+    # Preference: Bone named 'floor' (case insensitive) or index 0.
+    root_idx = 0
+    if bone_names:
+        for i, name in enumerate(bone_names):
+            if "floor" in name.lower():
+                root_idx = i
+                break
+    
+    connected[root_idx] = True
+    
+    # 2. Symmetry-Aware MST
+    for _ in range(num_bones - 1):
+        min_dist = float('inf')
+        best_pair = (-1, -1) # (parent, child) 
+        
+        for i in range(num_bones):
+            if not connected[i]: continue
+            
+            p_pos = all_pos[i]
+            for j in range(num_bones):
+                if connected[j]: continue
+                
+                c_pos = all_pos[j]
+                
+                # Base distance
+                dist = np.linalg.norm(p_pos - c_pos)
+                
+                # Symmetry Penalty: Prevent cross-leg connections
+                # Penalize if child and parent are on opposite sides of X center plane
+                # (Using 0.05 margin to allow spine bones to connect even if slightly off-center)
+                if (p_pos[0] > 0.05 and c_pos[0] < -0.05) or (p_pos[0] < -0.05 and c_pos[0] > 0.05):
+                    dist *= 50.0 # High penalty
+                
+                if dist < min_dist:
+                    min_dist = dist
+                    best_pair = (i, j)
+        
+        if best_pair[1] != -1:
+            parents[best_pair[1]] = best_pair[0]
+            connected[best_pair[1]] = True
+            
+    return parents
+
+@timed('reconstruct_armature')
+def reconstruct_armature(obj):
+    """
+    Full workflow to reconstruct an armature from vertex groups.
+    """
+    if not obj or obj.type != 'MESH':
+        error("Active object must be a mesh")
+        return None
+
+    if not obj.vertex_groups:
+        error("Object has no vertex groups to reconstruct from")
+        return None
+
+    info(f"Reconstructing rig for '{obj.name}'...")
+
+    # 1. Calculate Centroids
+    centroids = calculate_vertex_group_centroids(obj)
+    bone_names = [vg.name for vg in obj.vertex_groups]
+    
+    # 2. Infer Hierarchy
+    parents = infer_hierarchy_mst(centroids, bone_names=bone_names)
+    
+    # 3. Create Armature
+    mesh = obj.data
+    v_count = len(mesh.vertices)
+    v_pos = np.empty(v_count * 3, dtype=np.float32)
+    mesh.vertices.foreach_get('co', v_pos) # FIXED: Use foreach_get
+    v_pos = v_pos.reshape((v_count, 3))
+    
+    v_owners = np.zeros(v_count, dtype=np.int32)
+    for v_idx, v in enumerate(mesh.vertices):
+        if v.groups:
+            v_owners[v_idx] = max(v.groups, key=lambda g: g.weight).group
+        else:
+            v_owners[v_idx] = -1
+
+    arm_obj = io_utils.create_armature(
+        bone_names,
+        centroids,
+        parents,
+        obj.name,
+        obj.users_collection[0] if obj.users_collection else None,
+        verticesTransformedPos=v_pos,
+        vertex_owners=v_owners
+    )
+    
+    # 4. Link Mesh to Armature
+    io_utils.assign_armature_modifier(obj, arm_obj)
+    
+    info("Rig reconstruction complete.")
+    return arm_obj

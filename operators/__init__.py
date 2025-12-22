@@ -23,5 +23,7 @@ classes = (
     animation.CARNIVORES_OT_reset_kps,
     animation.CARNIVORES_OT_play_track_preview,
     animation.CARNIVORES_OT_resync_animation,
+    animation.CARNIVORES_OT_reconstruct_armature,
+    animation.CARNIVORES_OT_debug_rig_info,
     animation.VIEW3D_PT_carnivores_animation,
 )
