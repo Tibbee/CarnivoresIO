@@ -5,6 +5,7 @@ classes = (
     io.CARNIVORES_OT_export_3df,
     io.CARNIVORES_OT_export_car,
     io.CARNIVORES_OT_import_car,
+    io.CARNIVORES_OT_export_3dn,
     io.CARNIVORES_OT_modal_message,
     
     flags.CARNIVORES_OT_create_3df_flags,

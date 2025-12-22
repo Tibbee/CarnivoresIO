@@ -172,6 +172,7 @@ def menu_func_import(self, context):
 def menu_func_export(self, context):
     self.layout.operator("carnivores.export_3df", text="Carnivores .3DF (.3df)")
     self.layout.operator("carnivores.export_car", text="Carnivores .CAR (.car)")
+    self.layout.operator("carnivores.export_3dn", text="Carnivores .3DN (.3dn)")
 
 if __name__ == "__main__":
     register()

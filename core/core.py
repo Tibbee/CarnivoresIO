@@ -37,3 +37,34 @@ CAR_HEADER_DTYPE = np.dtype([
     ('ani_count', '<u4'), ('sfx_count', '<u4'), ('vertex_count', '<u4'),
     ('face_count', '<u4'), ('texture_size', '<u4')
 ])
+
+THREEDN_HEADER_DTYPE = np.dtype([
+    ('vertex_count', '<u4'),
+    ('face_count',   '<u4'),
+    ('bone_count',   '<u4'),
+    ('model_name',   'S32'),
+    ('has_sprite',   '<u4'),
+])
+
+THREEDN_VERTEX_DTYPE = np.dtype([
+    ('coord', '<f4', (3,)),
+    ('owner', '<i4'),
+])
+
+THREEDN_FACE_DTYPE = np.dtype([
+    ('v1',      '<u4'),
+    ('v2',      '<u4'),
+    ('v3',      '<u4'),
+    ('tax',     '<i2'),
+    ('tay',     '<i2'),
+    ('tbx',     '<i2'),
+    ('tby',     '<i2'),
+    ('tcx',     '<i2'),
+    ('tcy',     '<i2'),
+    ('flags',   '<u2'),
+    ('dmask',   '<u2'),
+    ('distant', '<u4'),
+    ('next',    '<u4'),
+    ('group',   '<u4'),
+    ('reserv',  '<u4', (3,)),
+])

@@ -11,6 +11,7 @@ from ..parsers.parse_3df import parse_3df
 from ..parsers.parse_car import parse_car
 from ..parsers.export_3df import export_3df
 from ..parsers.export_car import export_car
+from ..parsers.export_3dn import export_3dn
 
 @bpy_extras.io_utils.orientation_helper(axis_forward='Z', axis_up='Y')
 class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHelper):
@@ -612,6 +613,125 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         if self.create_materials and self.import_textures:
             io_utils.setup_custom_world_shader()
         return {'FINISHED'}
+
+@bpy_extras.io_utils.orientation_helper(axis_forward='Z', axis_up='Y')
+class CARNIVORES_OT_export_3dn(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
+    bl_idname = "carnivores.export_3dn"
+    bl_label = "Export .3DN Model"
+    bl_description = "Export active mesh object as Carnivores .3dn model file"
+    bl_options = {'PRESET'}
+    
+    filename_ext = ".3dn"
+    filter_glob: bpy.props.StringProperty(default="*.3dn", options={'HIDDEN'}, maxlen=255)
+    
+    scale: bpy.props.FloatProperty(
+        name="Scale",
+        description="Scale factor to apply on export (applies to vertex coordinates)",
+        default=100.0,
+        min=1.0,
+        max=1000.0,
+    )
+    
+    model_name: bpy.props.StringProperty(
+        name="Model Name Override",
+        description="Internal model name (max 32 chars). Defaults to filename if empty.",
+        default="",
+        maxlen=32
+    )
+
+    has_sprite: bpy.props.BoolProperty(
+        name="Has Sprite",
+        description="Whether the model has an associated sprite",
+        default=False
+    )
+
+    sprite_name: bpy.props.StringProperty(
+        name="Sprite Name",
+        description="Name of the associated sprite (max 32 chars)",
+        default="",
+        maxlen=32
+    )
+    
+    flip_u: bpy.props.BoolProperty(
+        name="Flip U",
+        description="Flip U coordinate integers",
+        default=False,
+    )
+    
+    flip_v: bpy.props.BoolProperty(
+        name="Flip V",
+        description="Flip V coordinate integers",
+        default=False,
+    )
+    
+    flip_handedness: bpy.props.BoolProperty(
+        name='Flip Handedness',
+        description='Negate X-axis to match game\'s left-handed coordinate system',
+        default=True
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Export Options")
+        layout.prop(self, "scale")
+        layout.prop(self, "model_name")
+        layout.prop(self, "has_sprite")
+        if self.has_sprite:
+            layout.prop(self, "sprite_name")
+        
+        layout.separator()
+        layout.label(text="UV Options")
+        row = layout.row()
+        row.prop(self, "flip_u")
+        row.prop(self, "flip_v")
+        layout.prop(self, 'flip_handedness')
+        layout.separator()
+        box = layout.box()
+        box.label(text="Axis Conversion")
+        box.prop(self, "axis_forward")
+        box.prop(self, "axis_up")
+
+    @common.timed("CARNIVORES_OT_export_3dn.execute", is_operator=True)
+    def execute(self, context):
+        handedness_matrix = mathutils.Matrix.Scale(-1, 4, (1, 0, 0)) if self.flip_handedness else mathutils.Matrix.Identity(4)
+        export_matrix = (
+            bpy_extras.io_utils.axis_conversion(
+                from_forward='Y',
+                from_up='Z',
+                to_forward=self.axis_forward,
+                to_up=self.axis_up
+            ).to_4x4()
+            @ handedness_matrix
+            @ mathutils.Matrix.Scale(self.scale, 4) 
+        )
+        export_matrix_np = np.array(export_matrix)
+        
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            self.report({'ERROR'}, "No active mesh object selected.")
+            return {'CANCELLED'}
+
+        model_name = self.model_name if self.model_name else os.path.splitext(os.path.basename(self.filepath))[0]
+
+        try:
+            export_3dn(
+                self.filepath,
+                obj,
+                export_matrix_np,
+                model_name=model_name,
+                has_sprite=self.has_sprite,
+                sprite_name=self.sprite_name,
+                flip_u=self.flip_u,
+                flip_v=self.flip_v,
+                flip_handedness=self.flip_handedness
+            )
+            self.report({'INFO'}, f"Exported {os.path.basename(self.filepath)}")
+            return {'FINISHED'}
+        except Exception as e:
+            self.report({'ERROR'}, f"Export failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {'CANCELLED'}
 
 class CARNIVORES_OT_modal_message(bpy.types.Operator):
     bl_idname = "carnivores.modal_message"
