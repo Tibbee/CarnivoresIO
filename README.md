@@ -32,8 +32,8 @@
 If you want to stay on the "bleeding edge" with automatic updates:
 1. Go to `Preferences > File Paths > Extensions`.
 2. Click **+** to add a new Remote Repository.
-3. Paste the URL to the `index.json` hosted on this repository's GitHub Pages:
-   `https://Tibbee.github.io/CarnivoresIO/index.json`
+3. Paste the URL to the `index.json` hosted on this repository:
+   `https://raw.githubusercontent.com/Tibbee/CarnivoresIO/refs/heads/main/public_repo/index.json`
 4. You can now update the extension directly from the Extensions tab whenever a new dev build is pushed.
 
 ## Usage
