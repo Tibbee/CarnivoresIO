@@ -84,7 +84,12 @@ def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, kps=No
         return
     sk_data = mesh.shape_keys
     sk_data.animation_data_create()
-    action_name = f"{anim_name}_Action"
+    
+    suffix = "_Action"
+    if anim_name.endswith(suffix):
+        action_name = anim_name
+    else:
+        action_name = f"{anim_name}{suffix}"
     
     # Reuse existing action if possible to avoid duplicates (Action.001, etc.)
     action = bpy.data.actions.get(action_name)

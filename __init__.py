@@ -29,9 +29,36 @@ class CarnivoresPreferences(bpy.types.AddonPreferences):
         layout = self.layout
         layout.prop(self, "debug_mode")
 
+class CARNIVORES_MT_import(bpy.types.Menu):
+    bl_idname = "CARNIVORES_MT_import"
+    bl_label = "Carnivores Engine (.3df, .car)"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("carnivores.import_3df", text="Static Model (.3df)")
+        layout.operator("carnivores.import_car", text="Animated Model (.car)")
+
+class CARNIVORES_MT_export(bpy.types.Menu):
+    bl_idname = "CARNIVORES_MT_export"
+    bl_label = "Carnivores Engine (.3df, .car, .3dn)"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("carnivores.export_3df", text="Static Model (.3df)")
+        layout.operator("carnivores.export_car", text="Animated Model (.car)")
+        layout.operator("carnivores.export_3dn", text="Static Model Hunter (.3dn)")
+
+classes = (
+    CarnivoresPreferences,
+    CARNIVORES_MT_import,
+    CARNIVORES_MT_export,
+)
+
 def register():
     # Register Classes
-    bpy.utils.register_class(CarnivoresPreferences)
+    for cls in classes:
+        bpy.utils.register_class(cls)
+        
     for cls in operator_classes:
         bpy.utils.register_class(cls)
 
@@ -146,7 +173,8 @@ def unregister():
     # Unregister Classes
     for cls in reversed(operator_classes):
         bpy.utils.unregister_class(cls)
-    bpy.utils.unregister_class(CarnivoresPreferences)
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
         
     # Unregister Properties
     del bpy.types.Scene.cf_flag_section
@@ -166,13 +194,10 @@ def unregister():
     info("CarnivoresIO: Unregistered")
 
 def menu_func_import(self, context):
-    self.layout.operator("carnivores.import_3df", text="Carnivores .3DF (.3df)")
-    self.layout.operator("carnivores.import_car", text="Carnivores .CAR (.car)")
+    self.layout.menu(CARNIVORES_MT_import.bl_idname, text="Carnivores Engine (.3df, .car)")
 
 def menu_func_export(self, context):
-    self.layout.operator("carnivores.export_3df", text="Carnivores .3DF (.3df)")
-    self.layout.operator("carnivores.export_car", text="Carnivores .CAR (.car)")
-    self.layout.operator("carnivores.export_3dn", text="Carnivores .3DN (.3dn)")
+    self.layout.menu(CARNIVORES_MT_export.bl_idname, text="Carnivores Engine (.3df, .car, .3dn)")
 
 if __name__ == "__main__":
     register()

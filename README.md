@@ -8,6 +8,10 @@
 - **Robust Import/Export**:
   - **.3df (Static)**: Geometry, UVs, and face flags.
   - **.car (Animated)**: High-speed animation baking, shape key management, and sound embedding.
+  - **.3dn (Mobile)**: Optimized static model export for *Carnivores: Dinosaur Hunter* (Mobile/HD).
+- **Advanced Rigging & Animation**:
+  - **Skeleton Reconstruction**: Automatically infer and build a functional Armature from .car vertex groups using a proximity-based Minimum Spanning Tree (MST) algorithm.
+  - **Weight Smoothing**: Optional topology-based Laplacian smoothing on import to fix jagged vertex transitions.
 - **NLA Sound System**: 
   - Real-time sound playback synchronized with NLA strips.
   - Link `.wav` files directly to Actions via the Sidebar panel.
@@ -34,8 +38,9 @@ If you want to stay on the "bleeding edge" with automatic updates:
 
 ## Usage
 
-### 1. Animation & NLA Sounds
+### 1. Rigging & Animation
 *Located in the Sidebar (N) > Carnivores > Animation Panel.*
+- **Reconstruct Rig**: Click "Reconstruct Rig from Owners" to instantly turn a vertex-animated .car model into a poseable skeleton.
 - **KPS Control**: Set the Keys Per Second for each animation. Use **Auto** for Scene FPS or **Override** for custom game speeds.
 - **Linked Sounds**: Use the folder icon to associate a sound with an animation. Toggle the speaker icon to enable real-time playback while scrubbing or playing.
 - **Re-Sync**: Recalculate animation timing instantly after changing FPS or KPS.

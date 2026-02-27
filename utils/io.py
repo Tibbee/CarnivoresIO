@@ -404,7 +404,7 @@ def create_texture_material(image, object_name):
     
     #links
     links.new(image_texture.outputs[0], diffuse_bsdf.inputs[0])
-    links.new(image_texture_001.outputs[0], diffuse_bsdf_001.inputs[1])
+    links.new(image_texture_001.outputs[0], diffuse_bsdf_001.inputs[0])
     links.new(image_texture_001.outputs[0], math.inputs[0])
     links.new(math.outputs[0], mix_shader.inputs[0])
     links.new(diffuse_bsdf_001.outputs[0], mix_shader.inputs[1])

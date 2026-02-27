@@ -191,56 +191,82 @@ While in most models, the msc: string starts at 24 bytes (and is thus 8 bytes lo
 
 Each entry in the animation/sound cross-reference table corresponds to an animation. Because of this, sounds are assigned to the animations sequentially, only one sound can be assigned to each animation, and the order of animations in the table cannot be changed
 
-# 3DN File Format
+# .3DN File Format Specification
 
 3DN is a slightly simplified version of the 3DF and CAR file formats from the Action Forms-developed *Carnivores* games, specifically used in *Carnivores: Dinosaur Hunter*. The 3DN files reorder faces and vertices, storing vertices first. The model data is stored in the 3DN file, while the texture, animations, and sounds are stored elsewhere. These files are typically located in the `\models` directory.
 
-## Format
+## Header (48/80 bytes)
 
-### Header (48/80 bytes)
-- **0x0000** `uint32 4` `VCount` — Number of vertices
-- **0x0004** `uint32 4` `FCount` — Number of faces
-- **0x0008** `uint32 4` — Number of bones
-- **0x000C** `char 32` — Model name
-- **0x0030** `uint32 4` — Whether the model has a sprite
+| Offset   | Type     | Size | Name          | Description |
+|----------|----------|------|---------------|-------------|
+| `0x0000` | uint32   | 4    | **VCount**    | Number of vertices |
+| `0x0004` | uint32   | 4    | **FCount**    | Number of faces |
+| `0x0008` | uint32   | 4    | **BoneCount** | Number of bones |
+| `0x000C` | byte[32] | 32   | **ModelName** | Model name (ASCII string) |
+| `0x002C` | uint32   | 4    | —             | Unknown/Padding |
+| `0x0030` | uint32   | 4    | **HasSprite** | Whether the model has a sprite (Boolean) |
 
-#### If the model has a sprite (32 bytes):
-- **0x0034** `char 32` — Sprite name
+### Sprite Data (optional)
 
-### For each vertex (16 bytes):
-- `float 4` — X coordinate
-- `float 4` — Y coordinate
-- `float 4` — Z coordinate
-- `int32 4` `owner` — Bone to which the vertex is attached, or -1 if none
+If `HasSprite` is non-zero, the following 32 bytes are present:
 
-### For each face (52 bytes):
-- `uint32 4` `v1` — Vertex 1
-- `uint32 4` `v2` — Vertex 2
-- `uint32 4` `v3` — Vertex 3
-- `int16 2` `tax` — v1 texture U coordinate
-- `int16 2` `tay` — v1 texture V coordinate
-- `int16 2` `tbx` — v2 texture U coordinate
-- `int16 2` `tby` — v2 texture V coordinate
-- `int16 2` `tcx` — v3 texture U coordinate
-- `int16 2` `tcy` — v3 texture V coordinate
-- `uint16 2` `flags` — Always null?
-- `uint16 2` `DMask` — Appears unused by the games, possibly editor/tool-specific
-- `uint32 4` `Distant` — Index to previous (parent) face
-- `uint32 4` `Next` — Index to next (child) face
-- `uint32 4` `group` — Appears unused by the games, possibly editor/tool-specific
-- `uint32 4` `reserv[0]` — Unused, reserved for future use (0x00)
-- `uint32 4` `reserv[1]` — Unused, reserved for future use (0x00)
-- `uint32 4` `reserv[2]` — Unused, reserved for future use (0x00)
+| Offset   | Type     | Size | Name           | Description |
+|----------|----------|------|----------------|-------------|
+| `0x0034` | byte[32] | 32   | **SpriteName** | Sprite name (ASCII string) |
 
-### For each bone (48 bytes):
-- `char 32` — Bone name
-- `float 4` — X coordinate
-- `float 4` — Y coordinate
-- `float 4` — Z coordinate
-- `int16 2` — Index to the parent bone, -1 if there is no parent
-- `uint16 2` — Whether the bone is hidden in Designer 2; has no effect in-game
+---
+
+## Vertex Data (16 bytes per vertex, repeated **VCount** times)
+
+| Type   | Size | Name      | Description |
+|--------|------|-----------|-------------|
+| float  | 4    | **X**     | X coordinate |
+| float  | 4    | **Y**     | Y coordinate |
+| float  | 4    | **Z**     | Z coordinate |
+| int32  | 4    | **owner** | Bone index vertex is attached to (`-1` if none) |
+
+---
+
+## Face Data (52 bytes per face, repeated **FCount** times)
+
+| Type   | Size | Name       | Description |
+|--------|------|------------|-------------|
+| uint32 | 4    | **v1**     | Vertex 1 index |
+| uint32 | 4    | **v2**     | Vertex 2 index |
+| uint32 | 4    | **v3**     | Vertex 3 index |
+| int16  | 2    | **tax**    | Texture U coordinate for v1 |
+| int16  | 2    | **tay**    | Texture V coordinate for v1 |
+| int16  | 2    | **tbx**    | Texture U coordinate for v2 |
+| int16  | 2    | **tby**    | Texture V coordinate for v2 |
+| int16  | 2    | **tcx**    | Texture U coordinate for v3 |
+| int16  | 2    | **tcy**    | Texture V coordinate for v3 |
+| uint16 | 2    | **flags**  | Bitfield (Usually null) |
+| uint16 | 2    | **DMask**  | Unused in-game (possibly editor-specific) |
+| uint32 | 4    | **Distant**| Index to previous (parent) face |
+| uint32 | 4    | **Next**   | Index to next (child) face |
+| uint32 | 4    | **group**  | Unused in-game (possibly editor-specific) |
+| uint32 | 4    | **reserv[0]** | Reserved (`0x00`) |
+| uint32 | 4    | **reserv[1]** | Reserved (`0x00`) |
+| uint32 | 4    | **reserv[2]** | Reserved (`0x00`) |
+
+---
+
+## Bone Data (48 bytes per bone, repeated **BoneCount** times)
+
+| Type     | Size | Name      | Description |
+|----------|------|-----------|-------------|
+| byte[32] | 32   | **name**  | Bone name (ASCII string) |
+| float    | 4    | **X**     | X coordinate |
+| float    | 4    | **Y**     | Y coordinate |
+| float    | 4    | **Z**     | Z coordinate |
+| int16    | 2    | **parent**| Parent bone index (`-1` if none) |
+| uint16   | 2    | **hide**  | Hidden in Designer 2 (no in-game effect) |
+
+---
 
 ## Notes
+
 - The **owner** field in the vertex block is treated as an `int32` by the mobile games, rather than two separate `uint16` fields as used by the PC games and editors. There are no models with any non-null values in the second field, and no plans for editors to export to 3DN, so this is not an issue.
   
 - The texture UV coordinates were reordered from `UUUVVV` to `UVUVUV` (pairs of UVs) by Tatem because the latter ordering is more convenient for modern hardware to handle. However, unlike typical modern implementations, which use normalized scalar values, 3DN files (and their CAR and 3DF predecessors) use pixel values for these fields.
+
