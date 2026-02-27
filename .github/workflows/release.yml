@@ -1,0 +1,42 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger on any tag starting with 'v' (e.g., v2.0.0)
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: "Build and Release"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Find Extension Zip
+        id: find_zip
+        run: |
+          # Locate the .zip in public_repo/
+          ZIP_FILE=$(ls public_repo/*.zip | head -n 1)
+          if [ -z "$ZIP_FILE" ]; then
+            echo "Error: No .zip found in public_repo/"
+            exit 1
+          fi
+          echo "ZIP_PATH=$ZIP_FILE" >> $GITHUB_ENV
+          echo "ZIP_NAME=$(basename $ZIP_FILE)" >> $GITHUB_ENV
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP_PATH }}
+          name: Release ${{ github.ref_name }}
+          tag_name: ${{ github.ref }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
