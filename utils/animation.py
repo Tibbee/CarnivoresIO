@@ -13,6 +13,51 @@ from .logger import info, debug, warn, error
 # Global state for sound files
 _temp_sound_files = set()
 
+# --- Blender 5.0+ Compatibility Helpers ---
+
+def get_action_fcurves_storage(action, slot_type='KEY', slot_name="ShapeKeys"):
+    """
+    Returns the object that holds .fcurves (either action or channelbag)
+    and ensures the slot exists for Blender 5.0+.
+    """
+    if bpy.app.version >= (5, 0, 0) or hasattr(action, "slots"):
+        import bpy_extras.anim_utils
+        # Find or create slot
+        target_slot = None
+        for slot in action.slots:
+            # In 5.0+, ActionSlot uses target_id_type and name_display
+            if slot.target_id_type == slot_type and slot.name_display == slot_name:
+                target_slot = slot
+                break
+        
+        if not target_slot:
+            target_slot = action.slots.new(id_type=slot_type, name=slot_name)
+            
+        return bpy_extras.anim_utils.action_ensure_channelbag_for_slot(action, target_slot)
+    else:
+        return action
+
+def iter_action_fcurves(action):
+    """
+    Yields all fcurves in an action, handling both legacy and 5.0+ structures.
+    """
+    if not action:
+        return
+
+    # Check for slots (Blender 5.0+)
+    if (bpy.app.version >= (5, 0, 0) or hasattr(action, "slots")) and hasattr(action, "slots"):
+        import bpy_extras.anim_utils
+        for slot in action.slots:
+            # We use get_channelbag_for_slot which might return None if no bag exists
+            bag = bpy_extras.anim_utils.action_get_channelbag_for_slot(action, slot)
+            if bag:
+                for fc in bag.fcurves:
+                    yield fc
+    # Fallback for legacy
+    elif hasattr(action, "fcurves"):
+        for fc in action.fcurves:
+            yield fc
+
 @timed('create_shape_keys_from_car_animations')
 def create_shape_keys_from_car_animations(obj, animations, import_matrix_np):
     if not animations:
@@ -93,11 +138,18 @@ def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, kps=No
     
     # Reuse existing action if possible to avoid duplicates (Action.001, etc.)
     action = bpy.data.actions.get(action_name)
+    
+    # Get storage for fcurves (Action or Channelbag)
+    fc_storage = get_action_fcurves_storage(action) if action else None
+
     if action:
         # Clear existing data to re-bake
-        action.fcurves.clear()
+        if fc_storage and hasattr(fc_storage, "fcurves"):
+             fc_storage.fcurves.clear()
     else:
         action = bpy.data.actions.new(name=action_name)
+        # Re-fetch storage for new action
+        fc_storage = get_action_fcurves_storage(action)
     
     # Determine KPS and Step
     # Default KPS to 15 if not provided (common Carnivores value) or derive?
@@ -143,7 +195,7 @@ def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, kps=No
     fcurves = {}
     for kb in other_keys + group_keys:
         data_path = f'key_blocks["{kb.name}"].value'
-        fc = action.fcurves.new(data_path=data_path, index=-1)
+        fc = fc_storage.fcurves.new(data_path=data_path, index=-1)
         fcurves[kb.name] = fc
     
     current_frame = float(frame_start)
@@ -343,9 +395,17 @@ def auto_create_shape_key_actions_from_car(obj, frame_step=1, parsed_animations=
 
 def get_action_frame_range(action):
     """Return the min/max frame numbers for keyframes in this Action."""
-    if not action or not action.fcurves:
+    if not action:
         return (1, 1)
-    frames = [kp.co[0] for fc in action.fcurves for kp in fc.keyframe_points]
+        
+    all_fcurves = list(iter_action_fcurves(action))
+    if not all_fcurves:
+        return (1, 1)
+
+    frames = [kp.co[0] for fc in all_fcurves for kp in fc.keyframe_points]
+    if not frames:
+        return (1, 1)
+        
     return (int(min(frames)), int(max(frames)))
 
 def import_car_sounds(self, sounds, model_name, context):
@@ -426,7 +486,11 @@ def rescale_standard_action(action, kps, scene_fps):
     Assumption: The existing keyframes represent sequential 'Game Frames'.
     We map the i-th unique keyframe time to: StartFrame + (i * FrameStep).
     """
-    if not action or not action.fcurves:
+    if not action:
+        return
+
+    all_fcurves = list(iter_action_fcurves(action))
+    if not all_fcurves:
         return
 
     # Calculate target step
@@ -437,7 +501,7 @@ def rescale_standard_action(action, kps, scene_fps):
 
     # 1. Collect all unique frame times
     unique_frames = set()
-    for fc in action.fcurves:
+    for fc in all_fcurves:
         for kp in fc.keyframe_points:
             unique_frames.add(kp.co[0])
     
@@ -455,7 +519,7 @@ def rescale_standard_action(action, kps, scene_fps):
         frame_map[old_frame] = new_frame
 
     # 3. Apply Mapping
-    for fc in action.fcurves:
+    for fc in all_fcurves:
         for kp in fc.keyframe_points:
             old_time = kp.co[0]
             if old_time in frame_map:

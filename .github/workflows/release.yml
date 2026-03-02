@@ -19,12 +19,23 @@ jobs:
       - name: Find Extension Zip
         id: find_zip
         run: |
-          # Locate the .zip in public_repo/
-          ZIP_FILE=$(ls public_repo/*.zip | head -n 1)
-          if [ -z "$ZIP_FILE" ]; then
+          # Extract version from tag (e.g., v2.1.0 -> 2.1.0)
+          VERSION=${GITHUB_REF_NAME#v}
+          
+          # Specifically look for the zip matching this version
+          ZIP_FILE="public_repo/carnivores_io-${VERSION}.zip"
+          
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "Error: Zip file $ZIP_FILE not found in public_repo/"
+            # Fallback to any zip if the specific one isn't found (safety)
+            ZIP_FILE=$(ls public_repo/*.zip | head -n 1)
+          fi
+          
+          if [ -z "$ZIP_FILE" ] || [ ! -f "$ZIP_FILE" ]; then
             echo "Error: No .zip found in public_repo/"
             exit 1
           fi
+          
           echo "ZIP_PATH=$ZIP_FILE" >> $GITHUB_ENV
           echo "ZIP_NAME=$(basename $ZIP_FILE)" >> $GITHUB_ENV
 

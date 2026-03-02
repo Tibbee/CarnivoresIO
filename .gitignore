@@ -4,3 +4,4 @@ tools/
 else/
 .vscode
 .gemini
+__pycache__

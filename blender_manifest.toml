@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "carnivores_io"
-version = "2.0.0"
+version = "2.1.0"
 name = "CarnivoresIO"
 tagline = "Import/Export Carnivores .3DF and .CAR models with animations"
 maintainer = "Tibor Harsanyi <hkmahk0as@mozmail.com>"
@@ -10,7 +10,7 @@ website = "https://github.com/Tibbee/CarnivoresIO"
 tags = ["Import-Export", "Game Engine", "Animation", "UV"]
 
 blender_version_min = "4.2.0"
-blender_version_max = "5.0.0"
+blender_version_max = "5.0.2"
 license = ["SPDX:GPL-3.0-or-later"]
 copyright = ["2024-2025 Tibor Harsanyi"]
 

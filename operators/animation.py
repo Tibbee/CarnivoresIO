@@ -3,6 +3,7 @@ import bpy_extras.io_utils
 import aud
 import math
 import os
+import time
 from ..utils import animation as anim_utils
 from ..utils import io as io_utils
 from ..utils import common
@@ -13,6 +14,7 @@ _playing_sounds = {}
 _aud_device = None # Global aud device
 _is_real_playback = False # Our reliable flag for actual playback state
 _preview_restore_state = None
+_failed_sound_blocklist = {} # {sound_name: expiry_timestamp}
 
 def get_aud_device():
     global _aud_device
@@ -108,7 +110,7 @@ def playback_stopped_handler(scene):
 
 @bpy.app.handlers.persistent
 def carnivores_nla_sound_handler(scene):
-    global _playing_sounds, _is_real_playback, _preview_restore_state, _aud_device
+    global _playing_sounds, _is_real_playback, _preview_restore_state, _aud_device, _failed_sound_blocklist
     
     # This handler should ONLY run when our flag indicates real playback is happening.
     if not _is_real_playback:
@@ -189,6 +191,15 @@ def carnivores_nla_sound_handler(scene):
         if obj_active in _playing_sounds:
             continue
 
+        # Check Blocklist
+        if linked_sound_name in _failed_sound_blocklist:
+            expiry = _failed_sound_blocklist[linked_sound_name]
+            if time.time() < expiry:
+                # debug(f"AUDIO: Skipping blocked sound '{linked_sound_name}'")
+                continue
+            else:
+                del _failed_sound_blocklist[linked_sound_name] # Expired
+
         debug(f"AUDIO: Triggering sound '{linked_sound_name}' for {obj_active.name}")
         linked_sound_data_block = bpy.data.sounds.get(linked_sound_name)
         if not linked_sound_data_block:
@@ -220,17 +231,22 @@ def carnivores_nla_sound_handler(scene):
         except Exception as e:
             error(f"NLA Sound Error: Could not play sound '{linked_sound_name}' for {obj_active.name}: {e}")
             
+            # Add to blocklist for 5 seconds to prevent spamming the dead driver
+            _failed_sound_blocklist[linked_sound_name] = time.time() + 5.0
+            
             # Check for critical OpenAL/Device errors that require a reset
             err_str = str(e)
             if "Buffer" in err_str or "OpenAL" in err_str:
-                error("AUDIO: Critical OpenAL Error detected. Resetting audio device to recover...")
-                try:
-                    # Invalidate global device so get_aud_device() creates a new one next frame
-                    _aud_device = None 
-                    # Clear handles as they belong to the dead device
-                    _playing_sounds.clear() 
-                except:
-                    pass
+                if time.time() > getattr(scene, "carnivores_last_audio_reset", 0) + 5.0:
+                    error("AUDIO: Critical OpenAL Error detected. Resetting audio device to recover...")
+                    try:
+                        _aud_device = None 
+                        _playing_sounds.clear() 
+                        scene.carnivores_last_audio_reset = time.time()
+                    except:
+                        pass
+                else:
+                    warn("AUDIO: Skipping device reset (cooldown active).")
             
             if obj_active in _playing_sounds:
                 del _playing_sounds[obj_active]
@@ -408,12 +424,26 @@ def preview_loop_handler(scene):
     _preview_restore_state['last_frame'] = current
 
     if should_restart:
-        # Loop audio: Stop current sound so handler restarts it
+        # Loop audio: Instead of stopping (which kills the source), try to rewind
         obj = _preview_restore_state.get('obj')
         if obj and obj in _playing_sounds:
             handle, _, _ = _playing_sounds[obj]
-            handle.stop()
-            del _playing_sounds[obj]
+            try:
+                # aud.STATUS_INVALID = 0, PLAYING = 1, PAUSED = 2, STOPPED = 3
+                if handle.status == aud.STATUS_PLAYING:
+                    handle.position = 0.0
+                else:
+                    # If stopped/invalid, we must let it be recreated or try to resume
+                    handle.position = 0.0
+                    handle.resume()
+            except Exception as e:
+                # If handle is dead/invalid, clean up so handler restarts it
+                # debug(f"AUDIO: Rewind failed ({e}), restarting source.")
+                try:
+                    handle.stop()
+                except:
+                    pass
+                del _playing_sounds[obj]
 
 @bpy.app.handlers.persistent
 def clear_aud_device_on_new_file(scene):
@@ -636,14 +666,18 @@ class CARNIVORES_OT_resync_animation(bpy.types.Operator):
             
         # Determine Type: Shape Key vs Standard
         is_shape_key = False
-        if action.fcurves:
+        
+        # Compatibility: Get all fcurves regardless of Blender version
+        all_fcurves = list(anim_utils.iter_action_fcurves(action))
+        
+        if all_fcurves:
             # Check first curve path
-            path = action.fcurves[0].data_path
+            path = all_fcurves[0].data_path
             if path.startswith("key_blocks"):
                 is_shape_key = True
         
         # Fallback for empty actions: Check if matching shape keys exist
-        if not action.fcurves and obj.type == 'MESH' and obj.data.shape_keys:
+        if not all_fcurves and obj.type == 'MESH' and obj.data.shape_keys:
             if action.name.endswith("_Action"):
                 base = action.name[:-7]
             else:
