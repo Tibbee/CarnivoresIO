@@ -20,7 +20,7 @@ def get_action_fcurves_storage(action, slot_type='KEY', slot_name="ShapeKeys"):
     Returns the object that holds .fcurves (either action or channelbag)
     and ensures the slot exists for Blender 5.0+.
     """
-    if bpy.app.version >= (5, 0, 0) or hasattr(action, "slots"):
+    if bpy.app.version >= (5, 0, 0):
         import bpy_extras.anim_utils
         # Find or create slot
         target_slot = None
@@ -45,7 +45,7 @@ def iter_action_fcurves(action):
         return
 
     # Check for slots (Blender 5.0+)
-    if (bpy.app.version >= (5, 0, 0) or hasattr(action, "slots")) and hasattr(action, "slots"):
+    if bpy.app.version >= (5, 0, 0) and hasattr(action, "slots"):
         import bpy_extras.anim_utils
         for slot in action.slots:
             # We use get_channelbag_for_slot which might return None if no bag exists
