@@ -1,64 +1,86 @@
-# CarnivoresIO Blender Extension
+# 🦖 CarnivoresIO: The Ultimate Blender Toolkit for Carnivores Modding
 
-**CarnivoresIO** is a high-performance Blender extension for importing and exporting Carnivores `.3df` (static) and `.car` (animated) model files. Optimized for **Blender 4.2+**, it provides a professional toolset for handling the custom legacy formats of the Carnivores game series.
+**CarnivoresIO** is a professional-grade Blender extension (4.2+) designed to bridge the gap between modern 3D workflows and the legacy engine of the *Carnivores* game series. Whether you're a veteran modder or a newcomer, CarnivoresIO provides the most advanced, high-performance tools for creating, animating, and exporting models for the Hunt.
 
-## Key Features
+---
 
-- **Blender 4.2 Extension Architecture**: Fully compatible with the new Blender Extensions platform, supporting online updates and standardized metadata.
-- **Robust Import/Export**:
-  - **.3df (Static)**: Geometry, UVs, and face flags.
-  - **.car (Animated)**: High-speed animation baking, shape key management, and sound embedding.
-  - **.3dn (Mobile)**: Optimized static model export for *Carnivores: Dinosaur Hunter* (Mobile/HD).
-- **Advanced Rigging & Animation**:
-  - **Skeleton Reconstruction**: Automatically infer and build a functional Armature from .car vertex groups using a proximity-based Minimum Spanning Tree (MST) algorithm.
-  - **Weight Smoothing**: Optional topology-based Laplacian smoothing on import to fix jagged vertex transitions.
-- **NLA Sound System**: 
-  - Real-time sound playback synchronized with NLA strips.
-  - Link `.wav` files directly to Actions via the Sidebar panel.
-  - "Self-healing" audio device management to prevent playback crashes.
-- **Face Flag Tools**:
-  - **Visualizer**: Automatically generate vertex colors (`FlagColors`) to visualize 3DF face flags (e.g., Transparent, Double-Sided) directly in the viewport.
-  - **Selection Tools**: Select, deselect, or invert faces based on specific bitmask combinations.
-- **Developer-Ready Logging**: New internal logging system with a **Debug Mode** toggle in Addon Preferences for verbose console output.
+### :warning: Compatibility & Requirements
+> [!IMPORTANT]
+> :white_check_mark: **Verified Version:** Blender **4.x-5.x** (all versions from 4.2 to 5.0+).  
+> :x: **Blender 3.x or earlier:** Older versions are not officially supported due to the new Extensions architecture.
 
-## Installation (Blender 4.2+)
+---
 
-### Standard Installation
-1. Download the `carnivores_io-2.x.x.zip` from the [Releases](https://github.com/Tibbee/CarnivoresIO/releases) page.
-2. In Blender, go to `Edit > Preferences > Get Extensions`.
-3. Drag and drop the `.zip` file into the Blender window, or use the menu to install from disk.
+### :package: Installation
 
-### Dev Channel (Auto-Updates)
-If you want to stay on the "bleeding edge" with automatic updates:
-1. Go to `Preferences > File Paths > Extensions`.
-2. Click **+** to add a new Remote Repository.
-3. Paste the URL to the `index.json` hosted on this repository:
+#### **Option A: Standard Installation**
+1. Download `carnivores_io-2.x.x.zip` from the [**Releases**](https://github.com/Tibbee/CarnivoresIO/releases) page.
+2. In Blender, go to **Edit > Preferences > Get Extensions**.
+3. **Drag and drop** the `.zip` file into the Blender window, or use the menu to install from disk.
+
+#### **Option B: Dev Channel (Full Auto-Updates)**
+*This method ensures the addon updates itself without you having to lift a finger.*
+
+1. Navigate to **Preferences > File Paths > Extensions**.
+2. Click the **[ + ]** icon to add a new **Remote Repository**.
+3. Name it "Carnivores Dev" and paste this URL:  
    `https://raw.githubusercontent.com/Tibbee/CarnivoresIO/refs/heads/main/public_repo/index.json`
-4. You can now update the extension directly from the Extensions tab whenever a new dev build is pushed.
 
-## Usage
+> [!TIP]
+> **Pro-Tip:** Under the **Extensions** tab in Preferences, ensure **"Check for updates on startup"** is enabled. This allows the addon to sync with the Dev Channel automatically every time you launch Blender!
 
-### 1. Rigging & Animation
-*Located in the Sidebar (N) > Carnivores > Animation Panel.*
-- **Reconstruct Rig**: Click "Reconstruct Rig from Owners" to instantly turn a vertex-animated .car model into a poseable skeleton.
-- **KPS Control**: Set the Keys Per Second for each animation. Use **Auto** for Scene FPS or **Override** for custom game speeds.
-- **Linked Sounds**: Use the folder icon to associate a sound with an animation. Toggle the speaker icon to enable real-time playback while scrubbing or playing.
-- **Re-Sync**: Recalculate animation timing instantly after changing FPS or KPS.
+---
 
-### 2. Face Flags & Visualization
-*Located in the Sidebar (N) > Carnivores > 3DF Face Flags.*
-- **Visualize Flags**: Generates a vertex color layer that tints faces based on their 3DF flags (e.g., Magenta for Double Sided, Blue for Opacity).
-- **Modify Flags**: Set, Clear, or Toggle specific bits on selected faces.
+### :sparkles: Key Features
 
-### 3. Debugging
+**🚀 High-Performance I/O**
+*   **Format Support:** Full support for `.3df` (Static), `.car` (Animated), and `.3dn` (Mobile/HD).
+*   **Batch Export:** Export entire environment packs at once using the **Multi-Export** feature.
+*   **Auto-Materials:** One-click setup for textures and custom world shaders.
+*   **Handedness Handling:** Automatically fix mirroring with the **Flip Handedness** toggle to match the game engine's left-handed system.
+
+**🦴 Pro Rigging & Animation**
+*   **MST Reconstruction:** Advanced algorithm that infers a functional bone hierarchy from raw vertex groups—no manual rigging required!
+*   **Weight Smoothing:** Laplacian smoothing for organic-looking joints and professional deformations.
+*   **Fast Actions:** Automatically converts vertex animations into modern Shape Key Actions and NLA strips.
+*   **KPS Control:** Manage game-specific Keys Per Second directly in Blender.
+
+**🔊 Real-Time NLA Sound System**
+*   **Synchronized Audio:** Link `.wav` files to animations. Hear your dinosaur's roar in real-time as you scrub the timeline or play animations in Blender.
+*   **Solo Preview:** Rapidly iterate on timing with the **"Play Preview"** loop mode.
+*   **Self-Healing:** Robust device management that automatically recovers from audio driver crashes.
+
+**🚩 Face Flag Power Tools**
+*   **Visualizer:** See your engine flags (Transparency, Double-Sided, etc.) directly in the viewport with automated color coding.
+*   **Smart Selection:** Select or modify faces using complex bitmask logic (e.g., *"Select all transparent faces that are NOT mortal"*).
+*   **Bulk Modification:** Apply, clear, or toggle flags across hundreds of faces simultaneously.
+
+**🛡️ Professional Stability & Validation**
+*   **Engine Safeguards:** Built-in checks for vertex/face limits (1024/2048) and UV range validation.
+*   **Self-Healing:** Automatically repairs common legacy file errors during import.
+
+---
+
+### :tools: Usage
+
+**Where to find the tools:**
+*   **Import/Export:** `File > Import/Export > Carnivores Engine (.3df, .car, .3dn)`.
+*   **Toolbox:** Press **[ N ]** in the 3D Viewport and look for the **"Carnivores"** tab.
+
+**Core Workflow:**
+1.  **Import:** Load your `.car` or `.3df`. Use **Flip Handedness** to match the game's orientation.
+2.  **Rigging:** For `.car` models, click **"Reconstruct Rig"** in the sidebar to instantly generate a poseable skeleton.
+3.  **Animation:** Use the **Animation Panel** to link `.wav` files to actions and sync your **KPS**.
+4.  **Flags:** Use the **3DF Face Flags** panel and click **"Visualize Flags"** to see properties directly on the mesh.
+
+---
+
+### :beetle: Debugging
 - If you encounter issues, go to `Preferences > Extensions > CarnivoresIO` and enable **Debug Mode**.
-- Open the System Console (`Window > Toggle System Console` on Windows) to view detailed logs.
+- Open the System Console (`Window > Toggle System Console` on Windows) to view detailed logs and NumPy-level execution timings.
 
-## Compatibility
-- **Min Version**: Blender 4.2.0
-- **Max Version**: Blender 5.0.0 (Exclusive)
-- **Dependencies**: Uses `numpy` and `aud` (standard in Blender distributions).
+---
 
-## License
+### :balance_scale: License
 Licensed under **GNU GPL v3**.  
 Copyright © 2024-2025 Tibor Harsányi.
