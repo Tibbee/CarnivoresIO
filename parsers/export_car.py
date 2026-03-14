@@ -3,6 +3,8 @@ import numpy as np
 import aud
 import os
 import struct
+import re
+import time
 
 from ..core.core import CAR_HEADER_DTYPE, VERTEX_DTYPE, FACE_DTYPE
 from ..core.constants import TEXTURE_WIDTH
@@ -137,12 +139,15 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         
         debug(f"         Step: {frame_step:.4f}, Samples: {num_samples}")
 
+        start_time = time.perf_counter()
+        # Shared matrix across frames
+        full_matrix_cache = None
+
         for i in range(num_samples):
             current_frame = start + (i * frame_step)
             
-            # Subframe support: passing float to frame_set works in Blender
+            # Update scene/depsgraph to current frame
             scene.frame_set(int(current_frame), subframe=(current_frame % 1.0))
-            context.view_layer.update() # Ensure depsgraph is fully updated
             
             # Evaluate mesh (Deformed by Armature/Action/NLA)
             depsgraph = context.evaluated_depsgraph_get()
@@ -164,13 +169,14 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                 verts_co = verts_co_flat.reshape(count, 3)
                 
                 # Transform into Armature-local space if armature exists
-                full_matrix = export_matrix
-                if obj.parent and obj.parent.type == 'ARMATURE':
-                    # Mesh to Armature transform (using evaluated matrices for animation accuracy)
-                    mesh_to_arm = eval_obj.parent.matrix_world.inverted() @ eval_obj.matrix_world
-                    full_matrix = export_matrix @ np.array(mesh_to_arm)
+                # OPTIMIZATION: Assume mesh_to_arm is static during bake for now.
+                if i == 0:
+                    full_matrix_cache = export_matrix
+                    if obj.parent and obj.parent.type == 'ARMATURE':
+                        mesh_to_arm = eval_obj.parent.matrix_world.inverted() @ eval_obj.matrix_world
+                        full_matrix_cache = export_matrix @ np.array(mesh_to_arm)
 
-                transformed_co = utils.apply_import_matrix(verts_co, full_matrix)
+                transformed_co = utils.apply_import_matrix(verts_co, full_matrix_cache)
                 
                 # Quantize to fixed point 16.0
                 quantized = np.clip(transformed_co * 16.0, -32768, 32767).astype(np.int16)
@@ -179,12 +185,117 @@ def gather_car_animations(obj, export_matrix, vertex_count):
             finally:
                 eval_obj.to_mesh_clear()
         
+        debug(f"[Timing] bake_range '{name}' took {time.perf_counter() - start_time:.6f} seconds")
+        
         # Static Check
         if len(frames_data) > 1:
             if all(np.array_equal(f, frames_data[0]) for f in frames_data[1:]):
                  warn(f"Animation '{name}' appears to be static.")
 
         return frames_data
+
+    def bake_range_fast(name, start, end, kps, anim_source_data, trans_basis, trans_delta, key_blocks_names):
+        """
+        Fast path for Shape Key animations. Bypasses Blender's mesh evaluation.
+        """
+        debug(f"Fast Baking '{name}' ({start}-{end}) KPS:{kps}")
+        
+        # 1. Identify F-Curves for these shape keys in the active source
+        # anim_source_data is either an Action or the NLA system's current state
+        # In our soloing loop, it's safer to just look at the Action of the strip
+        
+        # Map: Key Index (1-based because 0 is basis) -> FCurve
+        fcurve_map = {}
+        target_action = anim_source_data
+        num_keys_total = len(trans_delta) + 1
+        
+        # Use a helper to get fcurves from action (handles 5.0+)
+        def get_fcurves(act):
+            if not act: return []
+            if hasattr(act, "slots") and bpy.app.version >= (5, 0, 0):
+                import bpy_extras.anim_utils
+                fcs = []
+                for slot in act.slots:
+                    bag = bpy_extras.anim_utils.action_get_channelbag_for_slot(act, slot)
+                    if bag: fcs.extend(bag.fcurves)
+                return fcs
+            return getattr(act, "fcurves", [])
+
+        for fc in get_fcurves(target_action):
+            # Path format: key_blocks["Name"].value
+            match = re.match(r'key_blocks\["(.+)"\]\.value', fc.data_path)
+            if match:
+                kb_name = match.group(1)
+                if kb_name in key_blocks_names:
+                    idx = key_blocks_names.get(kb_name) # 0-based
+                    if idx > 0: # Skip basis
+                        fcurve_map[idx - 1] = fc
+
+        # 2. Sample
+        start_sampling = time.perf_counter()
+        scene_fps = scene.render.fps
+        if kps <= 0: kps = 1
+        frame_step = scene_fps / kps
+        num_samples = int(((end - start) / frame_step) + 0.5) + 1
+        
+        frames_data = []
+
+        for i in range(num_samples):
+            t = start + (i * frame_step)
+            
+            # Simple weighted sum
+            current_weights = np.zeros(num_keys_total - 1, dtype=np.float32)
+            for idx, fc in fcurve_map.items():
+                current_weights[idx] = fc.evaluate(t)
+            
+            # (V, 3)
+            interp = trans_basis + np.tensordot(current_weights, trans_delta, axes=([0], [0]))
+            
+            # Quantize
+            quantized = np.clip(interp * 16.0, -32768, 32767).astype(np.int16)
+            frames_data.append(quantized)
+
+        debug(f"[Timing] bake_range_fast '{name}' sampling took {time.perf_counter() - start_sampling:.6f} seconds")
+        return frames_data
+
+    # --- PREPARATIONS FOR BAKE ---
+    # Common Matrix for all animations
+    mesh_to_arm = np.eye(4)
+    if obj.parent and obj.parent.type == 'ARMATURE':
+         mesh_to_arm = np.array(obj.parent.matrix_world.inverted() @ obj.matrix_world)
+    full_matrix = export_matrix @ mesh_to_arm
+
+    # Fast Path Preliminary Data Extraction
+    can_use_fast_path = (
+        obj.data.shape_keys is not None and 
+        all(mod.type not in {'ARMATURE', 'HOOK', 'CLOTH', 'SOFT_BODY'} for mod in obj.modifiers if mod.show_viewport)
+    )
+    
+    trans_basis = None
+    trans_delta = None
+    key_blocks_names = {}
+    
+    if can_use_fast_path:
+        start_sk_gather = time.perf_counter()
+        sk_data = obj.data.shape_keys
+        key_blocks = sk_data.key_blocks
+        num_keys = len(key_blocks)
+        key_blocks_names = {kb.name: i for i, kb in enumerate(key_blocks)}
+        
+        co_blocks = np.empty((num_keys, vertex_count, 3), dtype=np.float32)
+        for i, kb in enumerate(key_blocks):
+            kb.data.foreach_get("co", co_blocks[i].ravel())
+            
+        basis = co_blocks[0]
+        key_delta = co_blocks[1:] - basis
+        
+        # Pre-transform
+        trans_basis = utils.apply_import_matrix(basis, full_matrix)
+        flat_delta = key_delta.reshape(-1, 3)
+        linear_matrix = full_matrix[:3, :3]
+        trans_delta = (flat_delta @ linear_matrix.T).reshape(num_keys - 1, vertex_count, 3)
+        
+        debug(f"[Timing] shape_key_data_extraction (pre-bake) took {time.perf_counter() - start_sk_gather:.6f} seconds")
 
     try:
         # --- PATH A: NLA TRACKS ---
@@ -224,7 +335,10 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                     snd_ptr = getattr(action, 'carnivores_sound_ptr', None)
                     
                     # Bake
-                    frames = bake_range(clean_name, start, end, kps, snd_ptr)
+                    if can_use_fast_path:
+                        frames = bake_range_fast(clean_name, start, end, kps, action, trans_basis, trans_delta, key_blocks_names)
+                    else:
+                        frames = bake_range(clean_name, start, end, kps, snd_ptr)
                     
                     if frames:
                         animations.append({
@@ -248,7 +362,12 @@ def gather_car_animations(obj, export_matrix, vertex_count):
             kps = action.get("carnivores_kps", int(scene.render.fps))
             snd_ptr = getattr(action, 'carnivores_sound_ptr', None)
             
-            frames = bake_range(clean_name, start, end, kps, snd_ptr)
+            # Bake
+            if can_use_fast_path:
+                frames = bake_range_fast(clean_name, start, end, kps, action, trans_basis, trans_delta, key_blocks_names)
+            else:
+                frames = bake_range(clean_name, start, end, kps, snd_ptr)
+                
             if frames:
                 animations.append({
                     'name': clean_name,
@@ -300,15 +419,22 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
                flip_u=False, flip_v=False, flip_handedness=True, 
                model_name_override=""):
     
+    print(f"--- Starting .car export to: {filepath} ---")
+    debug(f"--- Starting .car export to: {filepath} ---")
     # 1. Gather Base Mesh Data
+    start_mesh = time.perf_counter()
     (vertex_count, face_count, bone_count, texture_size, 
      faces_arr, verts_arr, bones_arr, texture_raw) = gather_mesh_data(
         obj, export_matrix, export_textures, flip_u, flip_v, flip_handedness
     )
+    debug(f"[Timing] gather_mesh_data took {time.perf_counter() - start_mesh:.6f} seconds")
 
     # 2. Gather Animations & Sounds
+    start_anim = time.perf_counter()
     anims = gather_car_animations(obj, export_matrix, vertex_count)
+    debug(f"[Timing] gather_car_animations took {time.perf_counter() - start_anim:.6f} seconds")
     
+    start_sound = time.perf_counter()
     sounds_map = {} # Sound DataBlock -> Index in file
     sound_list = [] # List of dicts to write
     cross_ref = np.full(64, -1, dtype=np.int32)
@@ -337,6 +463,8 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
             
             cross_ref[i] = sounds_map[snd.name]
 
+    debug(f"[Timing] sound_processing took {time.perf_counter() - start_sound:.6f} seconds")
+
     # 3. Build Header
     header = np.zeros(1, dtype=CAR_HEADER_DTYPE)
     
@@ -354,6 +482,7 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
     header['texture_size'] = texture_size # Total bytes
 
     # 4. Write File
+    start_write = time.perf_counter()
     with open(filepath, 'wb') as f:
         # Header
         header.tofile(f)

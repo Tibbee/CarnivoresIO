@@ -3,5 +3,5 @@ backup/
 tools/
 else/
 .vscode
-.gemini
+GEMINI.md
 __pycache__
