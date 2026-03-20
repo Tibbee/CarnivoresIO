@@ -1,7 +1,7 @@
 import bpy
 import os
 import shutil
-from ..utils.logger import info, warn
+from ..utils.logger import info, warn, debug
 
 def deploy_presets():
     # Source path in the addon
