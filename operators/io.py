@@ -96,7 +96,7 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         default=True
     )
     
-    def draw (self, context):
+    def draw(self, context):
         layout = self.layout
 
         layout.label(text="Import Options")
@@ -535,28 +535,41 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
 
     def draw(self, context):
         layout = self.layout
-        layout.label(text='Import Options')
-        layout.prop(self, 'scale')
-        layout.prop(self, 'import_textures')
-        row = layout.row()
+        
+        # General Settings
+        box = layout.box()
+        box.label(text="General Settings", icon='PREFERENCES')
+        box.prop(self, 'scale')
+        box.prop(self, 'import_textures')
+        row = box.row()
         row.enabled = self.import_textures
         row.prop(self, 'create_materials')
-        layout.prop(self, 'normal_smooth')
-        layout.prop(self, 'validate')
-        layout.prop(self, 'flip_handedness')
-        layout.prop(self, 'import_animations')
-        if self.import_animations:
-            layout.prop(self, 'use_absolute_shape_keys')
-            layout.prop(self, 'use_kps_timing')
-        layout.prop(self, 'import_sounds')
-        layout.prop(self, "smooth_weights")
-        if self.smooth_weights:
-            layout.prop(self, "smooth_iterations")
-            layout.prop(self, "smooth_factor")
-            layout.prop(self, "smooth_joints_only")
-        layout.separator()
+        box.prop(self, 'normal_smooth')
+        box.prop(self, 'validate')
+        box.prop(self, 'flip_handedness')
+        
+        # Animation Settings
         box = layout.box()
-        box.label(text='Axis Conversion')
+        box.prop(self, 'import_animations', icon='ANIM')
+        if self.import_animations:
+            sub = box.box()
+            sub.prop(self, 'use_absolute_shape_keys')
+            sub.prop(self, 'use_kps_timing')
+        box.prop(self, 'import_sounds')
+        
+        # Bone & Smoothing Settings
+        box = layout.box()
+        box.label(text="Mesh & Bone Smoothing", icon='MOD_SMOOTH')
+        box.prop(self, "smooth_weights")
+        if self.smooth_weights:
+            sub = box.box()
+            sub.prop(self, "smooth_iterations")
+            sub.prop(self, "smooth_factor")
+            sub.prop(self, "smooth_joints_only")
+            
+        # Advanced
+        box = layout.box()
+        box.label(text="Advanced Axis Settings", icon='TRIA_DOWN')
         box.prop(self, 'axis_forward')
         box.prop(self, 'axis_up')
         layout.separator()
