@@ -174,7 +174,7 @@ def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, kps=No
     except AttributeError:
         warn(f"Could not set active action '{action.name}' (likely driven by NLA). Continuing update...")
 
-    key_blocks = [kb for kb in sk_data.key_blocks if re.match(f"^{re.escape(anim_name)}\.Frame_\\d+", kb.name)]
+    key_blocks = [kb for kb in sk_data.key_blocks if re.match(fr"^{re.escape(anim_name)}\.Frame_\d+", kb.name)]
     key_blocks.sort(key=lambda kb: kb.name)
     if not key_blocks:
         warn(f"No shape keys found for animation '{anim_name}'")

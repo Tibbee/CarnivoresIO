@@ -131,6 +131,9 @@ def register():
     if anim_ops.clear_aud_device_on_new_file not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(anim_ops.clear_aud_device_on_new_file)
         
+    from .utils.preset_deployment import deploy_presets
+    deploy_presets()
+        
     info("CarnivoresIO: Registered")
 
 def unregister():
