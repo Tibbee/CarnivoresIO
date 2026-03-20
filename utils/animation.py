@@ -122,7 +122,7 @@ def create_shape_key_action(obj, action_name="CarAnimation"):
     return action
 
 @timed('keyframe_shape_key_animation_as_action')
-def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, kps=None, scene_fps=None, use_absolute=False):
+def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, kps=None, scene_fps=None, use_absolute=False, use_kps_timing=True):
     if not obj or obj.type != 'MESH':
         error('Selected object is not a mesh')
         return
@@ -155,16 +155,16 @@ def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, kps=No
         fc_storage = get_action_fcurves_storage(action)
 
     # Determine KPS and Step
-    # Default KPS to 15 if not provided (common Carnivores value) or derive?
-    # Actually, usually caller provides it. If None, maybe default to scene FPS (1:1 mapping)
     target_kps = int(kps) if kps is not None else 15 
 
     if scene_fps is None:
         scene_fps = bpy.context.scene.render.fps
 
     # Calculate frame_step: How many Blender frames represent 1 Game Frame
-    # e.g. 30 FPS / 10 KPS = 3.0 Blender frames per Game Frame.
-    frame_step = scene_fps / target_kps
+    if use_kps_timing:
+        frame_step = scene_fps / target_kps
+    else:
+        frame_step = 1.0
 
     # Store KPS in action for reference
     action["carnivores_kps"] = target_kps
@@ -181,12 +181,8 @@ def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, kps=No
         return
 
     num_frames = len(key_blocks)
-    # Calculate total duration in Blender frames
-    duration_frames = (num_frames * frame_step) 
-
-    debug(f"Creating Action '{action_name}' for '{anim_name}' (Absolute: {use_absolute})")
-    debug(f"           KPS: {target_kps}, Scene FPS: {scene_fps} -> Step: {frame_step:.2f} frames")
-    debug(f"           Total Duration: {duration_frames:.1f} frames ({duration_frames/scene_fps:.2f}s)")
+    
+    debug(f"Creating Action '{action_name}' for '{anim_name}' (Absolute: {use_absolute}, KPS Timing: {use_kps_timing})")
 
     if use_absolute:
         # Absolute Path: Single F-Curve for 'eval_time'
@@ -325,7 +321,7 @@ def push_shape_key_action_to_nla(obj, strip_name=None, frame_start=1, frame_end=
     return strip
 
 @timed('auto_create_shape_key_actions_from_car')
-def auto_create_shape_key_actions_from_car(obj, frame_step=1, parsed_animations=None, use_absolute=False):
+def auto_create_shape_key_actions_from_car(obj, frame_step=1, parsed_animations=None, use_absolute=False, use_kps_timing=True):
     if not obj or obj.type != 'MESH':
         error('Selected object is not a mesh')
         return
@@ -364,7 +360,14 @@ def auto_create_shape_key_actions_from_car(obj, frame_step=1, parsed_animations=
         anim_kps = kps_map.get(anim_name)
 
         # Note: frame_step is now calculated internally based on KPS
-        action = keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, kps=anim_kps, use_absolute=use_absolute)
+        action = keyframe_shape_key_animation_as_action(
+            obj, 
+            anim_name, 
+            frame_start=1, 
+            kps=anim_kps, 
+            use_absolute=use_absolute, 
+            use_kps_timing=use_kps_timing
+        )
         if action:
             actions.append(action)
     # Batch NLA push: Inline overlap checks per action (no manual indexing)
