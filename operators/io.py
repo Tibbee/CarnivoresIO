@@ -493,6 +493,11 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         description='Import animations as shape keys',
         default=True
     )
+    use_absolute_shape_keys: bpy.props.BoolProperty(
+        name="Absolute Shape Keys",
+        description="Use Absolute Shape Keys (Evaluation Time) for a cleaner Action Editor and easier timing edits",
+        default=False
+    )
     import_sounds: bpy.props.BoolProperty(
         name='Import Sounds',
         description='Import embedded sounds as sound datablocks',
@@ -535,6 +540,8 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         layout.prop(self, 'validate')
         layout.prop(self, 'flip_handedness')
         layout.prop(self, 'import_animations')
+        if self.import_animations:
+            layout.prop(self, 'use_absolute_shape_keys')
         layout.prop(self, 'import_sounds')
         layout.prop(self, "smooth_weights")
         if self.smooth_weights:
@@ -583,11 +590,16 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                 io_utils.create_uv_map(obj.data, uvs)
                 # Create shape keys
                 if self.import_animations and animations:
-                    anim_utils.create_shape_keys_from_car_animations(obj, animations, import_matrix_np)
+                    anim_utils.create_shape_keys_from_car_animations(obj, animations, import_matrix_np, use_absolute=self.use_absolute_shape_keys)
                     # Automatically create fast actions + NLA strips
                     actions = []
                     try:
-                        actions = anim_utils.auto_create_shape_key_actions_from_car(obj, frame_step=1, parsed_animations=animations)
+                        actions = anim_utils.auto_create_shape_key_actions_from_car(
+                            obj, 
+                            frame_step=1, 
+                            parsed_animations=animations, 
+                            use_absolute=self.use_absolute_shape_keys
+                        )
                     except Exception as e:
                         self.report({'WARNING'}, f"Failed to auto-create animations: {e}")
                 if self.import_sounds and sounds:

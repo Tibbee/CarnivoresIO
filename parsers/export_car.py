@@ -200,15 +200,16 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         """
         debug(f"Fast Baking '{name}' ({start}-{end}) KPS:{kps}")
         
-        # 1. Identify F-Curves for these shape keys in the active source
-        # anim_source_data is either an Action or the NLA system's current state
-        # In our soloing loop, it's safer to just look at the Action of the strip
-        
+        # 1. Identify F-Curves
         # Map: Key Index (1-based because 0 is basis) -> FCurve
         fcurve_map = {}
+        eval_time_fc = None
         target_action = anim_source_data
         num_keys_total = len(trans_delta) + 1
         
+        sk_data = obj.data.shape_keys
+        use_relative = sk_data.use_relative
+
         # Use a helper to get fcurves from action (handles 5.0+)
         def get_fcurves(act):
             if not act: return []
@@ -222,14 +223,20 @@ def gather_car_animations(obj, export_matrix, vertex_count):
             return getattr(act, "fcurves", [])
 
         for fc in get_fcurves(target_action):
-            # Path format: key_blocks["Name"].value
-            match = re.match(r'key_blocks\["(.+)"\]\.value', fc.data_path)
-            if match:
-                kb_name = match.group(1)
-                if kb_name in key_blocks_names:
-                    idx = key_blocks_names.get(kb_name) # 0-based
-                    if idx > 0: # Skip basis
-                        fcurve_map[idx - 1] = fc
+            if use_relative:
+                # Path format: key_blocks["Name"].value
+                match = re.match(r'key_blocks\["(.+)"\]\.value', fc.data_path)
+                if match:
+                    kb_name = match.group(1)
+                    if kb_name in key_blocks_names:
+                        idx = key_blocks_names.get(kb_name) # 0-based
+                        if idx > 0: # Skip basis
+                            fcurve_map[idx - 1] = fc
+            else:
+                # Path format: eval_time
+                if fc.data_path == 'eval_time':
+                    eval_time_fc = fc
+                    break
 
         # 2. Sample
         start_sampling = time.perf_counter()
@@ -240,16 +247,47 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         
         frames_data = []
 
+        # Prepare Absolute frames lookup if needed
+        abs_frame_values = None
+        if not use_relative:
+            abs_frame_values = np.array([kb.frame for kb in sk_data.key_blocks], dtype=np.float32)
+
         for i in range(num_samples):
             t = start + (i * frame_step)
             
-            # Simple weighted sum
-            current_weights = np.zeros(num_keys_total - 1, dtype=np.float32)
-            for idx, fc in fcurve_map.items():
-                current_weights[idx] = fc.evaluate(t)
-            
-            # (V, 3)
-            interp = trans_basis + np.tensordot(current_weights, trans_delta, axes=([0], [0]))
+            if use_relative:
+                # Simple weighted sum
+                current_weights = np.zeros(num_keys_total - 1, dtype=np.float32)
+                for idx, fc in fcurve_map.items():
+                    current_weights[idx] = fc.evaluate(t)
+                
+                # (V, 3)
+                interp = trans_basis + np.tensordot(current_weights, trans_delta, axes=([0], [0]))
+            else:
+                # Absolute interpolation
+                val = eval_time_fc.evaluate(t) if eval_time_fc else 0.0
+                
+                # Find two nearest frames
+                # Optimization: if val is outside range, clip it
+                if val <= abs_frame_values[0]:
+                    interp = trans_basis
+                elif val >= abs_frame_values[-1]:
+                    interp = trans_basis + trans_delta[-1]
+                else:
+                    # Find indices
+                    idx_right = np.searchsorted(abs_frame_values, val)
+                    idx_left = idx_right - 1
+                    
+                    f_left = abs_frame_values[idx_left]
+                    f_right = abs_frame_values[idx_right]
+                    
+                    factor = (val - f_left) / (f_right - f_left)
+                    
+                    # (V, 3)
+                    co_left = trans_basis if idx_left == 0 else trans_basis + trans_delta[idx_left - 1]
+                    co_right = trans_basis + trans_delta[idx_right - 1]
+                    
+                    interp = co_left + (co_right - co_left) * factor
             
             # Quantize
             quantized = np.clip(interp * 16.0, -32768, 32767).astype(np.int16)
