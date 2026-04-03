@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CarnivoresIO",
     "author": "StriderTibe",
-    "version": (2, 1, 1),
+    "version": (2, 3, 0),
     "blender": (4, 0, 0),
     "location": "File > Import-Export",
     "description": "Import/Export Carnivores .3DF and .CAR models with animations",
@@ -47,6 +47,7 @@ class CARNIVORES_MT_export(bpy.types.Menu):
         layout.operator("carnivores.export_3df", text="Static Model (.3df)")
         layout.operator("carnivores.export_car", text="Animated Model (.car)")
         layout.operator("carnivores.export_3dn", text="Static Model Hunter (.3dn)")
+        layout.operator("carnivores.export_vtl", text="Animation (.vtl)")
 
 classes = (
     CarnivoresPreferences,

@@ -50,7 +50,7 @@ def convert_sound_to_22khz_mono(sound_datablock):
         # Note: aud.Sound.data() return format depends on backend but usually float32
         # Let's check dtype
         if data.dtype == np.float32:
-            data = np.clip(data * 32767, -32768, 32767).astype(np.int16)
+            data = np.clip(np.round(data * 32767), -32768, 32767).astype(np.int16)
         elif data.dtype == np.int32:
              # Sometimes it might be different? Assuming float32 for now as per API
              pass
@@ -179,7 +179,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                 transformed_co = utils.apply_import_matrix(verts_co, full_matrix_cache)
                 
                 # Quantize to fixed point 16.0
-                quantized = np.clip(transformed_co * 16.0, -32768, 32767).astype(np.int16)
+                quantized = np.clip(np.round(transformed_co * 16.0), -32768, 32767).astype(np.int16)
                 frames_data.append(quantized)
             
             finally:
@@ -290,7 +290,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                     interp = co_left + (co_right - co_left) * factor
             
             # Quantize
-            quantized = np.clip(interp * 16.0, -32768, 32767).astype(np.int16)
+            quantized = np.clip(np.round(interp * 16.0), -32768, 32767).astype(np.int16)
             frames_data.append(quantized)
 
         debug(f"[Timing] bake_range_fast '{name}' sampling took {time.perf_counter() - start_sampling:.6f} seconds")

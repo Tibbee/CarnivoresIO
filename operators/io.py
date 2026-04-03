@@ -12,6 +12,7 @@ from ..parsers.parse_car import parse_car
 from ..parsers.export_3df import export_3df
 from ..parsers.export_car import export_car
 from ..parsers.export_3dn import export_3dn
+from ..parsers.export_vtl import export_vtl
 
 @bpy_extras.io_utils.orientation_helper(axis_forward='Z', axis_up='Y')
 class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHelper):
@@ -756,6 +757,75 @@ class CARNIVORES_OT_export_3dn(bpy.types.Operator, bpy_extras.io_utils.ExportHel
                 flip_u=self.flip_u,
                 flip_v=self.flip_v,
                 flip_handedness=self.flip_handedness
+            )
+            self.report({'INFO'}, f"Exported {os.path.basename(self.filepath)}")
+            return {'FINISHED'}
+        except Exception as e:
+            self.report({'ERROR'}, f"Export failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {'CANCELLED'}
+
+@bpy_extras.io_utils.orientation_helper(axis_forward='Z', axis_up='Y')
+class CARNIVORES_OT_export_vtl(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
+    bl_idname = "carnivores.export_vtl"
+    bl_label = "Export .VTL Animation"
+    bl_description = "Export active animation as Carnivores .vtl animation file"
+    bl_options = {'PRESET'}
+    
+    filename_ext = ".vtl"
+    filter_glob: bpy.props.StringProperty(default="*.vtl", options={'HIDDEN'}, maxlen=255)
+    
+    scale: bpy.props.FloatProperty(
+        name="Scale",
+        description="Scale factor to apply on export (applies to vertex coordinates)",
+        default=100.0,
+        min=1.0,
+        max=1000.0,
+    )
+    
+    flip_handedness: bpy.props.BoolProperty(
+        name='Flip Handedness',
+        description='Negate X-axis to match game\'s left-handed coordinate system',
+        default=True
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Export Options")
+        layout.prop(self, "scale")
+        layout.prop(self, 'flip_handedness')
+        layout.separator()
+        box = layout.box()
+        box.label(text="Axis Conversion")
+        box.prop(self, "axis_forward")
+        box.prop(self, "axis_up")
+
+    @common.timed("CARNIVORES_OT_export_vtl.execute", is_operator=True)
+    def execute(self, context):
+        handedness_matrix = mathutils.Matrix.Scale(-1, 4, (1, 0, 0)) if self.flip_handedness else mathutils.Matrix.Identity(4)
+        export_matrix = (
+            bpy_extras.io_utils.axis_conversion(
+                from_forward='Y',
+                from_up='Z',
+                to_forward=self.axis_forward,
+                to_up=self.axis_up
+            ).to_4x4()
+            @ handedness_matrix
+            @ mathutils.Matrix.Scale(self.scale, 4) 
+        )
+        export_matrix_np = np.array(export_matrix)
+        
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            self.report({'ERROR'}, "No active mesh object selected.")
+            return {'CANCELLED'}
+
+        try:
+            export_vtl(
+                self.filepath,
+                obj,
+                export_matrix_np
             )
             self.report({'INFO'}, f"Exported {os.path.basename(self.filepath)}")
             return {'FINISHED'}
