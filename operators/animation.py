@@ -449,7 +449,8 @@ def preview_loop_handler(scene):
 def clear_aud_device_on_new_file(scene):
     global _aud_device, _playing_sounds, _is_real_playback
 
-    debug(f"AUDIO: clear_aud_device_on_new_file called. Scene: {scene.name if scene else 'None'}")
+    scene_name = scene.name if isinstance(scene, bpy.types.Scene) else str(scene) if scene else 'None'
+    debug(f"AUDIO: clear_aud_device_on_new_file called. Scene: {scene_name}")
     debug(f"AUDIO: Current Handlers (load_post): {len(bpy.app.handlers.load_post)}")
 
     debug("AUDIO: New file loaded — resetting audio system")

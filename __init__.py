@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CarnivoresIO",
     "author": "StriderTibe",
-    "version": (2, 3, 0),
+    "version": (2, 3, 1),
     "blender": (4, 0, 0),
     "location": "File > Import-Export",
     "description": "Import/Export Carnivores .3DF and .CAR models with animations",
