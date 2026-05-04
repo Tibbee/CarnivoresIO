@@ -29,5 +29,7 @@ paths_exclude_pattern = [
     "/my_extension_repo/",
     "/.gemini/",
     "/*.patch",
-    "/doc/"
+    "/doc/",
+    "/index.html",
+    "/screenshot.png",
 ]
