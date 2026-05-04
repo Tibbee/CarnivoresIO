@@ -1,6 +1,6 @@
 # CarnivoresIO
 
-Professional-grade Blender extension (4.2+) for importing, editing, and exporting models from the *Carnivores* game engine. Supports `.3df`, `.car`, and `.3dn` formats with full animation, rigging, and audio integration.
+Blender extension (4.2+) for importing, editing, and exporting models from the *Carnivores* game engine. Supports `.3df`, `.car`, and `.3dn` formats with full animation, rigging, and audio integration.
 
 ---
 
@@ -177,4 +177,4 @@ To inspect the result, click **Log Rig Debug Info** to write bone positions, par
 
 ## License
 
-Licensed under **GNU GPL v3**. Copyright (c) 2024-2025 Tibor Harsanyi.
+Licensed under **GNU GPL v3**. Copyright (c) 2024-2026 Tibor Harsányi.
