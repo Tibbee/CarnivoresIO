@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="google-site-verification" content="duHMCQCMpaUMRi_uTLHMlf2mwoOG41uj0HE9ttwTp5A" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="CarnivoresIO is a free open-source Blender extension for importing, editing, and exporting .3df, .car, and .3dn models from the Carnivores game engine. Supports animations, rigging, and audio.">
+    <title>CarnivoresIO &mdash; Blender Extension for Carnivores Game Engine Models</title>
+    <style>
+        :root {
+            --bg: #121212;
+            --hero-bg: #1a1a1a;
+            --card: #1e1e1e;
+            --border: #2a2a2a;
+            --text: #e0e0e0;
+            --muted: #8a8a8a;
+            --accent: #6c9c6c;
+            --accent-dim: #4a7a4a;
+            --radius: 8px;
+        }
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.65;
+            padding: 0 48px 40px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        /* ── Hero ─────────────────────────────── */
+        .hero {
+            background: var(--hero-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 48px 40px;
+            margin-bottom: 48px;
+            display: flex;
+            gap: 36px;
+            align-items: center;
+        }
+        .hero-text { flex: 1; }
+        .hero-text h1 { font-size: 2.2rem; margin-bottom: .35em; }
+        .hero-text p { font-size: 1.05rem; color: var(--muted); margin-bottom: 1.2em; }
+        .hero-img {
+            flex: 0 0 480px;
+            background: #111;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .hero-img img {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+        .hero-links { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+        .btn {
+            display: inline-block;
+            background: var(--accent);
+            color: #121212;
+            padding: 10px 22px;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: .95rem;
+            text-decoration: none;
+        }
+        .btn:hover { background: var(--accent-dim); text-decoration: none; }
+        .link { color: var(--accent); font-size: .95rem; }
+        .link:hover { color: var(--accent-dim); }
+
+        /* ── Sections ─────────────────────────── */
+        section { margin-bottom: 48px; }
+        section + section { border-top: 1px solid var(--border); padding-top: 48px; }
+        h2 {
+            font-size: 1.1rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            margin-bottom: 20px;
+        }
+
+        /* ── Chips (formats) ──────────────────── */
+        .chips { display: flex; gap: 10px; flex-wrap: wrap; }
+        .chip {
+            display: inline-flex; align-items: center; gap: 8px;
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: 6px; padding: 8px 16px;
+            font-size: .9rem;
+        }
+        .chip code { font-family: monospace; font-size: .95rem; color: var(--accent); }
+        .chip span { color: var(--muted); font-size: .82rem; }
+
+        /* ── Cards (features) ──────────────────── */
+        .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+        }
+        .card h3 { font-size: .95rem; margin-bottom: .3em; }
+        .card p { font-size: .84rem; color: var(--muted); margin: 0; }
+
+        /* ── Quick Start ───────────────────────── */
+        .steps { display: flex; gap: 20px; }
+        .step {
+            flex: 1;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+            position: relative;
+        }
+        .step-num {
+            position: absolute; top: -12px; left: 16px;
+            width: 28px; height: 28px;
+            background: var(--accent); color: #121212;
+            border-radius: 50%;
+            font-size: .8rem; font-weight: 700;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .step h3 { font-size: .92rem; margin: .5em 0 .3em; }
+        .step p { font-size: .82rem; color: var(--muted); margin: 0; }
+
+        /* ── Compatibility row ─────────────────── */
+        .badge-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+        .badge {
+            display: inline-block;
+            background: var(--card); border: 1px solid var(--border);
+            padding: 4px 12px; border-radius: 20px;
+            font-size: .8rem; color: var(--muted);
+        }
+
+        /* ── Footer ────────────────────────────── */
+        footer {
+            border-top: 1px solid var(--border);
+            padding-top: 24px;
+            font-size: .8rem;
+            color: #555;
+            display: flex;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        footer a { color: var(--muted); }
+        footer a:hover { color: var(--text); text-decoration: none; }
+
+        @media (max-width: 640px) {
+            .hero { flex-direction: column; padding: 32px 24px; }
+            .hero-img { flex: 0 0 auto; width: 100%; }
+            .steps { flex-direction: column; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ══════════════════════════════════════════════ -->
+    <!--  HERO                                         -->
+    <!-- ══════════════════════════════════════════════ -->
+    <div class="hero">
+        <div class="hero-text">
+            <h1>CarnivoresIO</h1>
+            <p>Blender extension for importing, editing, and exporting <strong>.3df</strong>, <strong>.car</strong>, and <strong>.3dn</strong> models from the classic <em>Carnivores</em> game engine. Full animation, rigging, and audio support.</p>
+            <div class="hero-links">
+                <a class="btn" href="https://github.com/Tibbee/CarnivoresIO/releases/latest">Download Latest</a>
+                <a class="link" href="https://github.com/Tibbee/CarnivoresIO#installation">Install via Dev Channel</a>
+                <a class="link" href="https://github.com/Tibbee/CarnivoresIO#readme">Full Documentation</a>
+                <a class="link" href="https://github.com/Tibbee/CarnivoresIO">Source Code</a>
+            </div>
+        </div>
+        <div class="hero-img">
+            <!--
+              Replace this image with a screenshot of CarnivoresIO inside Blender.
+              Suggested content: the sidebar panels, a reconstructed rig, or the flag visualizer.
+              Put your PNG/GIF at the repo root (e.g. screenshot.png) and update the src below.
+              Recommended size: 560x360 or 2x that for retina.
+            -->
+            <img src="screenshot.png" alt="CarnivoresIO inside Blender" style="background:#1a1a1a; min-height:180px;">
+        </div>
+    </div>
+
+    <div class="container">
+
+    <!-- ══════════════════════════════════════════════ -->
+    <!--  FORMATS                                      -->
+    <!-- ══════════════════════════════════════════════ -->
+    <section>
+        <h2>Supported Formats</h2>
+        <div class="chips">
+            <div class="chip"><code>.3df</code><span>Static models, import &amp; export</span></div>
+            <div class="chip"><code>.car</code><span>Animated models, import &amp; export</span></div>
+            <div class="chip"><code>.3dn</code><span>Mobile/HD static export</span></div>
+            <div class="chip"><code>.vtl</code><span>Animation export</span></div>
+        </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════════ -->
+    <!--  QUICK START                                  -->
+    <!-- ══════════════════════════════════════════════ -->
+    <section>
+        <h2>Quick Start</h2>
+        <div class="steps">
+            <div class="step">
+                <div class="step-num">1</div>
+                <h3>Install</h3>
+                <p>Download the latest release <code>.zip</code> and drag it into Blender's Extensions preferences, or add the dev channel URL for auto-updates.</p>
+            </div>
+            <div class="step">
+                <div class="step-num">2</div>
+                <h3>Import</h3>
+                <p>Use <em>File &gt; Import &gt; Carnivores Engine</em> to load <code>.3df</code> or <code>.car</code> files. Enable Flip Handedness for the game's coordinate system.</p>
+            </div>
+            <div class="step">
+                <div class="step-num">3</div>
+                <h3>Rig &amp; Export</h3>
+                <p>Click <strong>Reconstruct Rig from Owners</strong> in the sidebar to build an armature, link sounds, tweak KPS, then export.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════════ -->
+    <!--  FEATURES                                     -->
+    <!-- ══════════════════════════════════════════════ -->
+    <section>
+        <h2>Features</h2>
+        <div class="cards">
+            <div class="card">
+                <h3>Skeleton Reconstruction</h3>
+                <p>Symmetry-aware MST algorithm infers bone hierarchy from vertex groups automatically.</p>
+            </div>
+            <div class="card">
+                <h3>Animation Pipeline</h3>
+                <p>Vertex animations become Shape Key Actions with NLA strips. KPS timing for exact engine reproduction.</p>
+            </div>
+            <div class="card">
+                <h3>NLA Sound System</h3>
+                <p>Link .wav files to actions for synchronized audio during timeline scrubbing.</p>
+            </div>
+            <div class="card">
+                <h3>Face Flag Tools</h3>
+                <p>Viewport visualization, bitmask selection, and bulk modification of engine face flags.</p>
+            </div>
+            <div class="card">
+                <h3>Validation &amp; Repair</h3>
+                <p>Import checks for limits, UV ranges, bone cycles, and texture integrity with auto-repair.</p>
+            </div>
+            <div class="card">
+                <h3>Weight Smoothing</h3>
+                <p>Laplacian smoothing with joints-only mode for organic deformation.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════════ -->
+    <!--  COMPATIBILITY                                -->
+    <!-- ══════════════════════════════════════════════ -->
+    <section>
+        <h2>Compatibility</h2>
+        <div class="badge-row">
+            <span class="badge">Blender 4.2 &ndash; 6.0</span>
+            <span class="badge">Windows / macOS / Linux</span>
+            <span class="badge">NumPy (bundled)</span>
+            <span class="badge">GNU GPL v3</span>
+        </div>
+        <p style="margin-top:14px; font-size:.85rem; color:var(--muted);">Requires Blender 4.2+. Blender 3.x is not supported due to the Extensions API.</p>
+    </section>
+
+    </div>
+    <!-- ══════════════════════════════════════════════ -->
+    <!--  FOOTER                                       -->
+    <!-- ══════════════════════════════════════════════ -->
+    <footer>
+        <span>Copyright &copy; 2024&ndash;2026 Tibor Hars&aacute;nyi</span>
+        <span>
+            <a href="https://github.com/Tibbee/CarnivoresIO">GitHub</a> &middot;
+            <a href="https://github.com/Tibbee/CarnivoresIO/issues">Issues</a> &middot;
+            <a href="https://github.com/Tibbee/CarnivoresIO/blob/main/LICENSE">License</a> &middot;
+            <a href="https://github.com/Tibbee/CarnivoresIO#readme">README</a>
+        </span>
+    </footer>
+
+</body>
+</html>
