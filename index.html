@@ -86,6 +86,11 @@
         .reveal.visible {
             opacity: 1;
             transform: translateY(0);
+            transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.1s, transform 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.1s;
+        }
+        /* Pull reveal away when out of view so it can replay */
+        .reveal.was-visible {
+            transition: opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1), transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
         }
 
         /* ── Layout ── */
@@ -521,19 +526,6 @@
             background: var(--color-accent);
             box-shadow: 0 0 0 4px var(--color-bg);
             z-index: 2;
-        }
-
-        .timeline-step__node {
-            position: absolute;
-            left: calc(-1 * (var(--space-md) + 24px) + 5px);
-            top: 2px;
-            width: 16px;
-            height: 16px;
-            border-radius: 50%;
-            border: 2px solid var(--color-accent);
-            background: var(--color-accent);
-            box-shadow: 0 0 0 4px var(--color-bg);
-            z-index: 2;
             animation: pulse 3s ease-in-out infinite;
         }
 
@@ -667,6 +659,23 @@
         footer a:hover { color: var(--color-accent); }
 
         /* ── Responsive ── */
+        @media (max-width: 1024px) {
+            section {
+                padding: var(--space-lg) 0;
+            }
+            section + section::before {
+                margin-bottom: var(--space-lg);
+            }
+            .container {
+                padding: 0 var(--space-md);
+            }
+            .in-action__frame {
+                max-width: 100%;
+                margin-left: var(--space-sm);
+                margin-right: var(--space-sm);
+            }
+        }
+
         @media (max-width: 900px) {
             .hero {
                 grid-template-columns: 1fr;
@@ -674,22 +683,138 @@
                 padding-top: var(--space-lg);
                 padding-bottom: var(--space-lg);
             }
-            .hero__screenshot-bg img { filter: saturate(0) blur(20px) brightness(0.15); }
-            .scanner { transform: none !important; }
+            .hero__screenshot-bg img {
+                filter: saturate(0) blur(10px) brightness(0.25);
+                object-position: top center;
+            }
             .registry-row { grid-template-columns: 80px 1fr; gap: var(--space-sm); }
             .registry-row__tag { display: none; }
             .registry-row__ext { grid-row: 1; grid-column: 1; }
             .registry-row__label { grid-row: 1; grid-column: 2; }
             .registry-row__desc { grid-row: 2; grid-column: 1 / -1; }
             .toolkit-row { grid-template-columns: 60px 1fr; }
+
+            .section__title {
+                font-size: clamp(1.8rem, 5vw, 3rem);
+            }
+            .registry-row__ext {
+                font-size: 0.95rem;
+            }
         }
 
-        @media (max-width: 600px) {
-            body { font-size: 0.9rem; }
-            .container { padding: 0 var(--space-sm); }
-            .toolkit-row { grid-template-columns: 1fr; gap: var(--space-xs); }
-            .hero__actions { flex-direction: column; align-items: flex-start; }
-            footer { flex-direction: column; text-align: center; }
+        @media (max-width: 680px) {
+            .container {
+                padding: 0 var(--space-sm);
+            }
+            section {
+                padding: var(--space-md) 0;
+            }
+            section + section::before {
+                width: 40px;
+                margin-bottom: var(--space-md);
+            }
+            .hero {
+                padding: var(--space-md) var(--space-sm);
+                min-height: auto;
+            }
+            .hero__screenshot-bg {
+                /* Let the image dictate height — avoid cover's aggressive portrait crop */
+                position: absolute;
+                inset: 0;
+            }
+            .hero__screenshot-bg img {
+                width: 100%;
+                height: auto;
+                min-height: 100%;
+                object-fit: cover;
+                object-position: 30% center;
+                filter: saturate(0) blur(8px) brightness(0.28);
+            }
+            .hero__title {
+                font-size: clamp(2.4rem, 10vw, 3.2rem);
+            }
+            .hero__desc {
+                font-size: 0.95rem;
+            }
+            .hero__actions {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .hero__actions .btn,
+            .hero__actions .link {
+                justify-content: center;
+                text-align: center;
+            }
+            .in-action__frame {
+                margin: var(--space-md) 0 0;
+                border-left: none;
+                border-right: none;
+            }
+            .registry-row {
+                grid-template-columns: 1fr;
+                gap: var(--space-xs);
+            }
+            .registry-row__ext {
+                grid-row: 1;
+            }
+            .registry-row__label {
+                grid-row: 2;
+            }
+            .registry-row__desc {
+                grid-row: 3;
+            }
+            .toolkit-row {
+                grid-template-columns: 1fr;
+                gap: var(--space-xs);
+            }
+            .toolkit-row__num {
+                font-size: 2.5rem;
+            }
+            .badge-row {
+                flex-direction: column;
+                align-items: center;
+            }
+            .badge {
+                width: 100%;
+                text-align: center;
+            }
+            .timeline {
+                padding-left: calc(var(--space-sm) + 24px);
+            }
+            .timeline-step__node {
+                left: calc(-1 * (var(--space-sm) + 24px) + 5px);
+            }
+            footer {
+                flex-direction: column;
+                text-align: center;
+                gap: var(--space-sm);
+                padding: var(--space-md) var(--space-sm);
+            }
+        }
+
+        @media (max-width: 400px) {
+            .hero__title {
+                font-size: clamp(2rem, 11vw, 2.6rem);
+            }
+            .hero__desc {
+                font-size: 0.85rem;
+            }
+            .btn {
+                padding: 0.7rem 1.2rem;
+                font-size: 0.75rem;
+            }
+            .section__title {
+                font-size: clamp(1.5rem, 6vw, 2rem);
+            }
+            .timeline-step__desc {
+                font-size: 0.85rem;
+            }
+            .toolkit-row__content p {
+                font-size: 0.85rem;
+            }
+            .registry-row__desc {
+                font-size: 0.85rem;
+            }
         }
     </style>
 </head>
@@ -897,23 +1022,41 @@
     <!-- Scripts                                         -->
     <!-- ═══════════════════════════════════════════════ -->
     <script>
-        // Reveal on scroll
+        // ── Reveal-on-scroll with replay (toggle instead of one-shot) ──
         const reveals = document.querySelectorAll('.reveal');
-        
+
         const observer = new IntersectionObserver((entries) => {
             entries.forEach(entry => {
                 if (entry.isIntersecting) {
                     entry.target.classList.add('visible');
-                    // Stagger child rows
-                    const rows = entry.target.querySelectorAll('.registry, .toolkit');
-                    rows.forEach(container => {
+                    entry.target.classList.remove('was-visible');
+                    // Stagger child rows on enter
+                    const containers = entry.target.querySelectorAll('.registry, .toolkit');
+                    containers.forEach(container => {
                         const childRows = container.querySelectorAll('.registry-row, .toolkit-row');
                         childRows.forEach((row, i) => {
                             row.style.transitionDelay = `${i * 80}ms`;
-                            setTimeout(() => row.classList.add('visible'), i * 80);
+                            // Use requestAnimationFrame so the removal of .visible (if any)
+                            // is fully painted before re-adding — guarantees re-trigger
+                            requestAnimationFrame(() => {
+                                requestAnimationFrame(() => {
+                                    row.classList.add('visible');
+                                });
+                            });
                         });
                     });
-                    observer.unobserve(entry.target);
+                } else {
+                    // Scrolled past — hide so animation can replay on next enter
+                    entry.target.classList.remove('visible');
+                    entry.target.classList.add('was-visible');
+                    const containers = entry.target.querySelectorAll('.registry, .toolkit');
+                    containers.forEach(container => {
+                        const childRows = container.querySelectorAll('.registry-row, .toolkit-row');
+                        childRows.forEach(row => {
+                            row.classList.remove('visible');
+                            row.style.transitionDelay = '0ms';
+                        });
+                    });
                 }
             });
         }, {
@@ -923,28 +1066,29 @@
 
         reveals.forEach(el => observer.observe(el));
 
-        // Initial trigger for hero elements
+        // ── Initial trigger for above-the-fold hero content ──
         document.querySelectorAll('.hero .reveal').forEach(el => {
-            setTimeout(() => el.classList.add('visible'), 200);
+            el.classList.add('visible');
         });
 
-        // In-action screenshot reveal
+        // ── In-action screenshot reveal (replayable) ──
         const screenshotFrame = document.querySelector('.in-action__frame img');
         if (screenshotFrame) {
             const imgObserver = new IntersectionObserver((entries) => {
                 entries.forEach(entry => {
                     if (entry.isIntersecting) {
                         entry.target.classList.add('visible');
-                        imgObserver.unobserve(entry.target);
+                    } else {
+                        entry.target.classList.remove('visible');
                     }
                 });
             }, { threshold: 0.2 });
             imgObserver.observe(screenshotFrame);
         }
 
-        // Hero background parallax
+        // ── Hero background parallax (throttled, respects prefers-reduced-motion) ──
         const heroBg = document.querySelector('.hero__screenshot-bg img');
-        if (heroBg) {
+        if (heroBg && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
             let ticking = false;
             window.addEventListener('scroll', () => {
                 if (!ticking) {
@@ -956,7 +1100,7 @@
                     });
                     ticking = true;
                 }
-            });
+            }, { passive: true });
         }
     </script>
 
