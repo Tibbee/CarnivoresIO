@@ -1,283 +1,964 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="utf-8">
-    <meta name="google-site-verification" content="vV2I4_10i1jKJ-bEvMjoCDvBuHzxbjHPdawzWl29bts" />
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="google-site-verification" content="vV2I4_10i1jKJ-bEvMjoCDvBuHzxbjHPdawzWl29bts" />
     <meta name="description" content="CarnivoresIO is a free open-source Blender extension for importing, editing, and exporting .3df, .car, and .3dn models from the Carnivores game engine. Supports animations, rigging, and audio.">
-    <title>CarnivoresIO &mdash; Blender Extension for Carnivores Game Engine Models</title>
+    <title>CarnivoresIO — Blender Extension for Carnivores Game Engine Models</title>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Karla:wght@400;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+    
     <style>
         :root {
-            --bg: #121212;
-            --hero-bg: #1a1a1a;
-            --card: #1e1e1e;
-            --border: #2a2a2a;
-            --text: #e0e0e0;
-            --muted: #8a8a8a;
-            --accent: #6c9c6c;
-            --accent-dim: #4a7a4a;
-            --radius: 8px;
+            --color-bg: #090807;
+            --color-surface: #141210;
+            --color-surface-raised: #1f1c19;
+            --color-border: #2e2a26;
+            --color-border-subtle: #1a1815;
+            --color-text: #f0ebe4;
+            --color-text-secondary: #a89f96;
+            --color-text-muted: #5f5a54;
+            --color-accent: #e6a948;
+            --color-accent-dim: #b8862e;
+            --color-accent-glow: rgba(230, 169, 72, 0.12);
+            --color-secondary: #4ecdc4;
+            --font-display: 'Syne', sans-serif;
+            --font-body: 'Karla', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+            --space-xs: 0.5rem;
+            --space-sm: 1rem;
+            --space-md: 2.5rem;
+            --space-lg: 5rem;
+            --space-xl: 8rem;
         }
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        html { scroll-behavior: smooth; }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            line-height: 1.65;
-            padding: 0 48px 40px;
+            font-family: var(--font-body);
+            background: var(--color-bg);
+            color: var(--color-text);
+            line-height: 1.6;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
         }
-        .container { max-width: 1200px; margin: 0 auto; }
-        /* ── Hero ─────────────────────────────── */
+
+        /* ── Grain & Atmosphere ── */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            pointer-events: none;
+            opacity: 0.04;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+            background-size: 200px 200px;
+        }
+
+        /* ── Typography ── */
+        h1, h2, h3, .overline {
+            font-family: var(--font-display);
+            font-weight: 700;
+            letter-spacing: -0.01em;
+            line-height: 1.15;
+        }
+
+        .overline {
+            display: block;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.18em;
+            color: var(--color-accent);
+            margin-bottom: var(--space-sm);
+        }
+
+        /* ── Reveal Animation ── */
+        .reveal {
+            opacity: 0;
+            transform: translateY(40px);
+            transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1), transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .reveal.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* ── Layout ── */
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 var(--space-md);
+        }
+
+        /* ── Hero ── */
         .hero {
-            background: var(--hero-bg);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 48px 40px;
-            margin-bottom: 48px;
+            position: relative;
+            min-height: 100vh;
             display: flex;
-            gap: 36px;
+            flex-direction: column;
+            justify-content: center;
             align-items: center;
-        }
-        .hero-text { flex: 1; }
-        .hero-text h1 { font-size: 2.2rem; margin-bottom: .35em; }
-        .hero-text p { font-size: 1.05rem; color: var(--muted); margin-bottom: 1.2em; }
-        .hero-img {
-            flex: 0 0 480px;
-            background: #111;
-            border: 1px solid var(--border);
-            border-radius: 8px;
+            text-align: center;
+            padding: var(--space-xl) var(--space-md);
             overflow: hidden;
         }
-        .hero-img img {
+
+        .hero__bg {
+            position: absolute;
+            inset: 0;
+            z-index: 0;
+            background:
+                radial-gradient(circle at 20% 50%, rgba(230, 169, 72, 0.08) 0%, transparent 50%),
+                radial-gradient(circle at 80% 30%, rgba(78, 205, 196, 0.05) 0%, transparent 40%);
+        }
+
+        .hero__grid {
+            position: absolute;
+            inset: 0;
+            z-index: 0;
+            background-image:
+                linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.015) 1px, transparent 1px);
+            background-size: 60px 60px;
+            mask-image: radial-gradient(circle at center, black 30%, transparent 70%);
+            -webkit-mask-image: radial-gradient(circle at center, black 30%, transparent 70%);
+        }
+
+        .hero__content {
+            position: relative;
+            z-index: 2;
+            max-width: 720px;
+        }
+
+        .hero__screenshot-bg {
+            position: absolute;
+            inset: 0;
+            z-index: 0;
+            overflow: hidden;
+        }
+
+        .hero__screenshot-bg img {
+            width: 120%;
+            height: 120%;
+            object-fit: cover;
+            object-position: center;
+            filter: saturate(0) blur(4px) brightness(0.2);
+            animation: kenburns 30s ease-in-out infinite alternate;
+            transform-origin: center;
+        }
+
+        @keyframes kenburns {
+            0% { transform: scale(1) translate(0, 0); }
+            100% { transform: scale(1.08) translate(-1%, -1%); }
+        }
+
+        .hero__title {
+            font-size: clamp(3.2rem, 6.5vw, 6rem);
+            font-weight: 700;
+            line-height: 1.05;
+            letter-spacing: -0.01em;
+            margin-bottom: var(--space-md);
+            text-transform: uppercase;
+        }
+
+        .hero__title span {
+            display: block;
+            color: var(--color-accent);
+            text-shadow: 0 0 40px rgba(230, 169, 72, 0.15);
+        }
+
+        .hero__desc {
+            font-size: 1.1rem;
+            color: var(--color-text-secondary);
+            max-width: 520px;
+            margin: 0 auto var(--space-md);
+            letter-spacing: 0.01em;
+        }
+
+        .hero__actions {
+            display: flex;
+            gap: var(--space-sm);
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* ── Links & Buttons ── */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.85rem 1.6rem;
+            font-family: var(--font-display);
+            font-size: 0.85rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            text-decoration: none;
+            border: 1px solid var(--color-border);
+            background: var(--color-surface-raised);
+            color: var(--color-text);
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: var(--color-accent);
+            transform: translateX(-101%);
+            transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            z-index: -1;
+        }
+
+        .btn:hover::before {
+            transform: translateX(0);
+        }
+
+        .btn:hover {
+            color: var(--color-bg);
+            border-color: var(--color-accent);
+        }
+
+        .btn-primary {
+            background: var(--color-accent);
+            color: var(--color-bg);
+            border-color: var(--color-accent);
+        }
+
+        .btn-primary::before {
+            background: var(--color-text);
+        }
+
+        .btn-primary:hover {
+            color: var(--color-accent);
+        }
+
+        .link {
+            font-family: var(--font-display);
+            font-size: 0.85rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--color-accent);
+            text-decoration: none;
+            position: relative;
+            padding-bottom: 2px;
+        }
+
+        .link::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 0;
+            height: 1px;
+            background: var(--color-accent);
+            transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .link:hover::after { width: 100%; }
+
+        /* ── In Action Screenshot ── */
+        .in-action {
+            text-align: center;
+        }
+
+        .in-action__frame {
+            position: relative;
+            max-width: 900px;
+            margin: var(--space-lg) auto 0;
+            border: 1px solid var(--color-border);
+            background: var(--color-surface);
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+        }
+
+        .in-action__frame img {
             display: block;
             width: 100%;
             height: auto;
-        }
-        .hero-links { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
-        .btn {
-            display: inline-block;
-            background: var(--accent);
-            color: #121212;
-            padding: 10px 22px;
-            border-radius: 6px;
-            font-weight: 600;
-            font-size: .95rem;
-            text-decoration: none;
-        }
-        .btn:hover { background: var(--accent-dim); text-decoration: none; }
-        .link { color: var(--accent); font-size: .95rem; }
-        .link:hover { color: var(--accent-dim); }
-
-        /* ── Sections ─────────────────────────── */
-        section { margin-bottom: 48px; }
-        section + section { border-top: 1px solid var(--border); padding-top: 48px; }
-        h2 {
-            font-size: 1.1rem;
-            color: var(--muted);
-            text-transform: uppercase;
-            letter-spacing: .06em;
-            margin-bottom: 20px;
+            opacity: 0;
+            transform: scale(1.04);
+            transition: opacity 1s cubic-bezier(0.16, 1, 0.3, 1), transform 1s cubic-bezier(0.16, 1, 0.3, 1);
         }
 
-        /* ── Chips (formats) ──────────────────── */
-        .chips { display: flex; gap: 10px; flex-wrap: wrap; }
-        .chip {
-            display: inline-flex; align-items: center; gap: 8px;
-            background: var(--card); border: 1px solid var(--border);
-            border-radius: 6px; padding: 8px 16px;
-            font-size: .9rem;
+        .in-action__frame img.visible {
+            opacity: 1;
+            transform: scale(1);
         }
-        .chip code { font-family: monospace; font-size: .95rem; color: var(--accent); }
-        .chip span { color: var(--muted); font-size: .82rem; }
 
-        /* ── Cards (features) ──────────────────── */
-        .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
-        .card {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            padding: 20px;
-        }
-        .card h3 { font-size: .95rem; margin-bottom: .3em; }
-        .card p { font-size: .84rem; color: var(--muted); margin: 0; }
-
-        /* ── Quick Start ───────────────────────── */
-        .steps { display: flex; gap: 20px; }
-        .step {
-            flex: 1;
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            padding: 20px;
+        /* ── Scanner Visual ── */
+        .scanner {
             position: relative;
+            z-index: 1;
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5), inset 0 0 80px rgba(0,0,0,0.5);
+            transform: perspective(1000px) rotateY(-5deg) rotateX(2deg);
+            transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
         }
-        .step-num {
-            position: absolute; top: -12px; left: 16px;
-            width: 28px; height: 28px;
-            background: var(--accent); color: #121212;
+
+        .scanner:hover {
+            transform: perspective(1000px) rotateY(0deg) rotateX(0deg);
+        }
+
+        .scanner__header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--color-border);
+            background: rgba(255,255,255,0.01);
+        }
+
+        .scanner__dot {
+            width: 8px;
+            height: 8px;
             border-radius: 50%;
-            font-size: .8rem; font-weight: 700;
-            display: flex; align-items: center; justify-content: center;
+            background: var(--color-text-muted);
         }
-        .step h3 { font-size: .92rem; margin: .5em 0 .3em; }
-        .step p { font-size: .82rem; color: var(--muted); margin: 0; }
 
-        /* ── Compatibility row ─────────────────── */
-        .badge-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+        .scanner__dot:first-child { background: #ff5f57; }
+        .scanner__dot:nth-child(2) { background: #ffbd2e; }
+        .scanner__dot:nth-child(3) { background: #28c840; }
+
+        .scanner__title {
+            margin-left: auto;
+            font-family: var(--font-mono);
+            font-size: 0.6rem;
+            color: var(--color-text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+
+        .scanner__body {
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            line-height: 1.8;
+            color: var(--color-text-secondary);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .scanner__body pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .scanner__body .hex { color: var(--color-accent); }
+        .scanner__body .addr { color: var(--color-text-muted); }
+        .scanner__body .data { color: var(--color-secondary); }
+        .scanner__body .meta { color: var(--color-text); }
+
+        .scanner__scanline {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: var(--color-accent);
+            opacity: 0.6;
+            box-shadow: 0 0 10px var(--color-accent), 0 0 20px var(--color-accent);
+            animation: scan 4s ease-in-out infinite;
+        }
+
+        @keyframes scan {
+            0%, 100% { top: 0; opacity: 0; }
+            10% { opacity: 0.6; }
+            50% { top: 100%; opacity: 0.6; }
+            60% { opacity: 0; }
+            100% { top: 100%; opacity: 0; }
+        }
+
+        /* ── Section Headers ── */
+        section {
+            position: relative;
+            padding: var(--space-xl) 0;
+        }
+
+        section + section::before {
+            content: '';
+            display: block;
+            width: 60px;
+            height: 1px;
+            background: var(--color-border);
+            margin: 0 auto var(--space-xl);
+        }
+
+        .section__overline {
+            display: block;
+            font-family: var(--font-display);
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.2em;
+            color: var(--color-accent);
+            margin-bottom: var(--space-sm);
+        }
+
+        .section__title {
+            font-size: clamp(2.2rem, 4.5vw, 4rem);
+            font-weight: 700;
+            line-height: 1.1;
+            letter-spacing: -0.01em;
+            margin-bottom: var(--space-md);
+            max-width: 600px;
+        }
+
+        .compat .section__title,
+        .compat .section__overline {
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        /* ── Registry (Formats) ── */
+        .registry {
+            border-top: 1px solid var(--color-border);
+        }
+
+        .registry-row {
+            display: grid;
+            grid-template-columns: 100px 160px 60px 1fr;
+            align-items: baseline;
+            gap: var(--space-md);
+            padding: var(--space-sm) 0;
+            border-bottom: 1px solid var(--color-border);
+            transition: background 0.2s ease;
+        }
+
+        .registry-row:hover {
+            background: var(--color-surface);
+        }
+
+        .registry-row, .toolkit-row {
+            opacity: 0;
+            transform: translateX(-12px);
+            transition: opacity 0.5s ease, transform 0.5s ease;
+        }
+
+        .registry-row.visible, .toolkit-row.visible {
+            opacity: 1;
+            transform: translateX(0);
+        }
+
+        .registry-row__ext {
+            font-family: var(--font-mono);
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: var(--color-accent);
+        }
+
+        .registry-row__label {
+            font-family: var(--font-display);
+            font-size: 0.8rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--color-text);
+        }
+
+        .registry-row__tag {
+            font-family: var(--font-mono);
+            font-size: 0.65rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--color-text-muted);
+            border: 1px solid var(--color-border);
+            padding: 2px 8px;
+            justify-self: start;
+            align-self: center;
+        }
+
+        .registry-row__desc {
+            font-size: 0.95rem;
+            color: var(--color-text-secondary);
+            line-height: 1.5;
+        }
+
+        /* ── Timeline (Workflow) ── */
+        .timeline {
+            position: relative;
+            padding-left: calc(var(--space-md) + 24px);
+        }
+
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 12px;
+            top: 0;
+            bottom: 0;
+            width: 1px;
+            background: var(--color-border);
+        }
+
+        .timeline-step {
+            position: relative;
+            padding-bottom: var(--space-lg);
+        }
+
+        .timeline-step:last-child {
+            padding-bottom: 0;
+        }
+
+        .timeline-step__node {
+            position: absolute;
+            left: calc(-1 * (var(--space-md) + 24px) + 5px);
+            top: 2px;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 2px solid var(--color-accent);
+            background: var(--color-accent);
+            box-shadow: 0 0 0 4px var(--color-bg);
+            z-index: 2;
+        }
+
+        .timeline-step__node {
+            position: absolute;
+            left: calc(-1 * (var(--space-md) + 24px) + 5px);
+            top: 2px;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 2px solid var(--color-accent);
+            background: var(--color-accent);
+            box-shadow: 0 0 0 4px var(--color-bg);
+            z-index: 2;
+            animation: pulse 3s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 4px var(--color-bg); }
+            50% { box-shadow: 0 0 0 4px var(--color-bg), 0 0 0 8px rgba(230, 169, 72, 0.15); }
+        }
+
+        .timeline-step__title {
+            font-family: var(--font-display);
+            font-size: 1.1rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin-bottom: var(--space-xs);
+            color: var(--color-text);
+        }
+
+        .timeline-step__desc {
+            font-size: 0.95rem;
+            color: var(--color-text-secondary);
+            line-height: 1.6;
+            max-width: 560px;
+        }
+
+        /* ── Toolkit (Editorial Rows) ── */
+        .toolkit {
+            display: flex;
+            flex-direction: column;
+            gap: var(--space-lg);
+        }
+
+        .toolkit-row {
+            display: grid;
+            grid-template-columns: 80px 1fr;
+            gap: var(--space-md);
+            align-items: start;
+            padding: var(--space-md) 0;
+            border-bottom: 1px solid var(--color-border);
+        }
+
+        .toolkit-row:last-child {
+            border-bottom: none;
+        }
+
+        /* .toolkit-row--alt removed — all rows left-aligned */
+
+        .toolkit-row__num {
+            font-family: var(--font-mono);
+            font-size: 3.5rem;
+            font-weight: 700;
+            line-height: 1;
+            color: var(--color-accent);
+            opacity: 0.12;
+            align-self: start;
+        }
+
+        .toolkit-row__content h3 {
+            font-family: var(--font-display);
+            font-size: 1rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin-bottom: var(--space-xs);
+            color: var(--color-text);
+        }
+
+        .toolkit-row__content p {
+            font-size: 0.95rem;
+            color: var(--color-text-secondary);
+            line-height: 1.6;
+            max-width: 520px;
+        }
+
+        /* ── Compatibility ── */
+        .compat {
+            text-align: center;
+        }
+
+        .badge-row {
+            display: inline-flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: var(--space-sm);
+            margin-top: var(--space-md);
+        }
+
         .badge {
-            display: inline-block;
-            background: var(--card); border: 1px solid var(--border);
-            padding: 4px 12px; border-radius: 20px;
-            font-size: .8rem; color: var(--muted);
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--color-text-muted);
+            border: 1px solid var(--color-border);
+            padding: 0.5rem 1rem;
+            position: relative;
+            overflow: hidden;
+            transition: color 0.3s ease, border-color 0.3s ease;
         }
 
-        /* ── Footer ────────────────────────────── */
+        .badge:hover {
+            color: var(--color-accent);
+            border-color: var(--color-accent);
+        }
+
+        /* ── Footer ── */
         footer {
-            border-top: 1px solid var(--border);
-            padding-top: 24px;
-            font-size: .8rem;
-            color: #555;
+            border-top: 1px solid var(--color-border);
+            padding: var(--space-lg) var(--space-md);
             display: flex;
             justify-content: space-between;
+            align-items: center;
             flex-wrap: wrap;
-            gap: 12px;
+            gap: var(--space-sm);
         }
-        footer a { color: var(--muted); }
-        footer a:hover { color: var(--text); text-decoration: none; }
 
-        @media (max-width: 640px) {
-            .hero { flex-direction: column; padding: 32px 24px; }
-            .hero-img { flex: 0 0 auto; width: 100%; }
-            .steps { flex-direction: column; }
+        footer span {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            color: var(--color-text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+
+        footer a {
+            color: var(--color-text-muted);
+            text-decoration: none;
+            transition: color 0.2s ease;
+        }
+
+        footer a:hover { color: var(--color-accent); }
+
+        /* ── Responsive ── */
+        @media (max-width: 900px) {
+            .hero {
+                grid-template-columns: 1fr;
+                min-height: auto;
+                padding-top: var(--space-lg);
+                padding-bottom: var(--space-lg);
+            }
+            .hero__screenshot-bg img { filter: saturate(0) blur(20px) brightness(0.15); }
+            .scanner { transform: none !important; }
+            .registry-row { grid-template-columns: 80px 1fr; gap: var(--space-sm); }
+            .registry-row__tag { display: none; }
+            .registry-row__ext { grid-row: 1; grid-column: 1; }
+            .registry-row__label { grid-row: 1; grid-column: 2; }
+            .registry-row__desc { grid-row: 2; grid-column: 1 / -1; }
+            .toolkit-row { grid-template-columns: 60px 1fr; }
+        }
+
+        @media (max-width: 600px) {
+            body { font-size: 0.9rem; }
+            .container { padding: 0 var(--space-sm); }
+            .toolkit-row { grid-template-columns: 1fr; gap: var(--space-xs); }
+            .hero__actions { flex-direction: column; align-items: flex-start; }
+            footer { flex-direction: column; text-align: center; }
         }
     </style>
 </head>
 <body>
 
-    <!-- ══════════════════════════════════════════════ -->
-    <!--  HERO                                         -->
-    <!-- ══════════════════════════════════════════════ -->
-    <div class="hero">
-        <div class="hero-text">
-            <h1>CarnivoresIO</h1>
-            <p>Blender extension for importing, editing, and exporting <strong>.3df</strong>, <strong>.car</strong>, and <strong>.3dn</strong> models from the classic <em>Carnivores</em> game engine. Full animation, rigging, and audio support.</p>
-            <div class="hero-links">
-                <a class="btn" href="https://github.com/Tibbee/CarnivoresIO/releases/latest">Download Latest</a>
-                <a class="link" href="https://github.com/Tibbee/CarnivoresIO#installation">Install via Dev Channel</a>
-                <a class="link" href="https://github.com/Tibbee/CarnivoresIO#readme">Full Documentation</a>
-                <a class="link" href="https://github.com/Tibbee/CarnivoresIO">Source Code</a>
+    <!-- ═══════════════════════════════════════════════ -->
+    <!-- HERO                                            -->
+    <!-- ═══════════════════════════════════════════════ -->
+    <section class="hero">
+        <div class="hero__bg"></div>
+        <div class="hero__grid"></div>
+        <div class="hero__screenshot-bg">
+            <img src="screenshot.png" alt="" aria-hidden="true">
+        </div>
+
+        <div class="hero__content reveal">
+            <span class="overline">Blender Extension for Carnivores Modding</span>
+            <h1 class="hero__title">Carnivores<span>IO</span></h1>
+            <p class="hero__desc">
+                A direct pipeline between Blender and the classic <em>Carnivores</em> game engine. Import models, textures, 
+                and animations. Reconstruct armatures from owner data, edit face flags, sync audio to animations, 
+                and export back to engine-ready formats.
+            </p>
+            <div class="hero__actions">
+                <a class="btn btn-primary" href="https://github.com/Tibbee/CarnivoresIO/releases/latest">Download Latest</a>
+                <a class="btn" href="https://github.com/Tibbee/CarnivoresIO#installation">Dev Channel</a>
+                <a class="link" href="https://github.com/Tibbee/CarnivoresIO">Source&nbsp;&rarr;</a>
             </div>
         </div>
-        <div class="hero-img">
-            <!--
-              Replace this image with a screenshot of CarnivoresIO inside Blender.
-              Suggested content: the sidebar panels, a reconstructed rig, or the flag visualizer.
-              Put your PNG/GIF at the repo root (e.g. screenshot.png) and update the src below.
-              Recommended size: 560x360 or 2x that for retina.
-            -->
-            <img src="screenshot.png" alt="CarnivoresIO inside Blender" style="background:#1a1a1a; min-height:180px;">
-        </div>
-    </div>
+    </section>
 
     <div class="container">
 
-    <!-- ══════════════════════════════════════════════ -->
-    <!--  FORMATS                                      -->
-    <!-- ══════════════════════════════════════════════ -->
-    <section>
-        <h2>Supported Formats</h2>
-        <div class="chips">
-            <div class="chip"><code>.3df</code><span>Static models, import &amp; export</span></div>
-            <div class="chip"><code>.car</code><span>Animated models, import &amp; export</span></div>
-            <div class="chip"><code>.3dn</code><span>Mobile/HD static export</span></div>
-            <div class="chip"><code>.vtl</code><span>Animation export</span></div>
-        </div>
-    </section>
+        <!-- ═══════════════════════════════════════════════ -->
+        <!-- FORMATS                                         -->
+        <!-- ═══════════════════════════════════════════════ -->
+        <section class="formats reveal">
+            <span class="section__overline">Supported Formats</span>
+            <h2 class="section__title">What You Can Work With</h2>
+            
+            <div class="registry">
+                <div class="registry-row">
+                    <div class="registry-row__ext">.3df</div>
+                    <div class="registry-row__label">Static Models</div>
+                    <div class="registry-row__tag">Import &amp; Export</div>
+                    <div class="registry-row__desc">Geometry, UVs, embedded ARGB1555 textures, and owner-based vertex groups. Full import and export.</div>
+                </div>
+                <div class="registry-row">
+                    <div class="registry-row__ext">.car</div>
+                    <div class="registry-row__label">Animated Models</div>
+                    <div class="registry-row__tag">Import &amp; Export</div>
+                    <div class="registry-row__desc">Vertex animations, reconstructed armatures from owners, KPS timing, and linked audio.</div>
+                </div>
+                <div class="registry-row">
+                    <div class="registry-row__ext">.3dn</div>
+                    <div class="registry-row__label">HD / Mobile Export</div>
+                    <div class="registry-row__tag">Export Only</div>
+                    <div class="registry-row__desc">High-definition static model export for modern Carnivores engine ports.</div>
+                </div>
+                <div class="registry-row">
+                    <div class="registry-row__ext">.vtl</div>
+                    <div class="registry-row__label">Animation Only</div>
+                    <div class="registry-row__tag">Export Only</div>
+                    <div class="registry-row__desc">Decoupled vertex animation export for use in animation-only workflows.</div>
+                </div>
+            </div>
+        </section>
 
-    <!-- ══════════════════════════════════════════════ -->
-    <!--  QUICK START                                  -->
-    <!-- ══════════════════════════════════════════════ -->
-    <section>
-        <h2>Quick Start</h2>
-        <div class="steps">
-            <div class="step">
-                <div class="step-num">1</div>
-                <h3>Install</h3>
-                <p>Download the latest release <code>.zip</code> and drag it into Blender's Extensions preferences, or add the dev channel URL for auto-updates.</p>
+        <!-- ═══════════════════════════════════════════════ -->
+        <!-- IN ACTION                                       -->
+        <!-- ═══════════════════════════════════════════════ -->
+        <section class="in-action reveal">
+            <span class="section__overline">In Action</span>
+            <h2 class="section__title">The Extension Inside Blender</h2>
+            <div class="in-action__frame">
+                <img src="screenshot.png" alt="CarnivoresIO extension panel inside Blender" loading="lazy">
             </div>
-            <div class="step">
-                <div class="step-num">2</div>
-                <h3>Import</h3>
-                <p>Use <em>File &gt; Import &gt; Carnivores Engine</em> to load <code>.3df</code> or <code>.car</code> files. Enable Flip Handedness for the game's coordinate system.</p>
-            </div>
-            <div class="step">
-                <div class="step-num">3</div>
-                <h3>Rig &amp; Export</h3>
-                <p>Click <strong>Reconstruct Rig from Owners</strong> in the sidebar to build an armature, link sounds, tweak KPS, then export.</p>
-            </div>
-        </div>
-    </section>
+        </section>
 
-    <!-- ══════════════════════════════════════════════ -->
-    <!--  FEATURES                                     -->
-    <!-- ══════════════════════════════════════════════ -->
-    <section>
-        <h2>Features</h2>
-        <div class="cards">
-            <div class="card">
-                <h3>Skeleton Reconstruction</h3>
-                <p>Symmetry-aware MST algorithm infers bone hierarchy from vertex groups automatically.</p>
+        <!-- ═══════════════════════════════════════════════ -->
+        <!-- QUICK START                                     -->
+        <!-- ═══════════════════════════════════════════════ -->
+        <section class="protocol reveal">
+            <span class="section__overline">Workflow</span>
+            <h2 class="section__title">From Engine to Blender and Back</h2>
+            
+            <div class="timeline">
+                <div class="timeline-step">
+                    <div class="timeline-step__node"></div>
+                    <h3 class="timeline-step__title">Import</h3>
+                    <p class="timeline-step__desc">
+                        Bring in <code>.3df</code> or <code>.car</code> files via <em>File &gt; Import &gt; Carnivores Engine</em>. 
+                        The addon reads geometry, textures, animation data, and owner groups automatically. 
+                        Built-in validation checks engine geometry limits before the mesh ever appears.
+                    </p>
+                </div>
+                <div class="timeline-step">
+                    <div class="timeline-step__node"></div>
+                    <h3 class="timeline-step__title">Edit</h3>
+                    <p class="timeline-step__desc">
+                        Reconstruct the full armature from owner weights. Paint and select face flags by bitmask. 
+                        Smooth deformations at bone joints. Link audio files to animation actions and hear them in sync 
+                        as you scrub the timeline.
+                    </p>
+                </div>
+                <div class="timeline-step">
+                    <div class="timeline-step__node"></div>
+                    <h3 class="timeline-step__title">Export</h3>
+                    <p class="timeline-step__desc">
+                        Write out to <code>.3df</code>, <code>.car</code>, <code>.3dn</code>, or <code>.vtl</code> with handedness correction, 
+                        UV flipping, and KPS timing preserved. Batch-export multiple static meshes in one go.
+                    </p>
+                </div>
             </div>
-            <div class="card">
-                <h3>Animation Pipeline</h3>
-                <p>Vertex animations become Shape Key Actions with NLA strips. KPS timing for exact engine reproduction.</p>
-            </div>
-            <div class="card">
-                <h3>NLA Sound System</h3>
-                <p>Link .wav files to actions for synchronized audio during timeline scrubbing.</p>
-            </div>
-            <div class="card">
-                <h3>Face Flag Tools</h3>
-                <p>Viewport visualization, bitmask selection, and bulk modification of engine face flags.</p>
-            </div>
-            <div class="card">
-                <h3>Validation &amp; Repair</h3>
-                <p>Import checks for limits, UV ranges, bone cycles, and texture integrity with auto-repair.</p>
-            </div>
-            <div class="card">
-                <h3>Weight Smoothing</h3>
-                <p>Laplacian smoothing with joints-only mode for organic deformation.</p>
-            </div>
-        </div>
-    </section>
+        </section>
 
-    <!-- ══════════════════════════════════════════════ -->
-    <!--  COMPATIBILITY                                -->
-    <!-- ══════════════════════════════════════════════ -->
-    <section>
-        <h2>Compatibility</h2>
-        <div class="badge-row">
-            <span class="badge">Blender 4.2 &ndash; 6.0</span>
-            <span class="badge">Windows / macOS / Linux</span>
-            <span class="badge">NumPy (bundled)</span>
-            <span class="badge">GNU GPL v3</span>
-        </div>
-        <p style="margin-top:14px; font-size:.85rem; color:var(--muted);">Requires Blender 4.2+. Blender 3.x is not supported due to the Extensions API.</p>
-    </section>
+        <!-- ═══════════════════════════════════════════════ -->
+        <!-- FEATURES                                        -->
+        <!-- ═══════════════════════════════════════════════ -->
+        <section class="features reveal">
+            <span class="section__overline">Capabilities</span>
+            <h2 class="section__title">Toolkit</h2>
+            
+            <div class="toolkit">
+                <div class="toolkit-row">
+                    <div class="toolkit-row__num">01</div>
+                    <div class="toolkit-row__content">
+                        <h3>Rebuild Rigs from Owners</h3>
+                        <p>Automatically generates a bone hierarchy from the model's vertex owner groups. Choose between Armature or Hook import modes for different rigging workflows.</p>
+                    </div>
+                </div>
+                <div class="toolkit-row">
+                    <div class="toolkit-row__num">02</div>
+                    <div class="toolkit-row__content">
+                        <h3>Shape Key Import</h3>
+                        <p>Imports per-frame vertex data as Blender shape keys, organized into NLA strips with precise KPS timing for exact engine reproduction.</p>
+                    </div>
+                </div>
+                <div class="toolkit-row">
+                    <div class="toolkit-row__num">03</div>
+                    <div class="toolkit-row__content">
+                        <h3>Synced NLA Sound</h3>
+                        <p>Link <code>.wav</code>, <code>.mp3</code>, <code>.ogg</code>, or <code>.flac</code> to animation actions. Audio plays in perfect sync when scrubbing the timeline, with track preview and solo modes.</p>
+                    </div>
+                </div>
+                <div class="toolkit-row">
+                    <div class="toolkit-row__num">04</div>
+                    <div class="toolkit-row__content">
+                        <h3>Visual Flag Editing</h3>
+                        <p>Visualize engine face flags as vertex colors. Select faces by bitmask logic (Any / All / None) and bulk set, clear, or toggle flags directly.</p>
+                    </div>
+                </div>
+                <div class="toolkit-row">
+                    <div class="toolkit-row__num">05</div>
+                    <div class="toolkit-row__content">
+                        <h3>Import Validation</h3>
+                        <p>Checks against engine limits (1024/2048 vertices), UV bounds, and texture integrity. Catches errors before you start editing.</p>
+                    </div>
+                </div>
+                <div class="toolkit-row">
+                    <div class="toolkit-row__num">06</div>
+                    <div class="toolkit-row__content">
+                        <h3>Joint Weight Smoothing</h3>
+                        <p>Procedurally smooths vertex weights at bone joints while preserving limb rigidity. Configurable iterations and intensity.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════ -->
+        <!-- COMPATIBILITY                                   -->
+        <!-- ═══════════════════════════════════════════════ -->
+        <section class="compat reveal">
+            <span class="section__overline">Compatibility Matrix</span>
+            <h2 class="section__title">System Requirements</h2>
+            <p style="color: var(--color-text-secondary); max-width: 600px; margin: 0 auto;">
+                Designed for modern Blender using the Extensions API.
+            </p>
+            <div class="badge-row">
+                <span class="badge">Blender 4.2 — 6.0</span>
+                <span class="badge">Windows / macOS / Linux</span>
+                <span class="badge">GNU GPL v3</span>
+            </div>
+            <p style="margin-top: var(--space-md); font-size: 0.85rem; color: var(--color-text-muted);">
+                Blender 3.x is not supported. The Extensions API introduced in 4.2 is required.
+            </p>
+        </section>
 
     </div>
-    <!-- ══════════════════════════════════════════════ -->
-    <!--  FOOTER                                       -->
-    <!-- ══════════════════════════════════════════════ -->
-    <footer>
-        <span>Copyright &copy; 2024&ndash;2026 Tibor Hars&aacute;nyi</span>
+
+    <!-- ═══════════════════════════════════════════════ -->
+    <!-- FOOTER                                          -->
+    <!-- ═══════════════════════════════════════════════ -->
+    <footer class="container">
+        <span>Copyright &copy; 2024–2026 Tibor Harsányi</span>
         <span>
-            <a href="https://github.com/Tibbee/CarnivoresIO">GitHub</a> &middot;
-            <a href="https://github.com/Tibbee/CarnivoresIO/issues">Issues</a> &middot;
-            <a href="https://github.com/Tibbee/CarnivoresIO/blob/main/LICENSE">License</a> &middot;
+            <a href="https://github.com/Tibbee/CarnivoresIO">GitHub</a> ·
+            <a href="https://github.com/Tibbee/CarnivoresIO/issues">Issues</a> ·
+            <a href="https://github.com/Tibbee/CarnivoresIO/blob/main/LICENSE">License</a> ·
             <a href="https://github.com/Tibbee/CarnivoresIO#readme">README</a>
         </span>
     </footer>
+
+    <!-- ═══════════════════════════════════════════════ -->
+    <!-- Scripts                                         -->
+    <!-- ═══════════════════════════════════════════════ -->
+    <script>
+        // Reveal on scroll
+        const reveals = document.querySelectorAll('.reveal');
+        
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('visible');
+                    // Stagger child rows
+                    const rows = entry.target.querySelectorAll('.registry, .toolkit');
+                    rows.forEach(container => {
+                        const childRows = container.querySelectorAll('.registry-row, .toolkit-row');
+                        childRows.forEach((row, i) => {
+                            row.style.transitionDelay = `${i * 80}ms`;
+                            setTimeout(() => row.classList.add('visible'), i * 80);
+                        });
+                    });
+                    observer.unobserve(entry.target);
+                }
+            });
+        }, {
+            threshold: 0.1,
+            rootMargin: '0px 0px -50px 0px'
+        });
+
+        reveals.forEach(el => observer.observe(el));
+
+        // Initial trigger for hero elements
+        document.querySelectorAll('.hero .reveal').forEach(el => {
+            setTimeout(() => el.classList.add('visible'), 200);
+        });
+
+        // In-action screenshot reveal
+        const screenshotFrame = document.querySelector('.in-action__frame img');
+        if (screenshotFrame) {
+            const imgObserver = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        entry.target.classList.add('visible');
+                        imgObserver.unobserve(entry.target);
+                    }
+                });
+            }, { threshold: 0.2 });
+            imgObserver.observe(screenshotFrame);
+        }
+
+        // Hero background parallax
+        const heroBg = document.querySelector('.hero__screenshot-bg img');
+        if (heroBg) {
+            let ticking = false;
+            window.addEventListener('scroll', () => {
+                if (!ticking) {
+                    window.requestAnimationFrame(() => {
+                        const scrollY = window.scrollY;
+                        const speed = 0.3;
+                        heroBg.style.transform = `scale(1.1) translate(0, ${scrollY * speed}px)`;
+                        ticking = false;
+                    });
+                    ticking = true;
+                }
+            });
+        }
+    </script>
 
 </body>
 </html>
