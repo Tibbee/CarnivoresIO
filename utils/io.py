@@ -178,6 +178,31 @@ def create_hooks(bone_names, bonesTransformedPos, parent_indices, object_name, m
             
     return hook_objects
     
+def _calculate_pca_direction(verts, fallback_dir):
+    """
+    Computes the principal component (longest axis) of a set of 3D points.
+    Returns: mathutils.Vector direction, aligned with fallback_dir.
+    """
+    if len(verts) < 2:
+        return fallback_dir
+        
+    # Center the vertices
+    mean = np.mean(verts, axis=0)
+    centered = verts - mean
+    
+    # Singular Value Decomposition (SVD)
+    try:
+        _, _, vh = np.linalg.svd(centered, full_matrices=False)
+        direction = mathutils.Vector(vh[0])
+        
+        # Align direction with fallback_dir so it points away from parent
+        if direction.dot(fallback_dir) < 0:
+            direction *= -1
+            
+        return direction.normalized()
+    except Exception:
+        return fallback_dir
+
 @timed("create_armature")
 def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name, target_coll, 
                     verticesTransformedPos=None, vertex_owners=None):
@@ -196,6 +221,16 @@ def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name
         x, y, z = bonesTransformedPos[i]
         bone.head = (x, y, z)
         bone_list.append(bone)
+
+    # Gather vertices for each bone group to compute PCA if they are leaf bones
+    group_vertices_map = {}
+    if verticesTransformedPos is not None and vertex_owners is not None:
+        v_arr = np.array(verticesTransformedPos, dtype=np.float64)
+        owners_arr = np.array(vertex_owners, dtype=np.int32).reshape(-1)
+        for i in range(len(bone_names)):
+            bone_v_indices = np.where(owners_arr == i)[0]
+            if bone_v_indices.size >= 2:
+                group_vertices_map[i] = v_arr[bone_v_indices]
 
     # 2. Analyze Model Basis (Strict Grid Alignment)
     model_forward = mathutils.Vector((0, 1, 0)) # Default Blender Y-Forward
@@ -269,7 +304,7 @@ def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name
                 for c_idx in children:
                     bone_list[c_idx].use_connect = False
         
-        # Priority 2: Leaf Bone (Pointing consistent with Parent)
+        # Priority 2: Leaf Bone (Pointing consistent with PCA or Parent)
         else:
             bone.use_connect = False
             if parent_idx != -1:
@@ -277,7 +312,17 @@ def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name
                 p_head = mathutils.Vector(p_bone.head)
                 # Direction from parent to me
                 direction = my_head - p_head
-                if direction.length > 0.001:
+                
+                # SVD PCA-based leaf direction
+                local_dir = None
+                if i in group_vertices_map:
+                    local_dir = _calculate_pca_direction(group_vertices_map[i], direction)
+                    
+                if local_dir is not None:
+                    # Point along PCA direction; length scales with overall bone sizes
+                    len_val = max(direction.length * 0.5, global_median * 0.3)
+                    bone.tail = my_head + (local_dir * max(len_val, min_len))
+                elif direction.length > 0.001:
                     bone.tail = my_head + (direction.normalized() * max(direction.length * 0.5, min_len))
                 else:
                     bone.tail = my_head + (model_forward * min_len)

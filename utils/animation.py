@@ -788,8 +788,61 @@ def calculate_vertex_group_centroids(obj, owner_indices=None, group_count=None, 
     return (result, weights_sum) if return_weights else result
 
 
+def _find_mirror_partners(centroids, center_x):
+    """
+    Identifies pairs of bones that are symmetric mirror partners around center_x.
+    Uses adaptive tolerances based on the model's bounding box dimensions.
+    Returns: List of booleans of length N, where True indicates the bone has a mirror partner.
+    """
+    positions = np.asarray(centroids, dtype=np.float64)
+    n = positions.shape[0]
+    has_mirror = [False] * n
+
+    if n <= 1:
+        return has_mirror
+
+    # Calculate bounding box ranges for adaptive tolerances
+    ptp = np.ptp(positions, axis=0)
+    width_x = max(float(ptp[0]), 0.001)
+    depth_y = max(float(ptp[1]), 0.001)
+    height_z = max(float(ptp[2]), 0.001)
+
+    # Tolerances scale with model dimensions: 12% of depth/height, 8% of width
+    tol_x = max(width_x * 0.08, 0.05)
+    tol_yz = max(max(depth_y, height_z) * 0.12, 0.08)
+
+    rel_x = positions[:, 0] - center_x
+
+    for i in range(n):
+        if has_mirror[i]:
+            continue
+
+        # Midline bones (very close to center_x) are not mirror partners
+        if abs(rel_x[i]) < max(width_x * 0.03, 0.01):
+            continue
+
+        p_i = positions[i]
+        for j in range(n):
+            if i == j:
+                continue
+
+            p_j = positions[j]
+            # Opposite X check: rel_x[i] and rel_x[j] have opposite signs and sum close to 0
+            x_match = abs(rel_x[i] + rel_x[j]) < tol_x and (rel_x[i] * rel_x[j] < 0)
+
+            # Y and Z close check
+            yz_match = abs(p_i[1] - p_j[1]) < tol_yz and abs(p_i[2] - p_j[2]) < tol_yz
+
+            if x_match and yz_match:
+                has_mirror[i] = True
+                has_mirror[j] = True
+                break
+
+    return has_mirror
+
+
 @timed('select_root_bone')
-def select_root_bone(centroids, bone_names=None, group_weights=None, root_override_idx=-1):
+def select_root_bone(centroids, bone_names=None, group_weights=None, root_override_idx=-1, mirror_partners=None):
     """
     Selects the most likely root bone using geometric centrality, symmetry-plane alignment,
     name hints, and weight distribution.
@@ -810,7 +863,10 @@ def select_root_bone(centroids, bone_names=None, group_weights=None, root_overri
         for keyword in priority_keywords:
             for i, name in enumerate(bone_names):
                 if name and keyword in name.lower():
-                    # Active exclusion of lateral limb bones
+                    # Exclude mirror-paired lateral bones even if name matches
+                    if mirror_partners and mirror_partners[i]:
+                        continue
+                    # Active exclusion of lateral limb bones via standard naming suffixes
                     name_lower = name.lower()
                     if "_l" in name_lower or "_r" in name_lower or ".l" in name_lower or ".r" in name_lower:
                         continue
@@ -833,17 +889,27 @@ def select_root_bone(centroids, bone_names=None, group_weights=None, root_overri
         # Heavily penalize off-center bones
         scores += (x_offsets / width_x) * 5.0
 
-    # 3. Weight/Vertex-density bias
+    # 3. Weight/Vertex-density bias (symmetry-scaled so it only rewards midline bones)
     if group_weights is not None:
         weights = np.asarray(group_weights, dtype=np.float64)
         if weights.size == num_bones and np.any(weights > 0):
-            scores -= (weights / weights.max()) * 0.25
+            x_offsets = np.abs(positions[:, 0] - center_x)
+            weight_reward = (weights / weights.max()) * 0.25
+            if width_x > 0.001:
+                weight_reward *= np.exp(-x_offsets / width_x)
+            scores -= weight_reward
+
+    # 4. Blacklist mirror-partner bones
+    if mirror_partners:
+        for i in range(num_bones):
+            if mirror_partners[i]:
+                scores[i] = float('inf')
 
     return int(np.argmin(scores))
 
 
 @timed('infer_hierarchy_mst')
-def infer_hierarchy_mst(centroids, bone_names=None, group_weights=None, root_override_idx=-1):
+def infer_hierarchy_mst(centroids, bone_names=None, group_weights=None, root_override_idx=-1, mirror_partners=None):
     """
     Infers a parent-child hierarchy from centroids using a scored MST search.
     Symmetry-aware: penalizes cross-body links around the mesh's own X center.
@@ -858,7 +924,7 @@ def infer_hierarchy_mst(centroids, bone_names=None, group_weights=None, root_ove
     all_pos = np.asarray(centroids, dtype=np.float64)
 
     # 1. Identify Root
-    root_idx = select_root_bone(centroids, bone_names=bone_names, group_weights=group_weights, root_override_idx=root_override_idx)
+    root_idx = select_root_bone(centroids, bone_names=bone_names, group_weights=group_weights, root_override_idx=root_override_idx, mirror_partners=mirror_partners)
     if root_idx < 0:
         return parents
 
@@ -948,6 +1014,51 @@ def _detect_disconnected_clusters(centroids, threshold_factor=2.0):
         cluster_id += 1
 
     return {i: int(labels[i]) for i in range(n)}
+
+
+def _apply_semantic_suffixes(obj, bone_names, centroids, center_x):
+    """
+    Appends _L and _R suffixes to generic bone names (like 'Bone_0') if they are lateral.
+    Also renames the corresponding vertex groups on the mesh in sync so that skinning is not lost!
+    """
+    positions = np.asarray(centroids, dtype=np.float64)
+    n = len(bone_names)
+    if n == 0:
+        return bone_names
+
+    # Bounding box along X axis for adaptive margin
+    ptp_x = float(np.ptp(positions[:, 0])) if n > 1 else 0.0
+    # 3% of overall width or at least 1cm
+    side_margin = max(ptp_x * 0.03, 0.01)
+
+    rel_x = positions[:, 0] - center_x
+    new_names = list(bone_names)
+    renamed_any = False
+
+    for i in range(n):
+        name = bone_names[i]
+        # Only rename generic bone names or names that do NOT already have standard L/R suffixes
+        name_lower = name.lower()
+        if any(s in name_lower for s in ["_l", "_r", ".l", ".r", " left", " right"]):
+            continue
+
+        if rel_x[i] > side_margin:
+            new_names[i] = f"{name}_L"
+            renamed_any = True
+        elif rel_x[i] < -side_margin:
+            new_names[i] = f"{name}_R"
+            renamed_any = True
+
+    if renamed_any:
+        # Rename vertex groups on the mesh to preserve skinning weights!
+        for i in range(n):
+            if new_names[i] != bone_names[i]:
+                vgroup = obj.vertex_groups.get(bone_names[i])
+                if vgroup:
+                    vgroup.name = new_names[i]
+                    info(f"Renamed vertex group: '{bone_names[i]}' -> '{new_names[i]}'")
+
+    return new_names
 
 
 @timed('reconstruct_armature')
@@ -1055,11 +1166,26 @@ def reconstruct_armature(obj, root_override_idx=-1):
         except ValueError:
             warn(f"Root override index {root_override_idx} is not in the reconstructed main cluster. Falling back to automatic selection.")
 
+    # Calculate symmetry center X of the stable main cluster only
+    main_positions = np.asarray(valid_centroids, dtype=np.float64)
+    center_x = 0.0
+    if len(main_positions) > 0:
+        center_x = float(np.median(main_positions[:, 0]))
+
+    # Apply bilateral semantic naming suffixes to generic names if enabled
+    semantic_enabled = bool(getattr(obj, "carnivores_reconstruct_semantic_naming", True))
+    if semantic_enabled:
+        valid_names = _apply_semantic_suffixes(obj, valid_names, valid_centroids, center_x)
+
+    # Run mirror partner detection on the stable main cluster
+    mirror_partners = _find_mirror_partners(valid_centroids, center_x)
+
     parents = infer_hierarchy_mst(
         valid_centroids,
         bone_names=valid_names,
         group_weights=valid_weights,
-        root_override_idx=local_override_idx
+        root_override_idx=local_override_idx,
+        mirror_partners=mirror_partners
     )
 
     # 3. Create Armature

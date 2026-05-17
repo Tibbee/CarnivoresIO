@@ -885,6 +885,7 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
                 # Expose manual root override index
                 box.separator()
                 box.prop(obj, "carnivores_reconstruct_root_override")
+                box.prop(obj, "carnivores_reconstruct_semantic_naming")
                 box.separator()
 
             col = box.column(align=True)
