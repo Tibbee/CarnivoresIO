@@ -753,8 +753,9 @@ class CARNIVORES_OT_reconstruct_armature(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
+        override_idx = getattr(obj, "carnivores_reconstruct_root_override", -1)
         try:
-            anim_utils.reconstruct_armature(obj)
+            anim_utils.reconstruct_armature(obj, root_override_idx=override_idx)
             self.report({'INFO'}, "Armature reconstructed and assigned.")
             return {'FINISHED'}
         except Exception as e:
@@ -880,6 +881,10 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
                     sub.prop(obj, "carnivores_reconstruct_smooth_iterations")
                     sub.prop(obj, "carnivores_reconstruct_smooth_factor")
                     sub.prop(obj, "carnivores_reconstruct_smooth_joints_only")
+                
+                # Expose manual root override index
+                box.separator()
+                box.prop(obj, "carnivores_reconstruct_root_override")
                 box.separator()
 
             col = box.column(align=True)

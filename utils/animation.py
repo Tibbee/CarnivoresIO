@@ -723,7 +723,7 @@ def calculate_vertex_group_centroids(obj, owner_indices=None, group_count=None, 
     """
     Calculates centroids for reconstruction groups.
     If owner_indices is provided, uses imported raw owner data directly.
-    Returns: list of (x, y, z) positions in group order.
+    Returns: list of either (x, y, z) tuples or None for degenerate (empty) groups.
     """
     mesh = obj.data
     v_count = len(mesh.vertices)
@@ -737,7 +737,6 @@ def calculate_vertex_group_centroids(obj, owner_indices=None, group_count=None, 
     v_pos = np.empty(v_count * 3, dtype=np.float32)
     mesh.vertices.foreach_get('co', v_pos)
     v_pos = v_pos.reshape((v_count, 3))
-    mesh_mean = np.mean(v_pos, axis=0) if v_count > 0 else np.zeros(3, dtype=np.float32)
 
     centroids = np.zeros((group_count, 3), dtype=np.float64)
     weights_sum = np.zeros(group_count, dtype=np.float64)
@@ -759,14 +758,18 @@ def calculate_vertex_group_centroids(obj, owner_indices=None, group_count=None, 
         if np.any(valid):
             np.add.at(centroids, owners[valid], v_pos[valid])
             np.add.at(weights_sum, owners[valid], 1.0)
-            non_zero = weights_sum > 0
-            centroids[non_zero] /= weights_sum[non_zero][:, None]
-            centroids[~non_zero] = mesh_mean
-        else:
-            centroids[:] = mesh_mean
 
-        return (centroids.tolist(), weights_sum) if return_weights else centroids.tolist()
+        # Build result: None for empty/degenerate groups
+        result = []
+        for i in range(group_count):
+            if weights_sum[i] > 0:
+                result.append(tuple(centroids[i] / weights_sum[i]))
+            else:
+                result.append(None)
 
+        return (result, weights_sum) if return_weights else result
+
+    # Vertex groups path
     for v_idx, v in enumerate(mesh.vertices):
         for g in v.groups:
             g_idx = g.group
@@ -775,19 +778,21 @@ def calculate_vertex_group_centroids(obj, owner_indices=None, group_count=None, 
                 centroids[g_idx] += v_pos[v_idx] * w
                 weights_sum[g_idx] += w
 
+    result = []
     for i in range(group_count):
         if weights_sum[i] > 0:
-            centroids[i] /= weights_sum[i]
+            result.append(tuple(centroids[i] / weights_sum[i]))
         else:
-            centroids[i] = mesh_mean
+            result.append(None)
 
-    return (centroids.tolist(), weights_sum) if return_weights else centroids.tolist()
+    return (result, weights_sum) if return_weights else result
 
 
 @timed('select_root_bone')
-def select_root_bone(centroids, bone_names=None, group_weights=None):
+def select_root_bone(centroids, bone_names=None, group_weights=None, root_override_idx=-1):
     """
-    Selects the most likely root bone using geometric centrality.
+    Selects the most likely root bone using geometric centrality, symmetry-plane alignment,
+    name hints, and weight distribution.
     """
     num_bones = len(centroids)
     if num_bones == 0:
@@ -795,18 +800,40 @@ def select_root_bone(centroids, bone_names=None, group_weights=None):
     if num_bones == 1:
         return 0
 
+    # Manual index override
+    if 0 <= root_override_idx < num_bones:
+        return root_override_idx
+
+    # 1. Check for high-priority midline keywords in bone names
     if bone_names:
-        for i, name in enumerate(bone_names):
-            if name and "floor" in name.lower():
-                return i
+        priority_keywords = ["floor", "root", "pelvis", "hips", "spine"]
+        for keyword in priority_keywords:
+            for i, name in enumerate(bone_names):
+                if name and keyword in name.lower():
+                    # Active exclusion of lateral limb bones
+                    name_lower = name.lower()
+                    if "_l" in name_lower or "_r" in name_lower or ".l" in name_lower or ".r" in name_lower:
+                        continue
+                    return i
 
     positions = np.asarray(centroids, dtype=np.float64)
     center = np.median(positions, axis=0)
     pairwise = np.linalg.norm(positions[:, None, :] - positions[None, :, :], axis=2)
     centrality = pairwise.sum(axis=1) / max(num_bones - 1, 1)
     center_dist = np.linalg.norm(positions - center, axis=1)
+    
+    # Base centrality score
     scores = centrality + (center_dist * 0.5)
 
+    # 2. Symmetry-plane (X-Offset) Penalty (CRITICAL to prevent lateral leg bones from being root)
+    center_x = float(center[0])
+    width_x = float(np.ptp(positions[:, 0]))
+    if width_x > 0.001:
+        x_offsets = np.abs(positions[:, 0] - center_x)
+        # Heavily penalize off-center bones
+        scores += (x_offsets / width_x) * 5.0
+
+    # 3. Weight/Vertex-density bias
     if group_weights is not None:
         weights = np.asarray(group_weights, dtype=np.float64)
         if weights.size == num_bones and np.any(weights > 0):
@@ -816,7 +843,7 @@ def select_root_bone(centroids, bone_names=None, group_weights=None):
 
 
 @timed('infer_hierarchy_mst')
-def infer_hierarchy_mst(centroids, bone_names=None, group_weights=None):
+def infer_hierarchy_mst(centroids, bone_names=None, group_weights=None, root_override_idx=-1):
     """
     Infers a parent-child hierarchy from centroids using a scored MST search.
     Symmetry-aware: penalizes cross-body links around the mesh's own X center.
@@ -831,7 +858,7 @@ def infer_hierarchy_mst(centroids, bone_names=None, group_weights=None):
     all_pos = np.asarray(centroids, dtype=np.float64)
 
     # 1. Identify Root
-    root_idx = select_root_bone(centroids, bone_names=bone_names, group_weights=group_weights)
+    root_idx = select_root_bone(centroids, bone_names=bone_names, group_weights=group_weights, root_override_idx=root_override_idx)
     if root_idx < 0:
         return parents
 
@@ -878,8 +905,53 @@ def infer_hierarchy_mst(centroids, bone_names=None, group_weights=None):
     return parents
 
 
+def _detect_disconnected_clusters(centroids, threshold_factor=2.0):
+    """
+    Lightweight BFS-based spatial clustering on bone centroids.
+    Returns {local_idx: cluster_id} so callers can isolate detached groups.
+    """
+    positions = np.asarray(centroids, dtype=np.float64)
+    n = positions.shape[0]
+    if n < 2:
+        return {0: 0}
+
+    # Pairwise Euclidean
+    diff = positions[:, None, :] - positions[None, :, :]
+    dists = np.linalg.norm(diff, axis=2)
+    np.fill_diagonal(dists, np.inf)
+
+    finite = dists[np.isfinite(dists)]
+    if finite.size == 0:
+        return {i: 0 for i in range(n)}
+
+    threshold = np.std(finite) * threshold_factor
+    if threshold < 1e-6:
+        threshold = 1e-6
+
+    labels = -np.ones(n, dtype=np.int32)
+    cluster_id = 0
+
+    for i in range(n):
+        if labels[i] != -1:
+            continue
+        queue = [i]
+        labels[i] = cluster_id
+        idx = 0
+        while idx < len(queue):
+            current = queue[idx]
+            idx += 1
+            neighbors = np.where(dists[current] < threshold)[0]
+            for nb in neighbors:
+                if labels[nb] == -1:
+                    labels[nb] = cluster_id
+                    queue.append(nb)
+        cluster_id += 1
+
+    return {i: int(labels[i]) for i in range(n)}
+
+
 @timed('reconstruct_armature')
-def reconstruct_armature(obj):
+def reconstruct_armature(obj, root_override_idx=-1):
     """
     Full workflow to reconstruct an armature from preserved owner data or vertex groups.
     """
@@ -935,8 +1007,60 @@ def reconstruct_armature(obj):
     )
     bone_names = _build_reconstruction_bone_names(obj, group_count, owner_source=owner_source)
 
-    # 2. Infer Hierarchy
-    parents = infer_hierarchy_mst(centroids, bone_names=bone_names, group_weights=group_weights)
+    # ---- Phase 1A: Degeneracy Pruning ----
+    # Build valid entries (skip groups with no vertices, returned as None)
+    valid_entries = []
+    for i in range(len(centroids)):
+        if centroids[i] is None:
+            warn(f"Group {i} ({bone_names[i]}) is degenerate (no vertices); skipping in reconstruction.")
+        else:
+            valid_entries.append((i, centroids[i], group_weights[i], bone_names[i]))
+    if not valid_entries:
+        error("All owner groups are degenerate (no vertices); cannot reconstruct armature")
+        return None
+
+    valid_indices = [v[0] for v in valid_entries]
+    valid_centroids = [v[1] for v in valid_entries]
+    valid_weights = [v[2] for v in valid_entries]
+    valid_names = [v[3] for v in valid_entries]
+
+    # ---- Phase 1B: Disconnected Cluster Detection ----
+    # Only keep the largest spatial cluster; warn about isolated ones.
+    cluster_labels = _detect_disconnected_clusters(valid_centroids)
+    unique_clusters = set(cluster_labels.values())
+    if len(unique_clusters) > 1:
+        from collections import Counter
+        cluster_counts = Counter(cluster_labels.values())
+        main_cluster_id = max(cluster_counts, key=lambda cid: cluster_counts[cid])
+        new_entries = []
+        for local_i, (orig_i, c, w, n) in enumerate(zip(valid_indices, valid_centroids, valid_weights, valid_names)):
+            if cluster_labels[local_i] == main_cluster_id:
+                new_entries.append((orig_i, c, w, n))
+            else:
+                warn(f"Group {orig_i} ({bone_names[orig_i]}) belongs to a disconnected cluster; skipping in reconstruction.")
+        if not new_entries:
+            error("Main body cluster is empty; cannot reconstruct armature")
+            return None
+        valid_entries = new_entries
+        valid_indices = [v[0] for v in valid_entries]
+        valid_centroids = [v[1] for v in valid_entries]
+        valid_weights = [v[2] for v in valid_entries]
+        valid_names = [v[3] for v in valid_entries]
+
+    # 2. Infer Hierarchy (on stable main cluster only)
+    local_override_idx = -1
+    if root_override_idx >= 0:
+        try:
+            local_override_idx = valid_indices.index(root_override_idx)
+        except ValueError:
+            warn(f"Root override index {root_override_idx} is not in the reconstructed main cluster. Falling back to automatic selection.")
+
+    parents = infer_hierarchy_mst(
+        valid_centroids,
+        bone_names=valid_names,
+        group_weights=valid_weights,
+        root_override_idx=local_override_idx
+    )
 
     # 3. Create Armature
     v_count = len(mesh.vertices)
@@ -953,14 +1077,36 @@ def reconstruct_armature(obj):
                 v_owners[v_idx] = max(v.groups, key=lambda g: g.weight).group
 
     arm_obj = io_utils.create_armature(
-        bone_names,
-        centroids,
+        valid_names,
+        valid_centroids,
         parents,
         obj.name,
         obj.users_collection[0] if obj.users_collection else None,
         verticesTransformedPos=v_pos,
         vertex_owners=v_owners,
     )
+
+    # Store reconstruction metadata for diagnostics and round-trip validation
+    root_local = next((i for i, p in enumerate(parents) if p == -1), -1)
+    if root_local >= 0:
+        arm_obj["carnivores_reconstruct_root"] = valid_names[root_local]
+        arm_obj["carnivores_reconstruct_root_idx"] = valid_indices[root_local]
+    parent_map = {}
+    for i, p in enumerate(parents):
+        child_orig = valid_indices[i]
+        parent_orig = valid_indices[p] if p >= 0 else -1
+        parent_map[str(child_orig)] = parent_orig
+    skipped = [i for i in range(group_count) if centroids[i] is None]
+    if cluster_labels:
+        kept = set(valid_indices)
+        for local_i, orig_i in enumerate(valid_entries_orig := valid_indices):
+            pass
+    if skipped:
+        arm_obj["carnivores_reconstruct_skipped"] = ",".join(str(i) for i in skipped)
+    arm_obj["carnivores_reconstruct_metadata"] = str({
+        "parent_map": parent_map,
+        "cluster_count": len(unique_clusters) if 'unique_clusters' in locals() else 1,
+    })
 
     arm_obj["carnivores_reconstruct_source"] = source_label
     arm_obj["carnivores_owner_attribute"] = OWNER_ATTR_NAME if owner_indices is not None else ""

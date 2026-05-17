@@ -94,6 +94,12 @@ def register():
     )
     
     bpy.types.Object.carnivores_active_nla_index = bpy.props.IntProperty(name="Active NLA Track Index", default=0)
+    bpy.types.Object.carnivores_reconstruct_root_override = bpy.props.IntProperty(
+        name="Root Override Index",
+        description="Manually specify the bone index to use as root (set to -1 for auto)",
+        default=-1,
+        min=-1,
+    )
     bpy.types.Object.carnivores_reconstruct_smooth_weights = bpy.props.BoolProperty(
         name="Smooth Weights",
         description="Apply weight smoothing before rig reconstruction",
@@ -215,6 +221,7 @@ def unregister():
         
     del bpy.types.Object.carnivores_anim_source
     del bpy.types.Object.carnivores_active_nla_index
+    del bpy.types.Object.carnivores_reconstruct_root_override
     del bpy.types.Object.carnivores_reconstruct_smooth_weights
     del bpy.types.Object.carnivores_reconstruct_smooth_iterations
     del bpy.types.Object.carnivores_reconstruct_smooth_factor
