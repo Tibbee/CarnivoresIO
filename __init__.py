@@ -94,6 +94,30 @@ def register():
     )
     
     bpy.types.Object.carnivores_active_nla_index = bpy.props.IntProperty(name="Active NLA Track Index", default=0)
+    bpy.types.Object.carnivores_reconstruct_smooth_weights = bpy.props.BoolProperty(
+        name="Smooth Weights",
+        description="Apply weight smoothing before rig reconstruction",
+        default=False,
+    )
+    bpy.types.Object.carnivores_reconstruct_smooth_iterations = bpy.props.IntProperty(
+        name="Smoothing Iterations",
+        description="Number of smoothing passes to apply before reconstruction",
+        default=3,
+        min=1,
+        max=10,
+    )
+    bpy.types.Object.carnivores_reconstruct_smooth_factor = bpy.props.FloatProperty(
+        name="Smoothing Factor",
+        description="Intensity of smoothing per pass",
+        default=0.5,
+        min=0.01,
+        max=1.0,
+    )
+    bpy.types.Object.carnivores_reconstruct_smooth_joints_only = bpy.props.BoolProperty(
+        name="Smooth Joints Only",
+        description="Only smooth joint areas before reconstruction",
+        default=True,
+    )
     
     # Register KPS Mode property
     bpy.types.Action.carnivores_kps_mode = bpy.props.EnumProperty(
@@ -191,6 +215,10 @@ def unregister():
         
     del bpy.types.Object.carnivores_anim_source
     del bpy.types.Object.carnivores_active_nla_index
+    del bpy.types.Object.carnivores_reconstruct_smooth_weights
+    del bpy.types.Object.carnivores_reconstruct_smooth_iterations
+    del bpy.types.Object.carnivores_reconstruct_smooth_factor
+    del bpy.types.Object.carnivores_reconstruct_smooth_joints_only
     del bpy.types.Action.carnivores_kps_mode
     del bpy.types.Action.carnivores_sound_ptr
     del bpy.types.Scene.carnivores_nla_sound_enabled

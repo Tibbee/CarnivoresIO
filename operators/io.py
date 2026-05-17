@@ -171,6 +171,10 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                 )
 
                 coll.objects.link(obj)
+                obj.carnivores_reconstruct_smooth_weights = self.smooth_weights
+                obj.carnivores_reconstruct_smooth_iterations = self.smooth_iterations
+                obj.carnivores_reconstruct_smooth_factor = self.smooth_factor
+                obj.carnivores_reconstruct_smooth_joints_only = self.smooth_joints_only
                 io_utils.create_uv_map(obj.data, uvs)
                 if self.import_textures and texture is not None:
                     image = io_utils.create_image_texture(texture, texture_height, object_name)
@@ -590,7 +594,7 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
             try:
                 mesh_name, _ = io_utils.generate_names(filepath)  # Ignore basename; use model_name below
                 coll = io_utils.create_import_collection(os.path.splitext(os.path.basename(filepath))[0])
-                header, model_name, faces, uvs, vertices, bone_names, texture, texture_height, warnings, animations, sounds, cross_ref = parse_car(
+                header, model_name, faces, uvs, vertices, bone_names, owner_source, texture, texture_height, warnings, animations, sounds, cross_ref = parse_car(
                     filepath,
                     validate=self.validate,
                     parse_texture=self.import_textures,
@@ -607,6 +611,29 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                 # Use bone_names from parser (already handles dummies/offset if needed)
                 obj = io_utils.create_mesh_object(mesh_name, verticesTransformedPos, faces['v'], model_name, self.normal_smooth, faces['flags'])
                 coll.objects.link(obj)
+                obj.carnivores_reconstruct_smooth_weights = self.smooth_weights
+                obj.carnivores_reconstruct_smooth_iterations = self.smooth_iterations
+                obj.carnivores_reconstruct_smooth_factor = self.smooth_factor
+                obj.carnivores_reconstruct_smooth_joints_only = self.smooth_joints_only
+
+                owner_attr = obj.data.attributes.get("carnivores_owner_index")
+                if owner_attr is None:
+                    owner_attr = obj.data.attributes.new(name="carnivores_owner_index", type='INT', domain='POINT')
+                owner_values = np.asarray(vertices['owner'], dtype=np.int32)
+                if owner_values.size == len(obj.data.vertices):
+                    owner_attr.data.foreach_set("value", owner_values)
+                else:
+                    warn(
+                        f"Owner attribute size mismatch for '{obj.name}' (expected {len(obj.data.vertices)}, got {owner_values.size}); skipping normalized owner cache."
+                    )
+
+                owner_source_attr = obj.data.attributes.get("carnivores_owner_source")
+                if owner_source_attr is None:
+                    owner_source_attr = obj.data.attributes.new(name="carnivores_owner_source", type='INT', domain='POINT')
+                owner_source_values = np.asarray(owner_source, dtype=np.int32)
+                if owner_source_values.size == len(obj.data.vertices):
+                    owner_source_attr.data.foreach_set("value", owner_source_values)
+
                 io_utils.create_uv_map(obj.data, uvs)
                 # Create shape keys
                 if self.import_animations and animations:

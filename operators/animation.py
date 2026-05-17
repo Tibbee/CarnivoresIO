@@ -747,7 +747,9 @@ class CARNIVORES_OT_reconstruct_armature(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         obj = context.active_object
-        return obj and obj.type == 'MESH' and obj.vertex_groups
+        return obj and obj.type == 'MESH' and (
+            obj.vertex_groups or obj.data.attributes.get('carnivores_owner_index')
+        )
 
     def execute(self, context):
         obj = context.active_object
@@ -855,6 +857,17 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
         def draw_rigging_utilities():
             box = layout.box()
             box.label(text="Rigging Utilities:", icon='ARMATURE_DATA')
+
+            if obj and obj.type == 'MESH':
+                box.label(text="Pre-Reconstruct Smoothing:", icon='MOD_SMOOTH')
+                box.prop(obj, "carnivores_reconstruct_smooth_weights")
+                if obj.carnivores_reconstruct_smooth_weights:
+                    sub = box.column(align=True)
+                    sub.prop(obj, "carnivores_reconstruct_smooth_iterations")
+                    sub.prop(obj, "carnivores_reconstruct_smooth_factor")
+                    sub.prop(obj, "carnivores_reconstruct_smooth_joints_only")
+                box.separator()
+
             col = box.column(align=True)
             col.operator(CARNIVORES_OT_reconstruct_armature.bl_idname, icon='BONE_DATA')
             col.operator(CARNIVORES_OT_debug_rig_info.bl_idname, icon='TEXT')

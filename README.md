@@ -123,7 +123,7 @@ Tools are accessed through two locations in Blender:
 1. Select the imported mesh.
 2. In the **Carnivores** sidebar tab, find the **Rigging Utilities** box in the **Carnivores Animation** panel.
 3. Click **Reconstruct Rig from Owners**.
-4. The addon computes the weighted centroid of each vertex group, infers a bone hierarchy using a symmetry-aware MST algorithm, and builds an armature. The mesh is parented with an Armature modifier automatically.
+4. The addon computes centroids from the imported owner cache (falling back to vertex groups when needed), infers a bone hierarchy using a symmetry-aware MST algorithm, and builds an armature. Optional pre-reconstruct smoothing can be enabled in the Rigging Utilities box. The mesh is parented with an Armature modifier automatically.
 
 To inspect the result, click **Log Rig Debug Info** to write bone positions, parenting, and vertex group statistics to a text datablock.
 

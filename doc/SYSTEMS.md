@@ -16,7 +16,7 @@ Documents the sophisticated algorithms bridging Blender's modern animation syste
 ## Skeleton Reconstruction (.car Models)
 
 ### Context
-Carnivores `.car` files use **Vertex Animation (Shape Keys)**. While every vertex is assigned to a "Bone Owner" (index), the files do **not** store bone positions, rotations, or hierarchy (parent-child relationships). This system reconstructs a functional Blender Armature from that metadata.
+Carnivores `.car` files use **Vertex Animation (Shape Keys)**. While every vertex is assigned to a "Bone Owner" (index), the files do **not** store bone positions, rotations, or hierarchy (parent-child relationships). This system reconstructs a functional Blender Armature from that metadata and caches the imported owner map on the mesh for later reconstruction.
 
 ### Algorithmic Solution
 
@@ -29,8 +29,8 @@ The "Head" of each bone is calculated as the **Weighted Center of Mass** of all 
 Since the file doesn't store parents, the system infers structure using proximity:
 - **Algorithm**: Variation of **Prim's Algorithm** for Minimum Spanning Tree (MST)
 - **Logic**:
-  1. Start with root bone (center-most)
-  2. Iteratively connect nearest unconnected centroid to existing tree
+  1. Pick a root by geometric centrality (`floor` still wins if present)
+  2. Iteratively connect the nearest unconnected centroid to the existing tree
 - **Result**: Correctly handles branching (e.g., two legs from pelvis) unlike simple chain scripts
 
 #### 3. Professional Bone Orientation
@@ -42,7 +42,8 @@ Since the file doesn't store parents, the system infers structure using proximit
 ### User Workflow
 1. Import `.car` file
 2. Open `Carnivores` tab in N-Panel → `Carnivores Animation`
-3. Click **"Reconstruct Rig from Owners"**
+3. Optionally enable **Pre-Reconstruct Smoothing** in the Rigging Utilities box and tune the parameters.
+4. Click **"Reconstruct Rig from Owners"**
    - Mesh auto-parented to new skeleton
    - Armature Modifier added
    - Vertex groups match bone names → immediately poseable

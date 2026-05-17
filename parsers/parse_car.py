@@ -190,7 +190,7 @@ def parse_car(filepath, validate=True, parse_texture=True, flip_handedness=True,
         vertices = parse_car_vertices(file, header['vertex_count'])
         if validate:
             vertices = validator.validate_car_vertices(vertices, header['vertex_count'], context)  # Now from validate.py
-        vertices, bone_names = handle_car_owners(vertices, context)
+        vertices, bone_names, owner_source = handle_car_owners(vertices, context)
         texture, texture_raw = (None, None) if not parse_texture else parse_car_texture(file, header['texture_size'], texture_height)
         if validate and texture_raw is not None:
             texture_raw = validator.validate_3df_texture(texture_raw, header['texture_size'], context)
@@ -200,6 +200,6 @@ def parse_car(filepath, validate=True, parse_texture=True, flip_handedness=True,
         sounds, cross_ref = parse_car_sounds_and_crossref(file, header, context, validate=validate)
 
     return (header, model_name, faces, uvs, vertices,
-            bone_names, texture, texture_height,
+            bone_names, owner_source, texture, texture_height,
             context.warnings, animations,
             sounds, cross_ref)

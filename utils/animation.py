@@ -582,52 +582,182 @@ def get_active_animation_data(obj):
             return sk_anim
         return obj_anim
 
+OWNER_ATTR_NAME = "carnivores_owner_index"
+OWNER_SOURCE_ATTR_NAME = "carnivores_owner_source"
+
+
+def _get_reconstruction_owner_source(obj):
+    mesh = obj.data
+    attr = mesh.attributes.get(OWNER_SOURCE_ATTR_NAME)
+    if not attr:
+        return None
+    if len(attr.data) != len(mesh.vertices):
+        warn(
+            f"Owner source attribute '{OWNER_SOURCE_ATTR_NAME}' on '{obj.name}' has an unexpected length; ignoring source cache."
+        )
+        return None
+
+    owner_indices = np.empty(len(mesh.vertices), dtype=np.int32)
+    attr.data.foreach_get("value", owner_indices)
+    return owner_indices
+
+
+def _build_reconstruction_bone_names(obj, group_count, owner_source=None):
+    bone_names = [f"Bone_{i}" for i in range(group_count)]
+
+    if obj and obj.vertex_groups:
+        for vg in obj.vertex_groups:
+            if 0 <= vg.index < group_count:
+                bone_names[vg.index] = vg.name
+        return bone_names
+
+    if owner_source is not None:
+        owner_source = np.asarray(owner_source, dtype=np.int32).reshape(-1)
+        non_zero = owner_source[owner_source > 0]
+        if non_zero.size > 0:
+            min_non_zero = int(np.min(non_zero))
+            return [f"CarBone_{i + min_non_zero}" for i in range(group_count)]
+
+    return bone_names
+
+
+def _get_reconstruction_group_count(obj, owner_indices=None):
+    group_count = max((vg.index for vg in obj.vertex_groups), default=-1) + 1 if obj and obj.vertex_groups else 0
+    if owner_indices is not None:
+        valid_owners = owner_indices[owner_indices >= 0]
+        if valid_owners.size > 0:
+            group_count = max(group_count, int(valid_owners.max()) + 1)
+    return group_count
+
+
+def _get_vertex_group_names_by_index(obj, group_count):
+    bone_names = [f"Bone_{i}" for i in range(group_count)]
+    if obj and obj.vertex_groups:
+        for vg in obj.vertex_groups:
+            if 0 <= vg.index < group_count:
+                bone_names[vg.index] = vg.name
+    return bone_names
+
+
+def _get_reconstruction_owner_indices(obj):
+    mesh = obj.data
+    attr = mesh.attributes.get(OWNER_ATTR_NAME)
+    if not attr:
+        return None
+    if len(attr.data) != len(mesh.vertices):
+        warn(
+            f"Owner attribute '{OWNER_ATTR_NAME}' on '{obj.name}' has an unexpected length; ignoring cached owners."
+        )
+        return None
+
+    owner_indices = np.empty(len(mesh.vertices), dtype=np.int32)
+    attr.data.foreach_get("value", owner_indices)
+    return owner_indices
+
+
 @timed('calculate_vertex_group_centroids')
-def calculate_vertex_group_centroids(obj):
+def calculate_vertex_group_centroids(obj, owner_indices=None, group_count=None, return_weights=False):
     """
-    Calculates the weighted centroid for each vertex group.
+    Calculates centroids for reconstruction groups.
+    If owner_indices is provided, uses imported raw owner data directly.
     Returns: list of (x, y, z) positions in group order.
     """
     mesh = obj.data
-    num_groups = len(obj.vertex_groups)
-    if num_groups == 0:
-        return []
-
-    # Initialize accumulators
-    centroids = np.zeros((num_groups, 3), dtype=np.float64)
-    weights_sum = np.zeros(num_groups, dtype=np.float64)
-
-    # Get vertex positions
     v_count = len(mesh.vertices)
-    v_pos = np.empty(v_count * 3, dtype=np.float32)
-    mesh.vertices.foreach_get('co', v_pos) # FIXED: Use foreach_get, not foreach_set
-    v_pos = v_pos.reshape((v_count, 3))
+    if group_count is None:
+        group_count = _get_reconstruction_group_count(obj, owner_indices)
 
-    # Process weights
+    if group_count == 0 or v_count == 0:
+        empty = []
+        return (empty, np.zeros(0, dtype=np.float64)) if return_weights else empty
+
+    v_pos = np.empty(v_count * 3, dtype=np.float32)
+    mesh.vertices.foreach_get('co', v_pos)
+    v_pos = v_pos.reshape((v_count, 3))
+    mesh_mean = np.mean(v_pos, axis=0) if v_count > 0 else np.zeros(3, dtype=np.float32)
+
+    centroids = np.zeros((group_count, 3), dtype=np.float64)
+    weights_sum = np.zeros(group_count, dtype=np.float64)
+
+    if owner_indices is not None:
+        owners = np.asarray(owner_indices, dtype=np.int32).reshape(-1)
+        if owners.size != v_count:
+            warn(
+                f"Owner cache size mismatch for '{obj.name}' (expected {v_count}, got {owners.size}); falling back to vertex groups."
+            )
+            return calculate_vertex_group_centroids(
+                obj,
+                owner_indices=None,
+                group_count=group_count,
+                return_weights=return_weights,
+            )
+
+        valid = owners >= 0
+        if np.any(valid):
+            np.add.at(centroids, owners[valid], v_pos[valid])
+            np.add.at(weights_sum, owners[valid], 1.0)
+            non_zero = weights_sum > 0
+            centroids[non_zero] /= weights_sum[non_zero][:, None]
+            centroids[~non_zero] = mesh_mean
+        else:
+            centroids[:] = mesh_mean
+
+        return (centroids.tolist(), weights_sum) if return_weights else centroids.tolist()
+
     for v_idx, v in enumerate(mesh.vertices):
         for g in v.groups:
             g_idx = g.group
             w = g.weight
-            if g_idx < num_groups:
+            if g_idx < group_count:
                 centroids[g_idx] += v_pos[v_idx] * w
                 weights_sum[g_idx] += w
 
-    # Avoid division by zero (for groups with no assigned vertices)
-    for i in range(num_groups):
+    for i in range(group_count):
         if weights_sum[i] > 0:
             centroids[i] /= weights_sum[i]
         else:
-            # Fallback to mesh center if group is empty
-            centroids[i] = np.mean(v_pos, axis=0) if v_count > 0 else (0, 0, 0)
+            centroids[i] = mesh_mean
 
-    return centroids.tolist()
+    return (centroids.tolist(), weights_sum) if return_weights else centroids.tolist()
+
+
+@timed('select_root_bone')
+def select_root_bone(centroids, bone_names=None, group_weights=None):
+    """
+    Selects the most likely root bone using geometric centrality.
+    """
+    num_bones = len(centroids)
+    if num_bones == 0:
+        return -1
+    if num_bones == 1:
+        return 0
+
+    if bone_names:
+        for i, name in enumerate(bone_names):
+            if name and "floor" in name.lower():
+                return i
+
+    positions = np.asarray(centroids, dtype=np.float64)
+    center = np.median(positions, axis=0)
+    pairwise = np.linalg.norm(positions[:, None, :] - positions[None, :, :], axis=2)
+    centrality = pairwise.sum(axis=1) / max(num_bones - 1, 1)
+    center_dist = np.linalg.norm(positions - center, axis=1)
+    scores = centrality + (center_dist * 0.5)
+
+    if group_weights is not None:
+        weights = np.asarray(group_weights, dtype=np.float64)
+        if weights.size == num_bones and np.any(weights > 0):
+            scores -= (weights / weights.max()) * 0.25
+
+    return int(np.argmin(scores))
+
 
 @timed('infer_hierarchy_mst')
-def infer_hierarchy_mst(centroids, bone_names=None):
+def infer_hierarchy_mst(centroids, bone_names=None, group_weights=None):
     """
     Infers a parent-child hierarchy from centroids using Prim's MST algorithm.
-    Symmetry-Aware: Heavily penalizes crossing the X=0 center plane.
-    Root selection: Priority given to 'floor' bone or ID 0.
+    Symmetry-aware: penalizes cross-body links around the mesh's own X center.
+    Root selection: chooses the most central group, with 'floor' as an override.
     """
     num_bones = len(centroids)
     if num_bones <= 1:
@@ -635,87 +765,123 @@ def infer_hierarchy_mst(centroids, bone_names=None):
 
     parents = [-1] * num_bones
     connected = [False] * num_bones
-    all_pos = np.array(centroids)
-    
+    all_pos = np.asarray(centroids, dtype=np.float64)
+
     # 1. Identify Root
-    # Preference: Bone named 'floor' (case insensitive) or index 0.
-    root_idx = 0
-    if bone_names:
-        for i, name in enumerate(bone_names):
-            if "floor" in name.lower():
-                root_idx = i
-                break
-    
+    root_idx = select_root_bone(centroids, bone_names=bone_names, group_weights=group_weights)
+    if root_idx < 0:
+        return parents
+
     connected[root_idx] = True
-    
+
     # 2. Symmetry-Aware MST
+    center_x = float(np.median(all_pos[:, 0]))
+    x_margin = max(float(np.ptp(all_pos[:, 0])) * 0.05, 0.001)
+
     for _ in range(num_bones - 1):
         min_dist = float('inf')
-        best_pair = (-1, -1) # (parent, child) 
-        
+        best_pair = (-1, -1)  # (parent, child)
+
         for i in range(num_bones):
-            if not connected[i]: continue
-            
+            if not connected[i]:
+                continue
+
             p_pos = all_pos[i]
             for j in range(num_bones):
-                if connected[j]: continue
-                
+                if connected[j]:
+                    continue
+
                 c_pos = all_pos[j]
-                
+
                 # Base distance
                 dist = np.linalg.norm(p_pos - c_pos)
-                
+
                 # Symmetry Penalty: Prevent cross-leg connections
-                # Penalize if child and parent are on opposite sides of X center plane
-                # (Using 0.05 margin to allow spine bones to connect even if slightly off-center)
-                if (p_pos[0] > 0.05 and c_pos[0] < -0.05) or (p_pos[0] < -0.05 and c_pos[0] > 0.05):
-                    dist *= 50.0 # High penalty
-                
+                if ((p_pos[0] > center_x + x_margin and c_pos[0] < center_x - x_margin) or
+                        (p_pos[0] < center_x - x_margin and c_pos[0] > center_x + x_margin)):
+                    dist *= 50.0
+
                 if dist < min_dist:
                     min_dist = dist
                     best_pair = (i, j)
-        
+
         if best_pair[1] != -1:
             parents[best_pair[1]] = best_pair[0]
             connected[best_pair[1]] = True
-            
+
     return parents
+
 
 @timed('reconstruct_armature')
 def reconstruct_armature(obj):
     """
-    Full workflow to reconstruct an armature from vertex groups.
+    Full workflow to reconstruct an armature from preserved owner data or vertex groups.
     """
     if not obj or obj.type != 'MESH':
         error("Active object must be a mesh")
         return None
 
-    if not obj.vertex_groups:
-        error("Object has no vertex groups to reconstruct from")
+    mesh = obj.data
+    owner_indices = _get_reconstruction_owner_indices(obj)
+    owner_source = _get_reconstruction_owner_source(obj)
+
+    if owner_indices is None and not obj.vertex_groups:
+        error("Object has no vertex groups or owner cache to reconstruct from")
         return None
 
-    info(f"Reconstructing rig for '{obj.name}'...")
+    source_label = "stored owner attribute" if owner_indices is not None else "vertex groups"
+    info(f"Reconstructing rig for '{obj.name}' from {source_label}...")
+
+    # Optional pre-reconstruction smoothing (matches import-time smoothing behavior)
+    smooth_enabled = bool(getattr(obj, "carnivores_reconstruct_smooth_weights", False))
+    if smooth_enabled:
+        smooth_iterations = int(getattr(obj, "carnivores_reconstruct_smooth_iterations", 3))
+        smooth_factor = float(getattr(obj, "carnivores_reconstruct_smooth_factor", 0.5))
+        smooth_joints_only = bool(getattr(obj, "carnivores_reconstruct_smooth_joints_only", True))
+
+        if not obj.vertex_groups and owner_indices is not None:
+            group_count_for_groups = _get_reconstruction_group_count(obj, owner_indices)
+            temp_bone_names = _build_reconstruction_bone_names(obj, group_count_for_groups, owner_source=owner_source)
+            io_utils.create_vertex_groups_from_bones(obj, temp_bone_names, owner_indices)
+
+        if obj.vertex_groups:
+            io_utils.smooth_vertex_weights(
+                obj,
+                iterations=smooth_iterations,
+                factor=smooth_factor,
+                joints_only=smooth_joints_only,
+            )
 
     # 1. Calculate Centroids
-    centroids = calculate_vertex_group_centroids(obj)
-    bone_names = [vg.name for vg in obj.vertex_groups]
-    
+    group_count = _get_reconstruction_group_count(obj, owner_indices)
+    if group_count <= 0:
+        error("No reconstructable owner groups were found")
+        return None
+
+    centroids, group_weights = calculate_vertex_group_centroids(
+        obj,
+        owner_indices=owner_indices,
+        group_count=group_count,
+        return_weights=True,
+    )
+    bone_names = _build_reconstruction_bone_names(obj, group_count, owner_source=owner_source)
+
     # 2. Infer Hierarchy
-    parents = infer_hierarchy_mst(centroids, bone_names=bone_names)
-    
+    parents = infer_hierarchy_mst(centroids, bone_names=bone_names, group_weights=group_weights)
+
     # 3. Create Armature
-    mesh = obj.data
     v_count = len(mesh.vertices)
     v_pos = np.empty(v_count * 3, dtype=np.float32)
-    mesh.vertices.foreach_get('co', v_pos) # FIXED: Use foreach_get
+    mesh.vertices.foreach_get('co', v_pos)
     v_pos = v_pos.reshape((v_count, 3))
-    
-    v_owners = np.zeros(v_count, dtype=np.int32)
-    for v_idx, v in enumerate(mesh.vertices):
-        if v.groups:
-            v_owners[v_idx] = max(v.groups, key=lambda g: g.weight).group
-        else:
-            v_owners[v_idx] = -1
+
+    if owner_indices is not None:
+        v_owners = np.asarray(owner_indices, dtype=np.int32).copy()
+    else:
+        v_owners = np.full(v_count, -1, dtype=np.int32)
+        for v_idx, v in enumerate(mesh.vertices):
+            if v.groups:
+                v_owners[v_idx] = max(v.groups, key=lambda g: g.weight).group
 
     arm_obj = io_utils.create_armature(
         bone_names,
@@ -724,11 +890,15 @@ def reconstruct_armature(obj):
         obj.name,
         obj.users_collection[0] if obj.users_collection else None,
         verticesTransformedPos=v_pos,
-        vertex_owners=v_owners
+        vertex_owners=v_owners,
     )
-    
+
+    arm_obj["carnivores_reconstruct_source"] = source_label
+    arm_obj["carnivores_owner_attribute"] = OWNER_ATTR_NAME if owner_indices is not None else ""
+    arm_obj["carnivores_owner_source_attribute"] = OWNER_SOURCE_ATTR_NAME if owner_source is not None else ""
+
     # 4. Link Mesh to Armature
     io_utils.assign_armature_modifier(obj, arm_obj)
-    
+
     info("Rig reconstruction complete.")
     return arm_obj
