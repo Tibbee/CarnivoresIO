@@ -621,6 +621,69 @@ def _build_reconstruction_bone_names(obj, group_count, owner_source=None):
     return bone_names
 
 
+def _compute_reconstruction_body_axis(centroids):
+    positions = np.asarray(centroids, dtype=np.float64)
+    if positions.shape[0] < 2:
+        return np.array((0.0, 1.0, 0.0), dtype=np.float64)
+
+    centered = positions - np.mean(positions, axis=0)
+    if not np.any(centered):
+        return np.array((0.0, 1.0, 0.0), dtype=np.float64)
+
+    try:
+        cov = np.cov(centered, rowvar=False)
+        eigvals, eigvecs = np.linalg.eigh(cov)
+        axis = eigvecs[:, int(np.argmax(eigvals))]
+        norm = np.linalg.norm(axis)
+        if norm > 1e-8:
+            return axis / norm
+    except Exception:
+        pass
+
+    return np.array((0.0, 1.0, 0.0), dtype=np.float64)
+
+
+def _score_reconstruction_edge(parent_idx, child_idx, positions, center_x, x_margin, center_distances, body_axis, group_weights=None):
+    p_pos = positions[parent_idx]
+    c_pos = positions[child_idx]
+    edge = c_pos - p_pos
+    dist = float(np.linalg.norm(edge))
+    if dist <= 1e-8:
+        return float('inf')
+
+    score = dist
+
+    # Avoid cross-body links unless they are clearly the best option.
+    if ((p_pos[0] > center_x + x_margin and c_pos[0] < center_x - x_margin) or
+            (p_pos[0] < center_x - x_margin and c_pos[0] > center_x + x_margin)):
+        score *= 50.0
+
+    # Prefer parents that are more central than their children.
+    parent_radius = float(center_distances[parent_idx])
+    child_radius = float(center_distances[child_idx])
+    if parent_radius > child_radius + 1e-6:
+        score += (parent_radius - child_radius) * 0.75
+    else:
+        score -= min(child_radius - parent_radius, dist) * 0.10
+
+    # Slightly prefer links that follow the main body axis.
+    axis_len = float(np.linalg.norm(body_axis))
+    if axis_len > 1e-8:
+        alignment = abs(float(np.dot(edge / dist, body_axis / axis_len)))
+        score *= (1.0 - (alignment * 0.10))
+
+    # Small deterministic bias for denser groups as parents.
+    if group_weights is not None:
+        weights = np.asarray(group_weights, dtype=np.float64)
+        if weights.size > max(parent_idx, child_idx):
+            max_weight = float(np.max(weights)) if np.any(weights > 0) else 0.0
+            if max_weight > 0.0:
+                score *= (1.0 - (weights[parent_idx] / max_weight) * 0.05)
+                score *= (1.0 + (weights[child_idx] / max_weight) * 0.02)
+
+    return score
+
+
 def _get_reconstruction_group_count(obj, owner_indices=None):
     group_count = max((vg.index for vg in obj.vertex_groups), default=-1) + 1 if obj and obj.vertex_groups else 0
     if owner_indices is not None:
@@ -755,7 +818,7 @@ def select_root_bone(centroids, bone_names=None, group_weights=None):
 @timed('infer_hierarchy_mst')
 def infer_hierarchy_mst(centroids, bone_names=None, group_weights=None):
     """
-    Infers a parent-child hierarchy from centroids using Prim's MST algorithm.
+    Infers a parent-child hierarchy from centroids using a scored MST search.
     Symmetry-aware: penalizes cross-body links around the mesh's own X center.
     Root selection: chooses the most central group, with 'floor' as an override.
     """
@@ -774,35 +837,38 @@ def infer_hierarchy_mst(centroids, bone_names=None, group_weights=None):
 
     connected[root_idx] = True
 
-    # 2. Symmetry-Aware MST
-    center_x = float(np.median(all_pos[:, 0]))
+    # 2. Scored MST
+    center_point = np.mean(all_pos, axis=0)
+    center_x = float(center_point[0])
     x_margin = max(float(np.ptp(all_pos[:, 0])) * 0.05, 0.001)
+    center_distances = np.linalg.norm(all_pos - center_point, axis=1)
+    body_axis = _compute_reconstruction_body_axis(all_pos)
 
     for _ in range(num_bones - 1):
-        min_dist = float('inf')
+        min_score = float('inf')
         best_pair = (-1, -1)  # (parent, child)
 
         for i in range(num_bones):
             if not connected[i]:
                 continue
 
-            p_pos = all_pos[i]
             for j in range(num_bones):
                 if connected[j]:
                     continue
 
-                c_pos = all_pos[j]
+                score = _score_reconstruction_edge(
+                    i,
+                    j,
+                    all_pos,
+                    center_x,
+                    x_margin,
+                    center_distances,
+                    body_axis,
+                    group_weights=group_weights,
+                )
 
-                # Base distance
-                dist = np.linalg.norm(p_pos - c_pos)
-
-                # Symmetry Penalty: Prevent cross-leg connections
-                if ((p_pos[0] > center_x + x_margin and c_pos[0] < center_x - x_margin) or
-                        (p_pos[0] < center_x - x_margin and c_pos[0] > center_x + x_margin)):
-                    dist *= 50.0
-
-                if dist < min_dist:
-                    min_dist = dist
+                if score < min_score:
+                    min_score = score
                     best_pair = (i, j)
 
         if best_pair[1] != -1:
@@ -834,6 +900,7 @@ def reconstruct_armature(obj):
 
     # Optional pre-reconstruction smoothing (matches import-time smoothing behavior)
     smooth_enabled = bool(getattr(obj, "carnivores_reconstruct_smooth_weights", False))
+    centroid_owner_indices = owner_indices
     if smooth_enabled:
         smooth_iterations = int(getattr(obj, "carnivores_reconstruct_smooth_iterations", 3))
         smooth_factor = float(getattr(obj, "carnivores_reconstruct_smooth_factor", 0.5))
@@ -851,16 +918,18 @@ def reconstruct_armature(obj):
                 factor=smooth_factor,
                 joints_only=smooth_joints_only,
             )
+            # Use the smoothed vertex groups as the reconstruction source.
+            centroid_owner_indices = None
 
     # 1. Calculate Centroids
-    group_count = _get_reconstruction_group_count(obj, owner_indices)
+    group_count = _get_reconstruction_group_count(obj, centroid_owner_indices)
     if group_count <= 0:
         error("No reconstructable owner groups were found")
         return None
 
     centroids, group_weights = calculate_vertex_group_centroids(
         obj,
-        owner_indices=owner_indices,
+        owner_indices=centroid_owner_indices,
         group_count=group_count,
         return_weights=True,
     )

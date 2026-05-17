@@ -26,11 +26,12 @@ The "Head" of each bone is calculated as the **Weighted Center of Mass** of all 
 - **Implementation**: Optimized via `numpy` in `utils/animation.py` (`calculate_vertex_group_centroids`)
 
 #### 2. Hierarchy Inference (MST)
-Since the file doesn't store parents, the system infers structure using proximity:
+Since the file doesn't store parents, the system infers structure using a scored proximity search:
 - **Algorithm**: Variation of **Prim's Algorithm** for Minimum Spanning Tree (MST)
 - **Logic**:
   1. Pick a root by geometric centrality (`floor` still wins if present)
-  2. Iteratively connect the nearest unconnected centroid to the existing tree
+  2. Score each candidate edge by distance, symmetry, centrality, and body-axis alignment
+  3. Iteratively connect the best unconnected centroid to the existing tree
 - **Result**: Correctly handles branching (e.g., two legs from pelvis) unlike simple chain scripts
 
 #### 3. Professional Bone Orientation

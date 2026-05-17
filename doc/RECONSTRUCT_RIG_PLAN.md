@@ -25,7 +25,7 @@ Improve the `.car` rig reconstruction pipeline so it is:
 ### Phase 2 — Hierarchy Quality
 - [x] Replace hardcoded root choice with a scored root selector
 - [x] Use mesh-centered symmetry scoring instead of fixed X=0 only
-- [ ] Add edge scoring beyond distance + symmetry penalty
+- [x] Add edge scoring beyond distance + symmetry penalty
 - [ ] Add optional manual root override in the UI
 - [ ] Add a preview/confirm step before armature creation
 
@@ -45,7 +45,9 @@ Improve the `.car` rig reconstruction pipeline so it is:
 ## Current Implementation Notes
 - `.car` import now stores a normalized point-domain owner cache for reconstruction, plus a source-owner cache for debugging.
 - Reconstruction can read the normalized owner cache directly, even if vertex groups are missing or edited.
+- If pre-reconstruct smoothing is enabled, reconstruction now uses the smoothed vertex groups as the source of truth.
 - Root selection now prefers known names like `floor`, otherwise uses geometric centrality.
+- MST uses richer edge scoring (distance, symmetry, centrality, and body-axis alignment) instead of plain proximity alone.
 - MST symmetry checks now use the model’s own X-center instead of assuming the object is centered at X=0.
 
 ## File Touch Points
@@ -64,9 +66,11 @@ Improve the `.car` rig reconstruction pipeline so it is:
 ## Progress Log
 - 2026-05-17: Plan created.
 - 2026-05-17: Owner preservation and root selection improvements started.
+- 2026-05-17: Pre-reconstruct smoothing controls added to Rigging Utilities.
+- 2026-05-17: Hierarchy scoring improved with body-axis and centrality bias.
 
 ## Next Implementation Step
 1. Finish UI/debug visibility for the reconstruction source.
-2. Add richer edge scoring and a preview/override flow.
+2. Add optional manual root override and preview/confirm flow.
 3. Improve bone roll and leaf tail direction.
 4. Validate against several `.car` creatures with asymmetric and symmetric rigs.

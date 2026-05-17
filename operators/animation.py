@@ -790,6 +790,20 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
         for vg in obj.vertex_groups:
             lines.append(f"ID {vg.index:02d}: {vg.name:<20} | Verts: {v_counts[vg.index]}")
 
+        lines.append("\nRECONSTRUCTION CACHE:")
+        for attr_name in ("carnivores_owner_index", "carnivores_owner_source"):
+            attr = obj.data.attributes.get(attr_name)
+            if attr:
+                lines.append(f"{attr_name}: present | Domain: {attr.domain} | Type: {attr.data_type} | Count: {len(attr.data)}")
+            else:
+                lines.append(f"{attr_name}: missing")
+        lines.append(
+            f"Pre-Reconstruct Smoothing: enabled={getattr(obj, 'carnivores_reconstruct_smooth_weights', False)} "
+            f"iters={getattr(obj, 'carnivores_reconstruct_smooth_iterations', 3)} "
+            f"factor={getattr(obj, 'carnivores_reconstruct_smooth_factor', 0.5):.3f} "
+            f"joints_only={getattr(obj, 'carnivores_reconstruct_smooth_joints_only', True)}"
+        )
+
         # Armature Info
         arm = None
         if obj.parent and obj.parent.type == 'ARMATURE':
