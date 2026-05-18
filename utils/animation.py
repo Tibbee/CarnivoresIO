@@ -1037,9 +1037,11 @@ def _apply_semantic_suffixes(obj, bone_names, centroids, center_x):
 
     for i in range(n):
         name = bone_names[i]
-        # Only rename generic bone names or names that do NOT already have standard L/R suffixes
+        # Only rename generic bone names or ones that do NOT already end with standard L/R suffixes
         name_lower = name.lower()
-        if any(s in name_lower for s in ["_l", "_r", ".l", ".r", " left", " right"]):
+        if any(name_lower.endswith(s) for s in ["_l", "_r", ".l", ".r"]):
+            continue
+        if any(s in name_lower for s in [" left", " right"]):
             continue
 
         if rel_x[i] > side_margin:
@@ -1222,17 +1224,20 @@ def reconstruct_armature(obj, root_override_idx=-1):
         child_orig = valid_indices[i]
         parent_orig = valid_indices[p] if p >= 0 else -1
         parent_map[str(child_orig)] = parent_orig
-    skipped = [i for i in range(group_count) if centroids[i] is None]
-    if cluster_labels:
-        kept = set(valid_indices)
-        for local_i, orig_i in enumerate(valid_entries_orig := valid_indices):
-            pass
-    if skipped:
-        arm_obj["carnivores_reconstruct_skipped"] = ",".join(str(i) for i in skipped)
-    arm_obj["carnivores_reconstruct_metadata"] = str({
-        "parent_map": parent_map,
-        "cluster_count": len(unique_clusters) if 'unique_clusters' in locals() else 1,
-    })
+
+    # Track all skipped groups: degenerate (empty) and disconnected
+    all_skipped = [i for i in range(group_count) if centroids[i] is None]
+    kept_orig = set(valid_indices)
+    disconnected = [i for i in range(group_count) if (centroids[i] is not None) and (i not in kept_orig)]
+    all_skipped.extend(disconnected)
+    skipped_set = sorted(set(all_skipped))
+    if skipped_set:
+        arm_obj["carnivores_reconstruct_skipped"] = ",".join(str(i) for i in skipped_set)
+        arm_obj["carnivores_reconstruct_skipped_count"] = len(skipped_set)
+
+    cluster_count_val = len(unique_clusters) if 'unique_clusters' in locals() else 1
+    arm_obj["carnivores_reconstruct_parent_map"] = str(parent_map)
+    arm_obj["carnivores_reconstruct_cluster_count"] = cluster_count_val
 
     arm_obj["carnivores_reconstruct_source"] = source_label
     arm_obj["carnivores_owner_attribute"] = OWNER_ATTR_NAME if owner_indices is not None else ""

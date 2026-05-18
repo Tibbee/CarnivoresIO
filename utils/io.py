@@ -279,6 +279,7 @@ def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name
 
         children = children_map[i]
         my_head = mathutils.Vector(bone.head)
+        used_pca = False  # Tracks whether we used a local PCA-derived direction
         
         # Priority 1: Parent-Child Chain (Standard)
         if children:
@@ -322,6 +323,7 @@ def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name
                     # Point along PCA direction; length scales with overall bone sizes
                     len_val = max(direction.length * 0.5, global_median * 0.3)
                     bone.tail = my_head + (local_dir * max(len_val, min_len))
+                    used_pca = True
                 elif direction.length > 0.001:
                     bone.tail = my_head + (direction.normalized() * max(direction.length * 0.5, min_len))
                 else:
@@ -330,9 +332,10 @@ def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name
                 # Root leaf (rare): Floor bone or single bone model
                 bone.tail = my_head + (model_forward * global_median * 0.5)
 
-        # Final safety check for tail position
-        if (mathutils.Vector(bone.tail) - my_head).length < min_len:
-            bone.tail = my_head + (model_forward * min_len)
+        # Final safety check: only override with model_forward if no local PCA direction was used
+        if not used_pca:
+            if (mathutils.Vector(bone.tail) - my_head).length < min_len:
+                bone.tail = my_head + (model_forward * min_len)
 
     bpy.ops.object.mode_set(mode='OBJECT')
     return arm_obj

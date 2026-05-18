@@ -830,6 +830,63 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
         else:
             lines.append("\nNO ARMATURE FOUND.")
 
+        # Reconstruction Metadata
+        lines.append("\nRECONSTRUCTION METADATA:")
+        if arm:
+            root_name = arm.get("carnivores_reconstruct_root", "N/A")
+            root_idx = arm.get("carnivores_reconstruct_root_idx", "N/A")
+            skipped_str = arm.get("carnivores_reconstruct_skipped", "")
+            cluster_count = arm.get("carnivores_reconstruct_cluster_count", 1)
+            parent_map = arm.get("carnivores_reconstruct_parent_map", "")
+            lines.append(f"Selected Root: {root_name} (orig idx: {root_idx})")
+            lines.append(f"Clusters Detected: {cluster_count}")
+            if skipped_str:
+                lines.append(f"Skipped Groups: {skipped_str}")
+            else:
+                lines.append("Skipped Groups: none")
+            # Decode and display parent map
+            try:
+                import ast
+                pm = ast.literal_eval(parent_map) if parent_map else {}
+                if pm:
+                    lines.append(f"Hierarchy ({len(pm)} nodes):")
+                    for child, parent in sorted(pm.items(), key=lambda x: int(x[0])):
+                        if parent == -1:
+                            lines.append(f"  [{child}] ROOT")
+                        else:
+                            lines.append(f"  [{child}] -> parent {parent}")
+                else:
+                    lines.append("Hierarchy: empty")
+            except Exception:
+                lines.append("Hierarchy: (could not decode)")
+        else:
+            lines.append("No armature found for metadata.")
+
+        # Divergence Check: Vertex Groups vs Imported Owners
+        owner_attr = obj.data.attributes.get("carnivores_owner_index")
+        if owner_attr and obj.vertex_groups:
+            lines.append("\nDIVERGENCE CHECK:")
+            import numpy as np
+            n = len(obj.data.vertices)
+            owner_vals = np.empty(n, dtype=np.int32)
+            owner_attr.data.foreach_get("value", owner_vals)
+            mismatch_count = 0
+            for v_idx in range(n):
+                v = obj.data.vertices[v_idx]
+                if not v.groups:
+                    continue
+                dom_group = max(v.groups, key=lambda g: g.weight).group
+                if dom_group != owner_vals[v_idx]:
+                    mismatch_count += 1
+            if mismatch_count > 0:
+                pct = (mismatch_count / max(n, 1)) * 100.0
+                lines.append(f"⚠️  {mismatch_count} vertices ({pct:.1f}%) diverge from imported owners!")
+                lines.append("   Tip: Use 'Reset to Imported Owners' to restore them.")
+            else:
+                lines.append("✅ Vertex groups match imported owner cache.")
+        else:
+            lines.append("\nDIVERGENCE CHECK: No owner cache or no VGs")
+
         # Write to Text Editor
         txt_name = "Carnivores_Rig_Debug"
         txt = bpy.data.texts.get(txt_name) or bpy.data.texts.new(txt_name)
@@ -838,6 +895,58 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
         
         # Switch area to Text Editor if possible, or just report
         self.report({'INFO'}, f"Debug info written to text datablock: {txt_name}")
+        return {'FINISHED'}
+
+class CARNIVORES_OT_reset_to_imported_owners(bpy.types.Operator):
+    """Recreate vertex groups from the cached carnivores_owner_index attribute."""
+    bl_idname = "carnivores.reset_to_imported_owners"
+    bl_label = "Reset to Imported Owners"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            return False
+        return "carnivores_owner_index" in (obj.data.attributes.keys() if obj.data else [])
+
+    def execute(self, context):
+        import numpy as np
+        from ..utils.animation import OWNER_ATTR_NAME, _build_reconstruction_bone_names, _get_reconstruction_owner_source
+        from ..utils import io as io_utils
+
+        obj = context.active_object
+        mesh = obj.data
+
+        owner_attr = mesh.attributes.get(OWNER_ATTR_NAME)
+        if not owner_attr:
+            self.report({'ERROR'}, "No imported owner cache found on this mesh.")
+            return {'CANCELLED'}
+
+        owner_indices = np.empty(len(mesh.vertices), dtype=np.int32)
+        owner_attr.data.foreach_get("value", owner_indices)
+
+        group_count = 0
+        if owner_indices is not None:
+            valid_owners = owner_indices[owner_indices >= 0]
+            if valid_owners.size > 0:
+                group_count = int(valid_owners.max()) + 1
+
+        if group_count <= 0:
+            self.report({'ERROR'}, "No valid owner data in cache.")
+            return {'CANCELLED'}
+
+        owner_source = _get_reconstruction_owner_source(obj)
+        bone_names = _build_reconstruction_bone_names(obj, group_count, owner_source=owner_source)
+
+        for name in list(obj.vertex_groups.keys()):
+            vg = obj.vertex_groups.get(name)
+            if vg:
+                obj.vertex_groups.remove(vg)
+
+        io_utils.create_vertex_groups_from_bones(obj, bone_names, owner_indices)
+
+        self.report({'INFO'}, f"Reset {len(bone_names)} vertex groups from imported owners.")
         return {'FINISHED'}
 
 class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
@@ -890,6 +999,7 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
 
             col = box.column(align=True)
             col.operator(CARNIVORES_OT_reconstruct_armature.bl_idname, icon='BONE_DATA')
+            col.operator(CARNIVORES_OT_reset_to_imported_owners.bl_idname, icon='FILE_REFRESH')
             col.operator(CARNIVORES_OT_debug_rig_info.bl_idname, icon='TEXT')
 
         if not anim_data:
