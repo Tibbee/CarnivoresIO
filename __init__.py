@@ -9,7 +9,6 @@ bl_info = {
 }
 
 import bpy
-import os
 from .operators import classes as operator_classes
 from .operators import animation as anim_ops
 from .utils import animation as anim_utils
@@ -155,17 +154,7 @@ def register():
     )
     
     # Register Handlers
-    if anim_ops.carnivores_nla_sound_handler not in bpy.app.handlers.frame_change_post:
-        bpy.app.handlers.frame_change_post.append(anim_ops.carnivores_nla_sound_handler)
-        
-    if anim_ops.playback_started_handler not in bpy.app.handlers.animation_playback_pre:
-        bpy.app.handlers.animation_playback_pre.append(anim_ops.playback_started_handler)
-
-    if anim_ops.playback_stopped_handler not in bpy.app.handlers.animation_playback_post:
-        bpy.app.handlers.animation_playback_post.append(anim_ops.playback_stopped_handler)
-        
-    if anim_ops.clear_aud_device_on_new_file not in bpy.app.handlers.load_post:
-        bpy.app.handlers.load_post.append(anim_ops.clear_aud_device_on_new_file)
+    anim_ops.register_audio_handlers()
         
     from .utils.preset_deployment import deploy_presets
     deploy_presets()
@@ -175,35 +164,11 @@ def register():
 def unregister():
     info("CarnivoresIO: Unregistering...")
     
-    # Cleanup Audio
-    if anim_ops._aud_device:
-        try:
-             anim_ops._aud_device.stopAll()
-        except:
-            pass
-            
-    # Remove Handlers
-    if anim_ops.carnivores_nla_sound_handler in bpy.app.handlers.frame_change_post:
-        bpy.app.handlers.frame_change_post.remove(anim_ops.carnivores_nla_sound_handler)
-        
-    if anim_ops.playback_started_handler in bpy.app.handlers.animation_playback_pre:
-        bpy.app.handlers.animation_playback_pre.remove(anim_ops.playback_started_handler)
-
-    if anim_ops.playback_stopped_handler in bpy.app.handlers.animation_playback_post:
-        bpy.app.handlers.animation_playback_post.remove(anim_ops.playback_stopped_handler)
-        
-    if anim_ops.clear_aud_device_on_new_file in bpy.app.handlers.load_post:
-        bpy.app.handlers.load_post.remove(anim_ops.clear_aud_device_on_new_file)
+    # Cleanup Audio handlers and resources
+    anim_ops.unregister_audio_handlers()
         
     # Unlink temporary sounds
-    for path in anim_utils._temp_sound_files:
-        try:
-            if os.path.exists(path):
-                os.remove(path)
-                info(f"Removed temp sound: {path}")
-        except Exception as e:
-            info(f"Failed to remove temp sound {path}: {e}")
-    anim_utils._temp_sound_files.clear()
+    anim_utils.cleanup_temp_sound_files()
 
     # Unregister Menus
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)

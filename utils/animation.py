@@ -12,6 +12,50 @@ from .logger import info, debug, warn, error
 
 # Global state for sound files
 _temp_sound_files = set()
+_temp_sound_dir = None
+
+
+def _get_sound_temp_dir():
+    """Return (and lazily create) the dedicated temporary directory for unpacked CAR sounds."""
+    global _temp_sound_dir
+    if _temp_sound_dir is None:
+        import uuid
+        _temp_sound_dir = os.path.join(tempfile.gettempdir(), f"carnivores_io_sounds_{uuid.uuid4().hex[:8]}")
+        os.makedirs(_temp_sound_dir, exist_ok=True)
+        debug(f"Created temp sound directory: {_temp_sound_dir}")
+    return _temp_sound_dir
+
+
+def register_temp_sound_file(filepath):
+    """Track a file path created by the extension for later cleanup."""
+    _temp_sound_files.add(filepath)
+
+
+def cleanup_temp_sound_files():
+    """Remove all tracked temporary sound files. Idempotent — handles missing files gracefully."""
+    global _temp_sound_files, _temp_sound_dir
+
+    for path in list(_temp_sound_files):
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+                debug(f"Removed temp sound: {path}")
+        except Exception as e:
+            warn(f"Failed to remove temp sound {path}: {e}")
+        finally:
+            _temp_sound_files.discard(path)
+
+    if _temp_sound_dir and os.path.isdir(_temp_sound_dir):
+        try:
+            remaining = os.listdir(_temp_sound_dir)
+            if not remaining:
+                os.rmdir(_temp_sound_dir)
+                debug(f"Removed empty temp sound directory: {_temp_sound_dir}")
+            else:
+                warn(f"Temp sound directory not empty ({len(remaining)} files remain): {_temp_sound_dir}")
+        except Exception as e:
+            warn(f"Failed to remove temp sound directory {_temp_sound_dir}: {e}")
+    _temp_sound_dir = None
 
 # --- Blender 5.0+ Compatibility Helpers ---
 
@@ -438,28 +482,23 @@ def import_car_sounds(self, sounds, model_name, context):
         if data.size == 0:
             warn(f"Skipping empty sound '{sound_name}' (0 samples).")
             continue
-        # Create temp WAV
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-            temp_path = temp_file.name
+        # Create temp WAV in dedicated temp directory
+        temp_dir = _get_sound_temp_dir()
+        temp_path = os.path.join(temp_dir, f"{sound_name}_{idx}.wav")
         try:
             with wave.open(temp_path, 'wb') as wf:
-                wf.setnchannels(1)  # Mono
-                wf.setsampwidth(2)  # 16-bit
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
                 wf.setframerate(22050)
                 wf.setnframes(data.size)
                 wf.writeframes(data.tobytes())
-            # Load into Blender
             sound_block = bpy.data.sounds.load(temp_path)
-            # Set the name before doing anything else
             sound_block.name = sound_name
-            # Pack to embed
             sound_block.pack()
-            # Unpack and repack to force Blender to update
             if sound_block.packed_file:
                 sound_block.unpack(method='USE_LOCAL')
-                # Add the path of the created file to our set for later cleanup
                 unpacked_filepath = bpy.path.abspath(sound_block.filepath)
-                _temp_sound_files.add(unpacked_filepath)
+                register_temp_sound_file(unpacked_filepath)
                 sound_block.pack()
 
             imported_sounds.append(sound_block)
@@ -468,7 +507,7 @@ def import_car_sounds(self, sounds, model_name, context):
             error(f"Failed to import sound '{sound_name}': {str(e)}")
         finally:
             if os.path.exists(temp_path):
-                os.remove(temp_path)  # Cleanup (safe now that it's packed)
+                os.remove(temp_path)
     return imported_sounds
 
 def associate_sounds_with_animations(self, obj, animations, cross_ref, imported_sounds, actions=None):
@@ -556,6 +595,25 @@ def rescale_standard_action(action, kps, scene_fps):
         fc.update()
         
     action["carnivores_kps"] = kps
+
+def resolve_action_sound(action):
+    """
+    Resolve the Sound datablock linked to an Action.
+
+    Returns the bpy.types.Sound pointer from action.carnivores_sound_ptr
+    when set, otherwise resolves the legacy action["carnivores_sound"] name
+    through bpy.data.sounds. Returns None if neither resolves.
+    """
+    if not action:
+        return None
+    ptr = getattr(action, 'carnivores_sound_ptr', None)
+    if ptr:
+        return ptr
+    legacy_name = action.get('carnivores_sound')
+    if legacy_name:
+        return bpy.data.sounds.get(legacy_name)
+    return None
+
 
 def get_active_animation_data(obj):
     """

@@ -95,6 +95,12 @@ def skip_car_sounds_and_crossref(file, header, context):
             # Read 32-byte name + 4-byte length
             _ = np.fromfile(file, dtype='S32', count=1)  # name
             sfx_length = np.fromfile(file, dtype='<u4', count=1)[0]
+            # Repair odd length to prevent misaligned seek
+            if sfx_length % 2 != 0:
+                context.warnings.append(
+                    f"Skipped sound #{sfx_idx} has odd byte length {sfx_length}; repairing to {sfx_length - 1}."
+                )
+                sfx_length -= 1
             # Seek past data
             file.seek(sfx_length, 1)
             if sfx_idx < 3:  # Limit debug spam
@@ -113,13 +119,29 @@ def parse_car_sounds_and_crossref(file, header, context, validate=True):
         sounds   – list[dict]
         cross_ref – np.ndarray[int32] shape (64,)
     """
+    import io
     sounds = []
     used_names = {} # Map name -> count
 
+    # Determine remaining file size for boundary checks
+    current_pos = file.tell()
+    try:
+        file.seek(0, io.SEEK_END)
+        file_size = file.tell()
+        file.seek(current_pos, io.SEEK_SET)
+    except Exception:
+        file_size = None
+
     # ------------------- Sound blocks -------------------
     for sfx_idx in range(header['sfx_count']):
+        # Validate each sound header fits
+        if file_size is not None and file.tell() + 36 > file_size:
+            context.warnings.append(
+                f"Sound block #{sfx_idx} header (36 bytes) exceeds file boundary; stopping sound parsing."
+            )
+            break
+
         name_raw = np.fromfile(file, dtype='S32', count=1)[0]
-        # Sanitize string: split at first null byte
         name = name_raw.decode('ascii', errors='ignore').split('\x00')[0]
         if not name:
             name = f"Sound_{sfx_idx}"
@@ -127,8 +149,7 @@ def parse_car_sounds_and_crossref(file, header, context, validate=True):
                 context.warnings.append(
                     f"Sound #{sfx_idx} has empty name; using placeholder."
                 )
-        
-        # Enforce Uniqueness
+
         if name in used_names:
             count = used_names[name]
             used_names[name] += 1
@@ -140,18 +161,37 @@ def parse_car_sounds_and_crossref(file, header, context, validate=True):
             used_names[name] = 1
 
         length = np.fromfile(file, dtype='<u4', count=1)[0]
+
+        # Reject odd byte length — would misalign all subsequent reads
+        if length % 2 != 0:
+            if validate:
+                context.warnings.append(
+                    f"Sound '{name}' has odd byte length {length}; repair to {length - 1} and skip extra byte."
+                )
+            length -= 1
+            file.seek(1, io.SEEK_CUR)  # consume the misaligned extra byte
+
+        # Check against remaining file size
+        if file_size is not None and file.tell() + length > file_size:
+            remaining = file_size - file.tell()
+            context.warnings.append(
+                f"Sound '{name}' declared length {length} exceeds remaining file size ({remaining}); truncating."
+            )
+            length = max(0, remaining)
+            if length < 2:
+                continue  # no meaningful data left
+
         expected_samples = length // 2
         data = np.fromfile(file, dtype='<i2', count=expected_samples)
 
         if data.dtype != np.int16:
-            data = data.astype(np.int16)  # Ensure int16 for WAV
+            data = data.astype(np.int16)
 
         if data.size != expected_samples:
             if validate:
                 context.warnings.append(
                     f"Truncated sound '{name}': expected {expected_samples} samples, got {data.size}"
                 )
-            # Keep partial data — import step can skip if needed
 
         sounds.append({
             'name': name,
@@ -160,7 +200,17 @@ def parse_car_sounds_and_crossref(file, header, context, validate=True):
         })
 
     # ------------------- Cross-reference table -------------------
-    cross_ref = np.fromfile(file, dtype='<i4', count=64)
+    # Verify 256 bytes remain
+    if file_size is not None and file.tell() + 256 > file_size:
+        remaining = max(0, file_size - file.tell())
+        context.warnings.append(
+            f"Only {remaining} bytes remain for cross-ref table (expected 256); reading partial table."
+        )
+        cross_ref = np.fromfile(file, dtype='<i4', count=max(0, remaining // 4))
+        if cross_ref.size < 64:
+            cross_ref = np.pad(cross_ref, (0, 64 - cross_ref.size), constant_values=-1)
+    else:
+        cross_ref = np.fromfile(file, dtype='<i4', count=64)
 
     if header['ani_count'] > len(cross_ref):
         context.warnings.append(f"AniCount {header['ani_count']} exceeds cross-ref table size (64); extra animations will have no sound mapping.")

@@ -15,6 +15,55 @@ _aud_device = None # Global aud device
 _is_real_playback = False # Our reliable flag for actual playback state
 _preview_restore_state = None
 _failed_sound_blocklist = {} # {sound_name: expiry_timestamp}
+_audio_reset_cooldown = 0.0  # monotonic timestamp for device-reset suppression
+
+
+def register_audio_handlers():
+    """Idempotently register all audio-related Blender handlers."""
+    h = bpy.app.handlers
+    if carnivores_nla_sound_handler not in h.frame_change_post:
+        h.frame_change_post.append(carnivores_nla_sound_handler)
+    if playback_started_handler not in h.animation_playback_pre:
+        h.animation_playback_pre.append(playback_started_handler)
+    if playback_stopped_handler not in h.animation_playback_post:
+        h.animation_playback_post.append(playback_stopped_handler)
+    if clear_aud_device_on_new_file not in h.load_post:
+        h.load_post.append(clear_aud_device_on_new_file)
+
+
+def unregister_audio_handlers():
+    """Remove all audio handlers and stop audio resources."""
+    global _aud_device, _playing_sounds, _is_real_playback, _failed_sound_blocklist, _audio_reset_cooldown
+
+    h = bpy.app.handlers
+    if carnivores_nla_sound_handler in h.frame_change_post:
+        h.frame_change_post.remove(carnivores_nla_sound_handler)
+    if playback_started_handler in h.animation_playback_pre:
+        h.animation_playback_pre.remove(playback_started_handler)
+    if playback_stopped_handler in h.animation_playback_post:
+        h.animation_playback_post.remove(playback_stopped_handler)
+    if clear_aud_device_on_new_file in h.load_post:
+        h.load_post.remove(clear_aud_device_on_new_file)
+
+    # Stop all playing sounds
+    for handle, _, _ in list(_playing_sounds.values()):
+        try:
+            handle.stop()
+        except Exception:
+            pass
+    _playing_sounds.clear()
+
+    # Shut down aud device
+    if _aud_device is not None:
+        try:
+            _aud_device.stopAll()
+        except Exception:
+            pass
+        _aud_device = None
+
+    _is_real_playback = False
+    _failed_sound_blocklist.clear()
+    _audio_reset_cooldown = 0.0
 
 def get_aud_device():
     global _aud_device
@@ -43,15 +92,9 @@ class CARNIVORES_OT_play_linked_sound(bpy.types.Operator):
             return {'CANCELLED'}
 
         action = obj.animation_data.action
-        if 'carnivores_sound' not in action:
-            self.report({'ERROR'}, f"Animation '{action.name}' has no linked sound (missing 'carnivores_sound' property).")
-            return {'CANCELLED'}
-
-        sound_name = action['carnivores_sound']
-        linked_sound = bpy.data.sounds.get(sound_name)
-
+        linked_sound = anim_utils.resolve_action_sound(action)
         if not linked_sound:
-            self.report({'ERROR'}, f"Linked sound '{sound_name}' not found in Blender data.")
+            self.report({'ERROR'}, f"Animation '{action.name}' has no linked sound.")
             return {'CANCELLED'}
 
         # Ensure sequence editor exists
@@ -110,7 +153,7 @@ def playback_stopped_handler(scene):
 
 @bpy.app.handlers.persistent
 def carnivores_nla_sound_handler(scene):
-    global _playing_sounds, _is_real_playback, _preview_restore_state, _aud_device, _failed_sound_blocklist
+    global _playing_sounds, _is_real_playback, _preview_restore_state, _aud_device, _failed_sound_blocklist, _audio_reset_cooldown
     
     # This handler should ONLY run when our flag indicates real playback is happening.
     if not _is_real_playback:
@@ -137,14 +180,9 @@ def carnivores_nla_sound_handler(scene):
                  # Check if we are within the preview range (simple loop check)
                  # The handler loop ensures we stay in range, but for sound triggering:
                  if action:
-                     sound_name = None
-                     if getattr(action, 'carnivores_sound_ptr', None):
-                         sound_name = action.carnivores_sound_ptr.name
-                     elif 'carnivores_sound' in action:
-                         sound_name = action['carnivores_sound']
-                     
-                     if sound_name:
-                         objects_with_active_sounds[obj] = sound_name
+                     snd = anim_utils.resolve_action_sound(action)
+                     if snd:
+                         objects_with_active_sounds[obj] = snd.name
                          continue # Skip to next object
 
         anim_data_container = anim_utils.get_active_animation_data(obj)
@@ -166,20 +204,19 @@ def carnivores_nla_sound_handler(scene):
 
             # Use the pointer property first, fallback to legacy string property if needed (optional)
             if current_action:
-                sound_name = None
-                if getattr(current_action, 'carnivores_sound_ptr', None):
-                     sound_name = current_action.carnivores_sound_ptr.name
-                elif 'carnivores_sound' in current_action:
-                     sound_name = current_action['carnivores_sound']
-                
-                if sound_name:
-                    objects_with_active_sounds[obj] = sound_name
+                snd = anim_utils.resolve_action_sound(current_action)
+                if snd:
+                    objects_with_active_sounds[obj] = snd.name
 
     # Stop sounds that should no longer be playing
     for obj_playing in list(_playing_sounds.keys()):
         current_handle, current_sound_name, _ = _playing_sounds[obj_playing]
-        if obj_playing not in objects_with_active_sounds or objects_with_active_sounds[obj_playing] != current_sound_name:
-            debug(f"AUDIO: Stopping sound '{current_sound_name}' for {obj_playing.name}")
+        try:
+            obj_name = obj_playing.name
+        except ReferenceError:
+            obj_name = "<deleted>"
+        if obj_playing not in objects_with_active_sounds or objects_with_active_sounds.get(obj_playing) != current_sound_name:
+            debug(f"AUDIO: Stopping sound '{current_sound_name}' for {obj_name}")
             try:
                 current_handle.stop()
             except Exception as e:
@@ -237,12 +274,15 @@ def carnivores_nla_sound_handler(scene):
             # Check for critical OpenAL/Device errors that require a reset
             err_str = str(e)
             if "Buffer" in err_str or "OpenAL" in err_str:
-                if time.time() > getattr(scene, "carnivores_last_audio_reset", 0) + 5.0:
+                now = time.monotonic()
+                if now > _audio_reset_cooldown + 5.0:
                     error("AUDIO: Critical OpenAL Error detected. Resetting audio device to recover...")
                     try:
-                        _aud_device = None 
-                        _playing_sounds.clear() 
-                        scene.carnivores_last_audio_reset = time.time()
+                        if _aud_device is not None:
+                            _aud_device.stopAll()
+                        _aud_device = None
+                        _playing_sounds.clear()
+                        _audio_reset_cooldown = now
                     except:
                         pass
                 else:
@@ -447,26 +487,23 @@ def preview_loop_handler(scene):
 
 @bpy.app.handlers.persistent
 def clear_aud_device_on_new_file(scene):
-    global _aud_device, _playing_sounds, _is_real_playback
-
-    scene_name = scene.name if isinstance(scene, bpy.types.Scene) else str(scene) if scene else 'None'
-    debug(f"AUDIO: clear_aud_device_on_new_file called. Scene: {scene_name}")
-    debug(f"AUDIO: Current Handlers (load_post): {len(bpy.app.handlers.load_post)}")
+    global _aud_device, _playing_sounds, _is_real_playback, _failed_sound_blocklist, _audio_reset_cooldown
 
     debug("AUDIO: New file loaded — resetting audio system")
 
     # Stop all currently playing sounds
-    for handle, _, _ in _playing_sounds.values():
+    for handle, _, _ in list(_playing_sounds.values()):
         try:
             handle.stop()
         except Exception as e:
             warn(f"Error stopping audio handle on new file load: {e}")
     _playing_sounds.clear()
 
-    # Hard reset playback flag
     _is_real_playback = False
+    _failed_sound_blocklist.clear()
+    _audio_reset_cooldown = 0.0
 
-    # Properly shut down aud device
+    # Shut down and recreate aud device
     if _aud_device is not None:
         try:
             debug("AUDIO: Stopping aud device...")
@@ -475,30 +512,11 @@ def clear_aud_device_on_new_file(scene):
             warn(f"Error stopping aud device on new file load: {e}")
         _aud_device = None
 
-    # Re-enable sound playback for new scene if property exists
-    if hasattr(bpy.context.scene, "carnivores_nla_sound_enabled"):
-        bpy.context.scene.carnivores_nla_sound_enabled = True
-        debug("AUDIO: Re-enabled carnivores_nla_sound_enabled for new scene.")
-    else:
-        debug("AUDIO: 'carnivores_nla_sound_enabled' property not found in new scene.")
+    # Clean up temp sound files from the previous session
+    anim_utils.cleanup_temp_sound_files()
 
-    # Re-add handlers (if missing)
-    h = bpy.app.handlers
-    debug(f"AUDIO: Checking handlers... frame_change_post len: {len(h.frame_change_post)}")
-    
-    if carnivores_nla_sound_handler not in h.frame_change_post:
-        h.frame_change_post.append(carnivores_nla_sound_handler)
-        debug("AUDIO: Re-added carnivores_nla_sound_handler")
-    else:
-        debug("AUDIO: carnivores_nla_sound_handler already present")
-
-    if playback_started_handler not in h.animation_playback_pre:
-        h.animation_playback_pre.append(playback_started_handler)
-        debug("AUDIO: Re-added playback_started_handler")
-        
-    if playback_stopped_handler not in h.animation_playback_post:
-        h.animation_playback_post.append(playback_stopped_handler)
-        debug("AUDIO: Re-added playback_stopped_handler")
+    # Re-register handlers (persistent handlers normally survive, but be defensive)
+    register_audio_handlers()
 
     debug("AUDIO: Audio system reset complete.")
 

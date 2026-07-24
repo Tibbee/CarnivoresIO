@@ -11,21 +11,20 @@ from ..core.constants import TEXTURE_WIDTH
 from .. import utils
 from .export_3df import gather_mesh_data
 from ..utils.logger import info, debug, warn, error
+from ..utils.animation import resolve_action_sound
 
 # Helper for sound conversion
 def convert_sound_to_22khz_mono(sound_datablock):
     """
     Converts a Blender Sound datablock to raw 16-bit signed, 22050Hz, Mono PCM data.
-    Returns (bytes_data, length_in_bytes)
+    Returns (bytes_data, length_in_bytes) or (None, 0) on failure.
     """
     if not sound_datablock:
         return None, 0
-        
-    # Use aud for conversion
+
     try:
         factory = sound_datablock.factory
         if not factory:
-            # Fallback for external files not yet cached
             abs_path = bpy.path.abspath(sound_datablock.filepath)
             if os.path.exists(abs_path):
                 factory = aud.Sound.file(abs_path)
@@ -33,30 +32,54 @@ def convert_sound_to_22khz_mono(sound_datablock):
                 warn(f"Could not load factory for sound {sound_datablock.name}")
                 return None, 0
 
-        # Resample: 22050 Hz
-        factory = factory.limit(0, 100000) # Safety limit? No, just process.
         factory = factory.resample(22050)
-        # Mixdown: Mono
-        factory = factory.rechannel(1) # 1 channel
-        
-        # Render to numpy array
-        # aud.Sound.data() returns numpy array of float32 samples usually
-        data = factory.data() 
-        
+        factory = factory.rechannel(1)  # mono
+
+        data = factory.data()
+
         if data is None:
+            warn(f"Sound '{sound_datablock.name}' produced no sample data")
             return None, 0
-            
-        # Convert float32 [-1, 1] to int16 [-32768, 32767]
-        # Note: aud.Sound.data() return format depends on backend but usually float32
-        # Let's check dtype
-        if data.dtype == np.float32:
-            data = np.clip(np.round(data * 32767), -32768, 32767).astype(np.int16)
-        elif data.dtype == np.int32:
-             # Sometimes it might be different? Assuming float32 for now as per API
-             pass
-             
-        return data.tobytes(), len(data) * 2 # 2 bytes per sample
-        
+
+        if data.size == 0:
+            warn(f"Sound '{sound_datablock.name}' has zero samples")
+            return None, 0
+
+        if not data.dtype == np.float32:
+            if np.issubdtype(data.dtype, np.floating):
+                data = data.astype(np.float32)
+            elif np.issubdtype(data.dtype, np.integer):
+                info_val = np.iinfo(data.dtype)
+                data = data.astype(np.float32) / (info_val.max + 1)
+            else:
+                error(f"Sound '{sound_datablock.name}' has unsupported sample dtype: {data.dtype}")
+                return None, 0
+
+        if not np.isfinite(data).all():
+            error(f"Sound '{sound_datablock.name}' contains non-finite samples")
+            return None, 0
+
+        data = np.clip(np.round(data * 32767), -32768, 32767)
+        data = np.ascontiguousarray(data, dtype=np.int16)
+        if data.ndim > 1:
+            data = data.ravel()
+
+        payload = data.tobytes()
+        length = len(payload)
+        if length != data.nbytes:
+            error(f"Sound '{sound_datablock.name}' byte length mismatch: payload={length}, nbytes={data.nbytes}")
+            return None, 0
+
+        if length % 2 != 0:
+            error(f"Sound '{sound_datablock.name}' payload has odd byte length {length}")
+            return None, 0
+
+        if length > 0xFFFFFFFF:
+            error(f"Sound '{sound_datablock.name}' payload exceeds 32-bit length field ({length} bytes)")
+            return None, 0
+
+        return payload, length
+
     except Exception as e:
         error(f"Error converting sound {sound_datablock.name}: {e}")
         return None, 0
@@ -370,7 +393,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                     
                     # KPS/Sound
                     kps = action.get("carnivores_kps", int(scene.render.fps))
-                    snd_ptr = getattr(action, 'carnivores_sound_ptr', None)
+                    snd_ptr = resolve_action_sound(action)
                     
                     # Bake
                     if can_use_fast_path:
@@ -398,7 +421,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
             clean_name = action.name.replace("_Action", "")
             start, end = int(action.frame_range[0]), int(action.frame_range[1])
             kps = action.get("carnivores_kps", int(scene.render.fps))
-            snd_ptr = getattr(action, 'carnivores_sound_ptr', None)
+            snd_ptr = resolve_action_sound(action)
             
             # Bake
             if can_use_fast_path:
