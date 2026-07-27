@@ -15,6 +15,10 @@ from .utils import animation as anim_utils
 from .operators.animation import set_kps_mode, get_kps_mode
 from .utils.logger import info
 
+def _volume_property_changed():
+    """RNA property update callback — re-applies volume to live handles."""
+    anim_ops._audio_manager.update_volumes()
+
 class CarnivoresPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
@@ -152,6 +156,24 @@ def register():
         description="Play linked sounds when scrubbing NLA strips",
         default=True
     )
+
+    bpy.types.Action.carnivores_sound_volume = bpy.props.FloatProperty(
+        name="Sound Volume",
+        description="Volume multiplier for this animation's preview sound",
+        default=1.0,
+        min=0.0,
+        max=2.0,
+        update=lambda self, ctx: _volume_property_changed()
+    )
+
+    bpy.types.Scene.carnivores_nla_sound_volume = bpy.props.FloatProperty(
+        name="NLA Sound Volume",
+        description="Master volume for Carnivores NLA sound playback",
+        default=1.0,
+        min=0.0,
+        max=2.0,
+        update=lambda self, ctx: _volume_property_changed()
+    )
     
     # Register Handlers
     anim_ops.register_audio_handlers()
@@ -200,6 +222,8 @@ def unregister():
     del bpy.types.Action.carnivores_kps_mode
     del bpy.types.Action.carnivores_sound_ptr
     del bpy.types.Scene.carnivores_nla_sound_enabled
+    del bpy.types.Action.carnivores_sound_volume
+    del bpy.types.Scene.carnivores_nla_sound_volume
     
     info("CarnivoresIO: Unregistered")
 

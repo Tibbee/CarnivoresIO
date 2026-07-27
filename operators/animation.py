@@ -66,6 +66,23 @@ class AudioManager:
         self._clear_playback_state()
         debug("All playing sounds stopped and cleared.")
 
+    def update_volumes(self):
+        """Re-apply scene and action volumes to all active handles without restart."""
+        try:
+            scene = bpy.context.scene
+        except Exception:
+            return
+        scene_vol = getattr(scene, 'carnivores_nla_sound_volume', 1.0)
+        for snd_info in self._sources.values():
+            if snd_info['state'] != 'playing':
+                continue
+            action = snd_info.get('action')
+            action_vol = getattr(action, 'carnivores_sound_volume', 1.0)
+            try:
+                snd_info['handle'].volume = action_vol * scene_vol
+            except Exception:
+                pass
+
     # --- File load ---
 
     def on_file_load(self):
@@ -148,10 +165,15 @@ class AudioManager:
                 handle = device.play(factory)
                 if offset > 0.0:
                     handle.position = offset
+                # Apply volume
+                action_vol = getattr(action, 'carnivores_sound_volume', 1.0)
+                scene_vol = getattr(scene, 'carnivores_nla_sound_volume', 1.0)
+                handle.volume = action_vol * scene_vol
                 self._sources[src_key] = {
                     'sound': snd,
                     'handle': handle,
                     'factory': factory,
+                    'action': action,
                     'state': 'playing',
                 }
                 # Clear retry on successful playback
