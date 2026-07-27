@@ -189,7 +189,7 @@ def unregister():
     # Cleanup Audio handlers and resources
     anim_ops.unregister_audio_handlers()
         
-    # Unlink temporary sounds
+    # Clean up temp files from packed-sound playback
     anim_utils.cleanup_temp_sound_files()
 
     # Unregister Menus

@@ -11,7 +11,7 @@ from ..core.constants import TEXTURE_WIDTH
 from .. import utils
 from .export_3df import gather_mesh_data
 from ..utils.logger import info, debug, warn, error
-from ..utils.animation import resolve_action_sound
+from ..utils.animation import resolve_action_sound, sound_datablock_to_factory
 
 # Helper for sound conversion
 def convert_sound_to_22khz_mono(sound_datablock):
@@ -23,14 +23,10 @@ def convert_sound_to_22khz_mono(sound_datablock):
         return None, 0
 
     try:
-        factory = sound_datablock.factory
+        factory = sound_datablock_to_factory(sound_datablock)
         if not factory:
-            abs_path = bpy.path.abspath(sound_datablock.filepath)
-            if os.path.exists(abs_path):
-                factory = aud.Sound.file(abs_path)
-            else:
-                warn(f"Could not load factory for sound {sound_datablock.name}")
-                return None, 0
+            warn(f"Could not load factory for sound {sound_datablock.name}")
+            return None, 0
 
         factory = factory.resample(22050)
         factory = factory.rechannel(1)  # mono

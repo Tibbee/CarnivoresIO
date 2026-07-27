@@ -247,7 +247,7 @@ class AudioManager:
     # --- Source resolution helpers ---
 
     def _resolve_active_source(self, obj, scene):
-        """Priority: preview > tweak > normal NLA. Returns (key, info) or (None, None)."""
+        """Priority: preview > tweak. Only focused (tweak mode) strips produce audio."""
         global _preview_restore_state
 
         # 1. Preview mode
@@ -264,11 +264,12 @@ class AudioManager:
         if not anim_data or not anim_data.nla_tracks:
             return None, None
 
-        # 2. Tweak mode
+        # 2. Tweak mode — only focused strip produces audio
         if scene.is_nla_tweakmode:
             active_action = anim_data.action
             if active_action:
-                for track in anim_data.nla_tracks:
+                # Iterate tracks in reverse: top-of-stack (last) = highest priority
+                for track in reversed(anim_data.nla_tracks):
                     if track.mute:
                         continue
                     for strip in track.strips:
@@ -281,21 +282,7 @@ class AudioManager:
                                 offset = _compute_audio_offset(strip, scene)
                                 key = (obj, active_action.name, strip.name, cycle)
                                 return key, (obj, active_action, snd, strip, cycle, offset)
-
-        # 3. Normal NLA playback
-        for track in anim_data.nla_tracks:
-            if track.mute:
-                continue
-            for strip in track.strips:
-                if not strip.action:
-                    continue
-                if strip.frame_start <= scene.frame_current < strip.frame_end:
-                    snd = anim_utils.resolve_action_sound(strip.action)
-                    if snd:
-                        cycle = self._compute_strip_cycle(obj, strip, scene.frame_current)
-                        offset = _compute_audio_offset(strip, scene)
-                        key = (obj, strip.action.name, strip.name, cycle)
-                        return key, (obj, strip.action, snd, strip, cycle, offset)
+            return None, None  # tweak mode — no audio outside the tweaked strip
 
         return None, None
 
@@ -400,31 +387,18 @@ def _compute_audio_offset(strip, scene):
         return 0.0
 
     current = scene.frame_current
-    action_offset_frames = current - strip.frame_start
+    action_offset_frames = (current - strip.frame_start) + strip.action_frame_start
 
     if strip.use_reverse:
         action_length = strip.action_frame_end - strip.action_frame_start
-        action_offset_frames = action_length - action_offset_frames
+        action_offset_frames = (strip.action_frame_start + action_length) - action_offset_frames
 
-    action_offset_frames /= strip.scale if strip.scale != 0 else 1.0
     return max(0.0, action_offset_frames / fps)
 
 
 def _load_sound_factory(sound_datablock):
     """Return an aud.Sound factory for a Blender Sound datablock, or None."""
-    factory = sound_datablock.factory
-    if factory:
-        return factory
-
-    abs_path = bpy.path.abspath(sound_datablock.filepath)
-    if os.path.exists(abs_path):
-        try:
-            factory = aud.Sound.file(abs_path)
-            debug(f"Loaded sound factory from file fallback: {abs_path}")
-            return factory
-        except Exception as e:
-            warn(f"NLA Sound Warning: Fallback load failed for '{sound_datablock.name}': {e}")
-    return None
+    return anim_utils.sound_datablock_to_factory(sound_datablock)
 
 
 def get_aud_device():
@@ -712,7 +686,7 @@ def preview_loop_handler(scene):
 def clear_aud_device_on_new_file(scene):
     _audio_manager.on_file_load()
 
-    # Clean up temp sound files from the previous session
+    # Clean up temp files from previous session's packed-sound playback
     anim_utils.cleanup_temp_sound_files()
 
     # Defensive re-registration

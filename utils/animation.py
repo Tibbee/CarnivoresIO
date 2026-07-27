@@ -1,8 +1,9 @@
 import bpy
 import re
 import wave
-import tempfile
+import io
 import os
+import tempfile
 import aud
 import numpy as np
 from .common import timed
@@ -10,13 +11,89 @@ from .io import apply_import_matrix
 from . import io as io_utils
 from .logger import info, debug, warn, error
 
-# Global state for sound files
+
+def sound_datablock_to_factory(sound_datablock):
+    """Return an aud.Sound factory from a Blender Sound datablock.
+
+    Tries: Blender's built-in factory, external file fallback,
+    then packed data via aud.Sound.buffer().
+    Returns None if all sources fail.
+    """
+    # 1. Blender's built-in factory
+    factory = sound_datablock.factory
+    if factory:
+        return factory
+
+    # 2. External file fallback
+    abs_path = bpy.path.abspath(sound_datablock.filepath)
+    if os.path.exists(abs_path):
+        try:
+            return aud.Sound.file(abs_path)
+        except Exception as e:
+            warn(f"Could not load sound factory from file '{abs_path}': {e}")
+
+    # 3. Packed data — unpack to temp file for aud.Sound.file() playback
+    pf = sound_datablock.packed_file
+    if pf:
+        try:
+            raw = pf.data
+            with wave.open(io.BytesIO(raw), 'rb') as wf:
+                nchannels = wf.getnchannels()
+                sampwidth = wf.getsampwidth()
+                framerate = wf.getframerate()
+                nframes = wf.getnframes()
+                if nframes == 0:
+                    return None
+                frames = wf.readframes(nframes)
+
+            if sampwidth == 1:
+                dtype = np.uint8
+            elif sampwidth == 2:
+                dtype = np.int16
+            elif sampwidth == 4:
+                dtype = np.int32
+            else:
+                warn(f"Unsupported sample width {sampwidth} for packed sound '{sound_datablock.name}'")
+                return None
+
+            data = np.frombuffer(frames, dtype=dtype).astype(np.float32)
+            max_val = float(2 ** (sampwidth * 8 - 1))
+            data /= max_val
+            if sampwidth == 1:
+                data -= 0.5
+                data *= 2.0
+            if nchannels > 1:
+                data = data.reshape(-1, nchannels).T
+            else:
+                data = data.reshape(1, -1)
+            data = np.ascontiguousarray(data, dtype=np.float32)
+
+            # Write to managed temp file for aud.Sound.file() — buffer() crashes in Blender 5.2
+            temp_dir = _get_sound_temp_dir()
+            import uuid
+            temp_path = os.path.join(temp_dir, f"carnivores_packed_{sound_datablock.name}_{uuid.uuid4().hex[:8]}.wav")
+            with wave.open(temp_path, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(framerate)
+                # Convert float32[-1,1] back to int16
+                i16 = np.clip(np.round(data.ravel() * 32767), -32768, 32767).astype(np.int16)
+                wf.writeframes(i16.tobytes())
+            register_temp_sound_file(temp_path)
+            debug(f"Unpacked to temp file for playback: {temp_path}")
+            return aud.Sound.file(temp_path)
+        except Exception as e:
+            warn(f"Failed to create factory from packed sound '{sound_datablock.name}': {e}")
+
+    return None
+
+# Global state for sound import temp directory and on-demand packed-sound files
 _temp_sound_files = set()
 _temp_sound_dir = None
 
 
 def _get_sound_temp_dir():
-    """Return (and lazily create) the dedicated temporary directory for unpacked CAR sounds."""
+    """Return (and lazily create) a temp directory for holding WAV files during import."""
     global _temp_sound_dir
     if _temp_sound_dir is None:
         import uuid
@@ -27,12 +104,12 @@ def _get_sound_temp_dir():
 
 
 def register_temp_sound_file(filepath):
-    """Track a file path created by the extension for later cleanup."""
+    """Track a temp WAV created by the extension for later cleanup."""
     _temp_sound_files.add(filepath)
 
 
 def cleanup_temp_sound_files():
-    """Remove all tracked temporary sound files. Idempotent — handles missing files gracefully."""
+    """Remove all tracked temporary sound files. Idempotent."""
     global _temp_sound_files, _temp_sound_dir
 
     for path in list(_temp_sound_files):
@@ -495,12 +572,6 @@ def import_car_sounds(self, sounds, model_name, context):
             sound_block = bpy.data.sounds.load(temp_path)
             sound_block.name = sound_name
             sound_block.pack()
-            if sound_block.packed_file:
-                sound_block.unpack(method='USE_LOCAL')
-                unpacked_filepath = bpy.path.abspath(sound_block.filepath)
-                register_temp_sound_file(unpacked_filepath)
-                sound_block.pack()
-
             imported_sounds.append(sound_block)
             info(f"Imported and packed sound '{sound_block.name}' ({data.size} samples).")
         except Exception as e:
