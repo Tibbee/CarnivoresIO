@@ -20,13 +20,15 @@ _preview_restore_state = None
 class AudioManager:
     """Owns the aud.Device, active playback sources, retry state, and cleanup."""
 
+    _RETRY_BACKOFF = (5.0, 10.0, 20.0, 40.0, 60.0)
+
     def __init__(self, device_factory=None, monotonic_clock=None):
         self._device = None
         self._playback_active = False
         self._legacy_sounds = {}       # one-time migration from old _playing_sounds
         self._sources = {}             # source_key -> SoundInfo dict
         self._strip_cycles = {}        # (obj, strip_name) -> (cycle, last_frame)
-        self._blocklist = {}           # sound_name -> expiry (wall-clock time.time)
+        self._retry = {}               # sound_name -> {attempts, next_retry, category, last_error}
         self._reset_cooldown = 0.0     # monotonic timestamp
         self._device_factory = device_factory or (lambda: aud.Device())
         self._clock = monotonic_clock or time.monotonic
@@ -71,7 +73,7 @@ class AudioManager:
         self._migrate_legacy()
         self._clear_playback_state()
         self._playback_active = False
-        self._blocklist.clear()
+        self._retry.clear()
         self._reset_cooldown = 0.0
 
         if self._device is not None:
@@ -129,16 +131,16 @@ class AudioManager:
                 else:
                     continue  # already playing for this source
 
-            # Blocklist check
-            if snd.name in self._blocklist:
-                if time.time() < self._blocklist[snd.name]:
+            # Retry check
+            if snd.name in self._retry:
+                retry_info = self._retry[snd.name]
+                if self._clock() < retry_info['next_retry']:
                     continue
-                del self._blocklist[snd.name]
+                # Expired — will retry below
 
             factory = _load_sound_factory(snd)
             if not factory:
-                warn(f"NLA Sound Warning: Could not load audio factory for '{snd.name}'")
-                self._blocklist[snd.name] = time.time() + 5.0
+                self._record_retry(snd.name, 'sound', f"Could not load audio factory for '{snd.name}'")
                 continue
 
             try:
@@ -152,9 +154,11 @@ class AudioManager:
                     'factory': factory,
                     'state': 'playing',
                 }
+                # Clear retry on successful playback
+                self._retry.pop(snd.name, None)
             except Exception as e:
                 error(f"NLA Sound Error: Could not play '{snd.name}': {e}")
-                self._blocklist[snd.name] = time.time() + 5.0
+                self._record_retry(snd.name, 'device', str(e))
                 self._handle_critical_recovery(e)
 
     # --- Reset (critical recovery) ---
@@ -177,7 +181,7 @@ class AudioManager:
             self._device = None
 
         self._legacy_sounds.clear()
-        self._blocklist.clear()
+        self._retry.clear()
         self._reset_cooldown = 0.0
 
     def _handle_critical_recovery(self, exc):
@@ -191,6 +195,32 @@ class AudioManager:
         error("AUDIO: Critical OpenAL Error detected. Resetting audio device to recover...")
         self.reset()
         self._reset_cooldown = now
+
+    # --- Retry / backoff ---
+
+    def _record_retry(self, sound_name, category, message):
+        """Record a failure for a sound, applying bounded exponential backoff.
+
+        category: 'sound' (missing datablock, bad file, factory failure)
+                  or 'device' (OpenAL buffer errors, handle creation failure)
+        """
+        existing = self._retry.get(sound_name, {})
+        attempts = existing.get('attempts', 0)
+        backoff_idx = min(attempts, len(self._RETRY_BACKOFF) - 1)
+        delay = self._RETRY_BACKOFF[backoff_idx]
+
+        self._retry[sound_name] = {
+            'attempts': attempts + 1,
+            'next_retry': self._clock() + delay,
+            'category': category,
+            'last_error': message,
+        }
+
+        # Log only on first failure and when delay increases
+        if attempts == 0:
+            warn(f"AUDIO: [{category}] {message}. Next retry in {delay:.0f}s.")
+        elif backoff_idx != min(attempts - 1, len(self._RETRY_BACKOFF) - 1):
+            warn(f"AUDIO: [{category}] '{sound_name}' still failing (attempt {attempts + 1}). Next retry in {delay:.0f}s.")
 
     # --- Source resolution helpers ---
 
