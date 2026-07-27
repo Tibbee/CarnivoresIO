@@ -16,7 +16,7 @@ def sound_datablock_to_factory(sound_datablock):
     """Return an aud.Sound factory from a Blender Sound datablock.
 
     Tries: Blender's built-in factory, external file fallback,
-    then packed data via aud.Sound.buffer().
+    then packed data unpacked to a managed temp file.
     Returns None if all sources fail.
     """
     # 1. Blender's built-in factory
@@ -63,9 +63,9 @@ def sound_datablock_to_factory(sound_datablock):
                 data -= 0.5
                 data *= 2.0
             if nchannels > 1:
-                data = data.reshape(-1, nchannels).T
-            else:
-                data = data.reshape(1, -1)
+                # Downmix to mono by averaging channels
+                data = data.reshape(-1, nchannels).mean(axis=1)
+            data = data.reshape(1, -1)
             data = np.ascontiguousarray(data, dtype=np.float32)
 
             # Write to managed temp file for aud.Sound.file() — buffer() crashes in Blender 5.2

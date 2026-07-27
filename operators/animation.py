@@ -30,6 +30,7 @@ class AudioManager:
         self._strip_cycles = {}        # (obj, strip_name) -> (cycle, last_frame)
         self._retry = {}               # sound_name -> {attempts, next_retry, category, last_error}
         self._reset_cooldown = 0.0     # monotonic timestamp
+        self._device_retry_after = 0.0 # backoff timestamp for device creation failures
         self._device_factory = device_factory or (lambda: aud.Device())
         self._clock = monotonic_clock or time.monotonic
         self._factory_cache = {}       # sound_name -> aud.Sound factory (avoids re-unpacking packed sounds)
@@ -38,11 +39,27 @@ class AudioManager:
 
     def get_device(self):
         if self._device is None:
+            now = self._clock()
+            if now < self._device_retry_after:
+                return None
+
             debug("AUDIO: Creating new aud.Device()")
             try:
                 self._device = self._device_factory()
+                self._device_retry_after = 0.0
             except Exception as e:
-                error(f"AUDIO: Failed to create aud.Device(): {e}")
+                backoff = self._RETRY_BACKOFF[min(
+                    self._retry.get("__device__", {}).get("attempts", 0),
+                    len(self._RETRY_BACKOFF) - 1
+                )]
+                self._device_retry_after = now + backoff
+                self._retry["__device__"] = {
+                    "attempts": self._retry.get("__device__", {}).get("attempts", 0) + 1,
+                    "next_retry": self._device_retry_after,
+                    "category": "device",
+                    "last_error": str(e),
+                }
+                error(f"AUDIO: Failed to create aud.Device(): {e} (retry in {backoff:.0f}s)")
         return self._device
 
     # --- State flags ---
@@ -92,8 +109,9 @@ class AudioManager:
         self._clear_playback_state()
         self._playback_active = False
         self._retry.clear()
-        self._factory_cache.clear()
         self._reset_cooldown = 0.0
+        self._device_retry_after = 0.0
+        self._factory_cache.clear()
 
         if self._device is not None:
             try:
@@ -211,6 +229,8 @@ class AudioManager:
         self._legacy_sounds.clear()
         self._retry.clear()
         self._reset_cooldown = 0.0
+        self._device_retry_after = 0.0
+        self._factory_cache.clear()
 
     def _handle_critical_recovery(self, exc):
         err_str = str(exc)
@@ -297,11 +317,24 @@ class AudioManager:
         prev = self._strip_cycles.get(key)
         prev_cycle, last_frame = prev if isinstance(prev, tuple) else (0, None)
 
-        if last_frame is not None and current_frame < last_frame:
-            prev_cycle += 1
+        new_cycle = prev_cycle
 
-        self._strip_cycles[key] = (prev_cycle, current_frame)
-        return prev_cycle
+        # Timeline loop detection (playhead jumps backward)
+        if last_frame is not None and current_frame < last_frame:
+            new_cycle += 1
+
+        # Strip repeat detection (forward cycle boundary crossing)
+        repeat = int(getattr(strip, 'repeat', 1))
+        action_length = strip.action_frame_end - strip.action_frame_start
+        if repeat > 1 and action_length > 0:
+            repeat_idx = int((current_frame - strip.frame_start) // action_length)
+            if last_frame is not None:
+                last_repeat_idx = int((last_frame - strip.frame_start) // action_length)
+                if repeat_idx != last_repeat_idx:
+                    new_cycle += 1
+
+        self._strip_cycles[key] = (new_cycle, current_frame)
+        return new_cycle
 
     def get_preview_info(self, obj, action_name):
         """Look up active source info for a preview key. Used by the loop handler."""
@@ -331,7 +364,12 @@ class AudioManager:
             except ReferenceError:
                 stale.append(src_key)
         for src_key in stale:
-            self._sources.pop(src_key, None)
+            snd_info = self._sources.pop(src_key, None)
+            if snd_info:
+                try:
+                    snd_info['handle'].stop()
+                except Exception:
+                    pass
         # Clean cycle records too
         for cycle_key in list(self._strip_cycles.keys()):
             try:
