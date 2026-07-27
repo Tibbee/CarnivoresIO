@@ -17,7 +17,7 @@ from .utils.logger import info
 
 def _volume_property_changed():
     """RNA property update callback — re-applies volume to live handles."""
-    anim_ops._audio_manager.update_volumes()
+    anim_ops.update_audio_volumes()
 
 class CarnivoresPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__

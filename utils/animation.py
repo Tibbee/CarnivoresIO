@@ -57,11 +57,12 @@ def sound_datablock_to_factory(sound_datablock):
                 return None
 
             data = np.frombuffer(frames, dtype=dtype).astype(np.float32)
-            max_val = float(2 ** (sampwidth * 8 - 1))
-            data /= max_val
             if sampwidth == 1:
-                data -= 0.5
-                data *= 2.0
+                # WAV 8-bit PCM is unsigned: 128 is silence.
+                data = (data - 128.0) / 128.0
+            else:
+                max_val = float(2 ** (sampwidth * 8 - 1))
+                data /= max_val
             if nchannels > 1:
                 # Downmix to mono by averaging channels
                 data = data.reshape(-1, nchannels).mean(axis=1)

@@ -33,7 +33,7 @@ class AudioManager:
         self._device_retry_after = 0.0 # backoff timestamp for device creation failures
         self._device_factory = device_factory or (lambda: aud.Device())
         self._clock = monotonic_clock or time.monotonic
-        self._factory_cache = {}       # sound_name -> aud.Sound factory (avoids re-unpacking packed sounds)
+        self._factory_cache = {}       # fallback source key -> aud.Sound factory
 
     # --- Device ---
 
@@ -47,6 +47,7 @@ class AudioManager:
             try:
                 self._device = self._device_factory()
                 self._device_retry_after = 0.0
+                self._retry.pop("__device__", None)
             except Exception as e:
                 backoff = self._RETRY_BACKOFF[min(
                     self._retry.get("__device__", {}).get("attempts", 0),
@@ -175,11 +176,29 @@ class AudioManager:
                     continue
                 # Expired — will retry below
 
-            factory = self._factory_cache.get(snd.name)
-            if factory is None:
-                factory = _load_sound_factory(snd)
-                if factory:
-                    self._factory_cache[snd.name] = factory
+            # Blender already caches its native factory. Cache only fallback
+            # factories, whose loading may create a temporary packed WAV.
+            try:
+                factory = snd.factory
+            except Exception:
+                factory = None
+
+            if not factory:
+                cache_key = _fallback_factory_cache_key(snd)
+                factory = self._factory_cache.get(cache_key)
+                if factory is None:
+                    factory = _load_sound_factory(snd)
+                    if factory:
+                        # Drop stale fallback entries for this datablock when
+                        # its path or packed source metadata changes.
+                        sound_identity = cache_key[0]
+                        stale_keys = [
+                            key for key in self._factory_cache
+                            if key[0] == sound_identity and key != cache_key
+                        ]
+                        for key in stale_keys:
+                            del self._factory_cache[key]
+                        self._factory_cache[cache_key] = factory
             if not factory:
                 self._record_retry(snd.name, 'sound', f"Could not load audio factory for '{snd.name}'")
                 continue
@@ -323,15 +342,21 @@ class AudioManager:
         if last_frame is not None and current_frame < last_frame:
             new_cycle += 1
 
-        # Strip repeat detection (forward cycle boundary crossing)
-        repeat = int(getattr(strip, 'repeat', 1))
+        # Best-effort strip repeat handling. Audio remains at its authored
+        # speed, but restarts when the focused animation enters a visual cycle.
+        repeat = max(1.0, float(getattr(strip, 'repeat', 1.0)))
         action_length = strip.action_frame_end - strip.action_frame_start
-        if repeat > 1 and action_length > 0:
-            repeat_idx = int((current_frame - strip.frame_start) // action_length)
-            if last_frame is not None:
-                last_repeat_idx = int((last_frame - strip.frame_start) // action_length)
-                if repeat_idx != last_repeat_idx:
-                    new_cycle += 1
+        scale = abs(float(getattr(strip, 'scale', 1.0)))
+        cycle_length = action_length * scale
+        if last_frame is not None and current_frame >= last_frame and repeat > 1.0 and cycle_length > 0.0:
+            max_repeat_idx = max(0, math.ceil(repeat) - 1)
+
+            def repeat_index(frame):
+                elapsed = max(0.0, frame - strip.frame_start)
+                return min(int(elapsed // cycle_length), max_repeat_idx)
+
+            if repeat_index(current_frame) != repeat_index(last_frame):
+                new_cycle += 1
 
         self._strip_cycles[key] = (new_cycle, current_frame)
         return new_cycle
@@ -420,6 +445,11 @@ class AudioManager:
 _audio_manager = AudioManager()
 
 
+def update_audio_volumes():
+    """Public callback entry point for applying RNA volume changes."""
+    _audio_manager.update_volumes()
+
+
 # ---------------------------------------------------------------------------
 # Pure helpers (no mutable state)
 # ---------------------------------------------------------------------------
@@ -438,6 +468,36 @@ def _compute_audio_offset(strip, scene):
         action_offset_frames = (strip.action_frame_start + action_length) - action_offset_frames
 
     return max(0.0, action_offset_frames / fps)
+
+
+def _fallback_factory_cache_key(sound_datablock):
+    """Return a cache key tied to datablock identity and fallback source state."""
+    try:
+        identity = sound_datablock.as_pointer()
+    except Exception:
+        identity = id(sound_datablock)
+
+    try:
+        resolved_path = bpy.path.abspath(sound_datablock.filepath)
+    except Exception:
+        resolved_path = ""
+
+    source_mtime_ns = 0
+    if resolved_path:
+        try:
+            source_mtime_ns = os.stat(resolved_path).st_mtime_ns
+        except OSError:
+            pass
+
+    packed_file = getattr(sound_datablock, 'packed_file', None)
+    packed_size = 0
+    if packed_file:
+        try:
+            packed_size = int(packed_file.size)
+        except Exception:
+            packed_size = -1
+
+    return identity, resolved_path, source_mtime_ns, packed_size
 
 
 def _load_sound_factory(sound_datablock):
@@ -1201,6 +1261,7 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
         row = layout.row()
         row.prop(scene, "carnivores_nla_sound_enabled", text="Enable NLA Sound", toggle=True)
         row.operator(CARNIVORES_OT_toggle_nla_sound_playback.bl_idname, text="", icon='PLAY_SOUND' if not scene.carnivores_nla_sound_enabled else 'PAUSE')
+        layout.prop(scene, "carnivores_nla_sound_volume", text="Preview Volume")
         layout.separator()
 
         if not obj:
@@ -1283,6 +1344,7 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
                     row.prop(action, "carnivores_sound_ptr", text="Sound")
                     op = row.operator("carnivores.import_sound_for_action", text="", icon='FILE_FOLDER')
                     op.action_name = action.name
+                    box.prop(action, "carnivores_sound_volume", text="Sound Volume")
                     
                     # KPS
                     row = box.row(align=True)
