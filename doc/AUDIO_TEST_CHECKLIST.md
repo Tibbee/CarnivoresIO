@@ -55,25 +55,27 @@ Manual verification for audio improvements from commits `cc7d431` and `b78f49d`.
 | 5.4 | Import a `.car`, play sounds, then close Blender (not File → New). Restart Blender. | No orphan files in the extension temp dir path from the last session (optional: may have remnants from the crash case, which is expected). |
 | 5.5 | Disable the addon. Check `%TEMP%`. | All `carnivores_io_sounds_*` directories are removed. |
 
-## 6. Source Identity & Normal NLA Playback (b78f49d)
+## 6. Focused Playback Policy
 
 | # | Test | Expected |
 |---|------|----------|
-| 6.1 | Create an NLA track with a linked sound. Start normal playback (Spacebar). | Sound plays when the strip is active. Console shows trigger log. |
-| 6.2 | Create 3 tracks with different actions but assign the **same** sound to all. Play back. | Sound re-triggers at each strip boundary. Console shows `cycle` incrementing or strip name changing. |
-| 6.3 | Set an NLA strip repeat > 1. Play through the repeat range. | Sound re-triggers on each repeat cycle. Console shows cycle number incrementing. |
-| 6.4 | Mute an NLA track. Play through its time range. | Sound for that track does **not** play. |
-| 6.5 | During normal playback, mute a track whose sound is currently playing. | Sound stops. |
-| 6.6 | Delete an object while its linked sound is playing. | No `ReferenceError` in console. |
+| 6.1 | Create an NLA track with a linked sound and start normal playback without entering Tweak Mode. | No managed linked audio plays. |
+| 6.2 | Enter NLA Tweak Mode for that strip and start playback. | Only the focused animation's linked sound plays. |
+| 6.3 | Exit Tweak Mode while its sound is active. | The managed sound stops and no unrelated strip starts playing. |
+| 6.4 | Use the extension preview on several tracks that share the same sound. | Each explicitly selected preview starts the sound for that animation. |
+| 6.5 | Mute unrelated tracks while previewing or using Tweak Mode. | No unrelated track sound is selected. |
+| 6.6 | Delete an object while its linked sound is playing. | Its managed handle stops and no `ReferenceError` appears in the console. |
 
-## 7. Playback Offset (b78f49d)
+## 7. Authored Audio Timing
 
 | # | Test | Expected |
 |---|------|----------|
-| 7.1 | Scrub the timeline to the middle of an NLA strip. Press Spacebar to start playback. | Audio starts at the offset matching the current frame position relative to the strip. Not from zero. |
-| 7.2 | Jump the timeline from strip A to strip B while playing. | Strip A's sound stops. Strip B's sound starts at the correct offset for the jump destination. |
-| 7.3 | Set an NLA strip scale to 2.0 (half-speed). Start playback mid-strip. | Offset accounts for the scale. Verify that audio position roughly matches the visual frame progress. |
-| 7.4 | Test a reversed strip (use_reverse = True). Start mid-strip. | Offset accounts for the reversal. Audio position corresponds to the reversed frame position. |
+| 7.1 | Start focused playback in the middle of an unscaled sub-range strip. | Audio starts at the offset corresponding to the focused action range. |
+| 7.2 | Switch the explicitly focused preview from action A to action B. | Action A's sound stops and action B's sound starts once. |
+| 7.3 | Scale an NLA strip or change animation KPS. | Audio remains at its authored speed; no pitch or time stretching is applied. |
+| 7.4 | In focused playback, set NLA strip repeat greater than one. | The authored clip restarts once at each detected visual repeat boundary without pitch or time stretching. |
+| 7.5 | Use a scaled or fractional repeated strip. | Playback remains stable and best-effort; no guarantee of sample-accurate synchronization is implied. |
+| 7.6 | Reverse an NLA strip. | No guarantee of reversed or time-stretched audio is implied; behavior follows the documented focused-preview limitation. |
 
 ## 8. Completed-Sound Guard (b78f49d)
 

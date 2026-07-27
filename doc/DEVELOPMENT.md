@@ -23,7 +23,7 @@ For developers, contributors, and long-term project roadmap.
 ### Project Overview
 CarnivoresIO is a Blender add-on for handling `.3df`, `.car`, `.3dn` files, including mesh geometry, face flags, UVs, bones, and ARGB1555 textures. Integrates with Blender's UI via custom panels/operators, using NumPy for efficient data processing.
 
-- **Blender Version**: 4.0+
+- **Blender Version**: 4.2+
 - **Dependencies**: `numpy` (bundled), `bpy`, `bpy_extras.io_utils`, `mathutils`, `bmesh`
 - **Module Structure**:
   - `__init__.py`: Registration, custom properties, preferences, handlers
@@ -132,6 +132,31 @@ Combined from `dev_notes.md` and `future_changes.md`.
 - Remove `.001`/`_Action` suffixes, convert spaces to underscores
 - Apply common prefix/suffix
 
+### Rig Reconstruction Improvements
+
+Improve the `.car` rig reconstruction pipeline for faithfulness, stability, and determinism. Detailed algorithm documentation is in [Systems: Skeleton Reconstruction](systems.md#skeleton-reconstruction-car-models).
+
+**Completed (Phase 1–2):**
+- Preserve imported owner indices on the mesh for reconstruction use
+- Degeneracy pruning (empty groups → filtered out, not mesh_mean)
+- Disconnected cluster detection via BFS spatial clustering
+- Scored root selection with symmetry blacklisting and X-offset penalties
+- Richer MST edge scoring (centrality + body-axis + weight bias)
+- PCA-derived leaf tail placement via SVD on owner-group vertices
+- Left/Right semantic naming with adaptive X-margin
+- Manual root override in the UI
+- Persist reconstruction metadata on armature custom properties
+- Reset-to-imported-owners recovery button
+
+**Remaining:**
+
+- **Preview/Confirm step**: Generate a temporary preview mesh showing centroids (points) and MST edges (lines, green=accepted, red=cross-body rejection) before creating the armature
+- **Disconnected cluster policy**: Configurable handling for isolated groups — Skip (default), Hooks (create empties), Force bones (include with warning)
+- **Round-trip reconciliation**: Validate reconstructed bone-to-vertex mapping matches original owner map after armature creation, reporting drift
+- **Hook/bone decision matrix**: Heuristics for choosing deformation type per group (vertex count < 5% → hook, spatial isolation > 2× stddev → hook, terminal single-bone → bone)
+
+**File touch points:** `parsers/parse_car.py`, `utils/animation.py`, `utils/io.py`, `operators/animation.py`, `doc/SYSTEMS.md`
+
 ### Phase3: Codebase Architecture
 #### 3.1 Refactor Operators into Modular Files
 - Split monolithic `operators.py` into `carnivores_ops/` directory:
@@ -205,5 +230,5 @@ Combined from `dev_notes.md` and `future_changes.md`.
 ## References
 
 - **Formats**: [Formats Doc](formats.md) and `core/core.py` for binary specs
-- **Blender API**: Blender 4.0+ Python API docs for `bpy`, `bmesh`, `mathutils`
+- **Blender API**: Blender 4.2+ Python API docs for `bpy`, `bmesh`, `mathutils`
 - **NumPy**: Documentation for `fromfile`, `reshape`, bitwise operations

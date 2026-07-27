@@ -29,7 +29,7 @@ The roadmap starts with the NLA audio system. Add future subsystem proposals as 
 
 ### 1.1 Goals
 
-- Play the sound linked to the effective animation during preview, NLA tweak mode, and normal NLA playback.
+- Play the sound linked to an explicitly focused animation during extension preview and NLA tweak mode.
 - Start, stop, seek, and retrigger sounds predictably as strips change or loop.
 - Centralize audio resource ownership and cleanup.
 - Preserve sound links created by older versions of the extension.
@@ -54,17 +54,16 @@ Current sound links use `Action.carnivores_sound_ptr`. Older extension versions 
 
 ### 1.3 Confirmed Problems
 
-#### Required: Normal NLA Playback Detection
+#### Required: Focused Playback Policy
 
-Outside the dedicated preview mode, `carnivores_nla_sound_handler()` currently selects an action only when `scene.is_nla_tweakmode` is true. Normal playback of active NLA strips therefore does not reliably produce linked audio.
-
-The active-source resolver must support these modes in priority order:
+Managed audio intentionally plays only when the user has selected an unambiguous animation source:
 
 1. Extension track preview
 2. Blender NLA tweak mode
-3. Normal NLA playback
 
-It must ignore muted or inactive tracks and strips. The resolver should return the sound datablock and enough source identity to distinguish actions and strip cycles, not only a sound name.
+Normal, unfocused NLA timeline playback must not trigger linked sounds. In the Carnivores workflow, one clip belongs to one animation; evaluating the normal NLA stack can otherwise cascade through unrelated strips and start clips at confusing offsets. The resolver must ignore muted or inactive tracks and strips and return enough source identity to distinguish explicit preview selections, not only a sound name.
+
+NLA strip scaling is intentionally outside managed audio synchronization. Linked clips retain their authored speed and are not pitch-shifted, time-stretched, or reversed. For defensive compatibility with nonstandard workflows, focused playback restarts the authored clip at detected NLA repeat boundaries; this is best-effort behavior and does not guarantee synchronization for scaled or fractional repeats. Audio modders should prepare a clip matching the animation's intended frame range and KPS. See [Deferred Workflow Enhancements](#19-deferred-workflow-enhancements) for planned export and timing-assistance tools.
 
 #### Required: Source Identity and Retriggering
 
@@ -74,21 +73,19 @@ Each active playback record should identify at least:
 
 - Object
 - Action
-- NLA strip or preview source
-- Current strip cycle when repeat is enabled
+- Focused NLA strip or preview source
 - Sound datablock
 - Handle, when one is actively playing
 
 A completed handle must not restart every frame while its source remains active. Retain a triggered/completed state until one of these events occurs:
 
-- The active source changes
-- The source enters a new repeat cycle
-- Preview playback explicitly loops
+- The explicitly focused source changes
+- Extension preview explicitly loops
 - Playback restarts under a documented restart policy
 
 #### Required: Playback Offset and Synchronization
 
-Starting playback in the middle of a strip currently starts its sound at time zero. Calculate the audio offset from Blender's strip-to-action frame mapping and scene FPS, including applicable strip start, action frame range, scale, repeat, and reverse settings.
+Starting focused playback in the middle of an unscaled action sub-range should use the corresponding authored audio offset. Account for strip start and `action_frame_start`. Strip scaling, reverse audio, and pitch-preserving time stretching are deliberately unsupported. Repeat-boundary restarts are a defensive convenience, not a synchronization guarantee.
 
 Use `aud.Handle.position` only for playback time in seconds. It is not a spatial coordinate.
 
@@ -350,32 +347,82 @@ Lazy caching does not eliminate first-trigger latency. If measured first-play st
 
 The per-frame handler currently scans `scene.objects`, but existing measurements place the complete handler around 0.1 to 1 ms. Do not introduce a candidate cache until profiling demonstrates a meaningful problem in representative large scenes. A simple `obj.animation_data` filter is not correct because Carnivores animation data may be stored on shape keys or a parent armature. Any optimization must preserve `get_active_animation_data()` behavior and define cache invalidation.
 
-### 1.8 Active Strip Policy
+### 1.8 Focus and Timing Policy
 
-#### Decision Needed: Overlapping NLA Strips
+#### Focused source selection
 
-The current runtime permits one managed sound per object. Blender NLA can evaluate overlapping strips and blended tracks.
+The runtime supports one managed sound per object and requires explicit focus. Extension preview selects the requested action; NLA Tweak Mode selects the focused strip. Overlapping strips in normal NLA evaluation are intentionally ignored, so influence and blend-stack arbitration are not part of the audio manager.
 
-Choose one policy before implementing normal NLA playback:
+#### Authored timing
 
-1. Play one sound from the highest-priority effective strip. This is recommended for the CAR workflow, where one animation is expected at a time.
-2. Play every effective strip's sound. This requires multiple handles per object and explicit duplicate-sound behavior.
-
-If the first policy is selected, verify Blender's NLA track ordering and blending rules rather than assuming collection order. Document how solo, mute, influence, transitions, meta strips, and zero-influence strips affect selection.
-
-#### Decision Needed: Scaled and Reversed Audio
-
-Choose whether audio follows animation speed and direction:
-
-- Start with correct offsets but normal forward audio speed, or
-- Change `handle.pitch` to follow strip time scaling, accepting the pitch change, or
-- Use a time-stretch mechanism if Audaspace and Blender support one reliably.
-
-Reverse playback may not have a practical real-time audio equivalent. A valid first implementation may suppress linked audio for reversed strips and log this in debug mode.
+Linked audio plays at its authored speed. The manager does not alter `handle.pitch`, time-stretch audio, or reverse it. In focused mode it may restart the original clip at a detected NLA repeat boundary as a defensive fallback; it does not stretch the clip to fit that cycle. This preserves the asset supplied by the audio modder and avoids introducing DSP dependencies or pitch distortion. KPS-aware export and timing assistance are planned in [Deferred Workflow Enhancements](#19-deferred-workflow-enhancements).
 
 ### 1.9 Deferred Workflow Enhancements
 
-These ideas are not part of core audio completion:
+These improvements deliberately keep audio authoring separate from core CAR import/export and preview playback.
+
+Carnivores associates one sound with one animation. The linked sound is treated as an asset authored for that animation's original frame range and KPS. Audio should be prepared to match the animation's intended duration before it is linked. CAR export performs only the format conversion required by the engine: 22050 Hz, mono, signed 16-bit PCM.
+
+#### Phase 1: Export Linked Audio
+
+Add tools that make imported and linked sounds easy to take into an external audio editor.
+
+##### Selected-action export
+
+Expose an **Export Linked Audio** button beside the selected action's Sound control.
+
+Requirements:
+- Resolve both current pointer links and legacy sound-name links.
+- Support packed sounds imported from CAR and externally linked Blender sounds.
+- Export an editable WAV without changing or unpacking the source datablock permanently.
+- Use a sanitized, collision-safe filename derived from the action and sound names.
+- Report missing links, unreadable data, and write failures through the operator report and extension logger.
+
+##### Batch export
+
+Add an **Export All Linked Audio** operator with a directory picker.
+
+Requirements:
+- Export each unique linked sound once by default.
+- Optionally name files by action when the same sound is intentionally assigned to multiple actions.
+- Continue after individual failures and provide a summary.
+- Never overwrite files silently; provide an overwrite policy or generate unique names.
+- Preserve an action-to-exported-file manifest when useful for larger projects.
+
+##### Output modes
+
+Two explicit modes:
+- **Editable WAV**: preserve the decoded source sample rate and channels where Blender/Audaspace exposes them reliably.
+- **CAR-ready WAV**: 22050 Hz, mono, signed 16-bit PCM, matching export conversion.
+
+The editable mode should be the default. If exact source encoding cannot be preserved, the UI must describe the output as decoded WAV rather than an original-file extraction.
+
+#### Phase 2: Timing Assistance
+
+Provide non-destructive information before considering audio processing:
+- Display animation frame count, effective KPS, and calculated duration.
+- Display linked audio duration.
+- Show the duration difference and whether the audio is shorter or longer.
+- Provide copyable target-duration information for external editors.
+- Allow users to relink a finished WAV easily after editing.
+
+These tools help audio modders synchronize assets without making CarnivoresIO an audio editor.
+
+#### Phase 3: Basic Audio Editing (Deferred)
+
+KPS-aware audio tools may be reconsidered only after the export and timing workflow is proven useful. Any implementation must be optional and non-destructive.
+
+Potential workflow:
+1. Calculate target duration from animation frame range and KPS.
+2. Create a new processed WAV and Blender Sound datablock.
+3. Preserve the original sound and link unless the user explicitly replaces it.
+4. Clearly separate preview processing from the PCM embedded during CAR export.
+
+Pitch-preserving time stretching requires dedicated DSP such as WSOLA, a phase vocoder, SoundTouch, or Rubber Band. Blender/Audaspace pitch controls change speed and pitch together and are not an acceptable transparent solution. A third-party dependency should not be added without confirming supported Blender platforms, licensing, packaging size, quality, and maintenance cost.
+
+Blender's Video Sequence Editor can assist with trimming, fades, mixing, and rough synchronization, while dedicated applications such as Audacity or a DAW remain the recommended tools for high-quality retiming and restoration.
+
+#### Other Deferred Items
 
 - Confirm whether Blender's pointer-property control already makes clearing a linked sound discoverable before adding a dedicated Remove Sound operator.
 - Add missing-sound export diagnostics for unresolved legacy links, missing files, and failed PCM conversion.
@@ -383,6 +430,22 @@ These ideas are not part of core audio completion:
 - Add a sound debug report showing action-to-sound links, exported sound indices, cross-reference entries, source format, sample rate, channels, and converted byte length.
 - Consider NLA sound-range visualization only after normal playback and timing behavior are stable.
 - Define whether a pitch property affects Blender preview only or bakes a distinct exported PCM payload before exposing it. CAR does not store an independent per-animation pitch value.
+
+#### Audio Export Verification
+
+- Packed CAR sounds export after import and after save/reopen.
+- External WAV, MP3, OGG, and FLAC links export to editable WAV where Blender supports decoding them.
+- CAR-ready output is contiguous mono `int16` PCM at 22050 Hz.
+- Batch export handles duplicate links and filename collisions deterministically.
+- A failed sound does not prevent other sounds from exporting.
+- Export does not alter source datablocks, links, or packed state.
+
+#### Timing Assistance Verification
+
+- Displayed animation duration matches frame range divided by KPS.
+- Audio duration is reported consistently for packed and external sounds.
+- Changing KPS updates timing information but does not modify audio.
+- Relinking edited audio preserves the action association and CAR round-trip mapping.
 
 ### 1.10 Suggested Implementation Sequence
 
@@ -392,7 +455,7 @@ These ideas are not part of core audio completion:
 2. Fix `CARNIVORES_OT_play_linked_sound` and all duplicated resolution paths.
 3. Make CAR sound export produce validated mono `int16` payloads with exact byte lengths.
 4. Validate sound-block lengths and cross-reference availability during parsing.
-5. Extract active preview, tweak-mode, and normal-NLA source resolution.
+5. Extract focused preview and tweak-mode source resolution.
 6. Track source identity separately from sound identity.
 7. Implement deterministic start offsets and explicit loop/retrigger behavior.
 
@@ -429,7 +492,7 @@ There is currently no automated test suite, so each implementation phase must in
 
 - Dedicated track preview starts, loops, switches tracks, and restores state.
 - NLA tweak-mode playback starts and stops the linked sound.
-- Normal NLA playback triggers the active strip's sound.
+- Normal unfocused NLA playback does not trigger managed linked audio.
 - Timeline scrubbing while playback is stopped does not trigger sound.
 - Disabling NLA sound stops managed handles immediately.
 
@@ -438,7 +501,7 @@ There is currently no automated test suite, so each implementation phase must in
 - Two consecutive actions with different sounds transition once.
 - Two consecutive actions with the same sound retrigger at the source boundary.
 - Playback started in the middle of a strip begins at the expected audio offset.
-- Repeated strips retrigger exactly once per cycle.
+- Focused NLA repeat restarts the authored clip once per detected visual cycle without time stretching.
 - A naturally completed sound does not restart every frame.
 - Timeline jumps do not leave obsolete handles playing.
 
@@ -490,9 +553,9 @@ There is currently no automated test suite, so each implementation phase must in
 
 The core audio improvement is complete when:
 
-- All playback modes use one linked-sound resolver and one audio resource owner.
-- Normal NLA playback works under the selected overlap policy.
-- Source transitions, repeated strips, and midpoint starts have deterministic behavior.
+- All supported focused playback modes use one linked-sound resolver and one audio resource owner.
+- Extension preview and NLA tweak mode select one explicit animation source, while normal unfocused NLA playback remains silent.
+- Focused-source transitions, supported midpoint starts, and repeat-boundary restarts have deterministic behavior; scaled repeats do not imply audio synchronization.
 - File load and unregister leave no managed handles, stale device, retry state, or tracked temporary files.
 - Legacy sound links continue to work or are safely migrated.
 - CAR sound conversion always writes validated PCM with an exact declared byte length.

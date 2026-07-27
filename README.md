@@ -61,8 +61,9 @@ A Prim's MST algorithm infers a bone hierarchy from the spatial centroids of ver
 
 ### NLA Sound System
 
-- Each Action can carry a linked `.wav` file for synchronized audio playback.
-- Sound plays during timeline scrubbing and full animation playback.
+- Each Action can carry a linked sound for synchronized audio preview and CAR export.
+- Managed audio plays only for an explicitly focused animation: **Play Preview** in the extension UI or Blender's NLA Tweak Mode.
+- Normal unfocused NLA playback does not trigger linked sounds, preventing ambiguous track selection and offset cascades.
 - **Play Preview** loops a single Action with its audio for iterative timing work.
 - Self-healing audio device management recovers from driver failures.
 - Embedded sounds from `.car` files are imported and auto-associated with the correct animations via cross-reference tables.
@@ -142,8 +143,10 @@ To inspect the result, click **Log Rig Debug Info** to write bone positions, par
 1. Select a track in the **Carnivores Animation** panel.
 2. Click the folder icon next to the Sound field and choose a `.wav` file.
 3. The sound is linked to the Action. During `.car` export, it will be embedded in the file.
-4. To audition: click **Play Linked Sound** to add it to Blender's sequencer, or use **Play Preview** to loop the animation with audio in the viewport.
-5. Toggle **Enable NLA Sound** to activate/deactivate automatic playback when scrubbing the timeline.
+4. To audition, use **Play Preview** to isolate and loop the animation with its audio, or enter NLA Tweak Mode to focus the strip.
+5. Toggle **Enable NLA Sound** to enable or disable focused preview audio.
+
+Linked audio retains its authored timing. KPS changes, NLA strip scaling, and reverse playback do not time-stretch audio. As a best-effort safeguard, focused playback restarts the original clip at NLA repeat boundaries, but scaled strips are not guaranteed to remain synchronized. Prepare the clip for the animation's intended duration in an external audio editor. Planned export and timing-assistance tools are described in [Improvements — Audio Workflow](doc/IMPROVEMENTS.md#19-deferred-workflow-enhancements).
 
 ### Managing Face Flags
 
