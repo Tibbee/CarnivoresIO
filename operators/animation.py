@@ -32,6 +32,7 @@ class AudioManager:
         self._reset_cooldown = 0.0     # monotonic timestamp
         self._device_factory = device_factory or (lambda: aud.Device())
         self._clock = monotonic_clock or time.monotonic
+        self._factory_cache = {}       # sound_name -> aud.Sound factory (avoids re-unpacking packed sounds)
 
     # --- Device ---
 
@@ -91,6 +92,7 @@ class AudioManager:
         self._clear_playback_state()
         self._playback_active = False
         self._retry.clear()
+        self._factory_cache.clear()
         self._reset_cooldown = 0.0
 
         if self._device is not None:
@@ -155,7 +157,11 @@ class AudioManager:
                     continue
                 # Expired — will retry below
 
-            factory = _load_sound_factory(snd)
+            factory = self._factory_cache.get(snd.name)
+            if factory is None:
+                factory = _load_sound_factory(snd)
+                if factory:
+                    self._factory_cache[snd.name] = factory
             if not factory:
                 self._record_retry(snd.name, 'sound', f"Could not load audio factory for '{snd.name}'")
                 continue
