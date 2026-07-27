@@ -9,151 +9,353 @@ from ..utils import io as io_utils
 from ..utils import common
 from ..utils.logger import info, debug, warn, error
 
-# Audio playback state
-_playing_sounds = {}           # deprecated: replaced by _active_sources below
-_aud_device = None
-_is_real_playback = False
+# NLA preview UI restoration state (kept outside the audio manager per design)
 _preview_restore_state = None
-_failed_sound_blocklist = {}   # {sound_name: expiry_timestamp}
-_audio_reset_cooldown = 0.0    # monotonic timestamp for device-reset suppression
-
-# Source-identity playback tracking (replaces _playing_sounds)
-# key: (obj, action_name, strip_name, cycle)
-# value: {'sound': Sound, 'handle': Handle, 'factory': Factory, 'state': 'playing'|'completed'}
-_active_sources = {}
-
-# Cycle tracking for NLA strip repeat detection
-# key: (obj, strip_name)  ->  last seen cycle number
-_strip_cycles = {}
 
 
 # ---------------------------------------------------------------------------
-# Source resolution
+# AudioManager — owns all runtime audio state
 # ---------------------------------------------------------------------------
 
-def _compute_strip_cycle(obj, strip, current_frame):
-    """
-    Return the current repeat cycle of an NLA strip, or 0 on first playthrough.
-    Detect a new cycle when the current frame moves backward relative to the
-    previous observation.
-    """
-    key = (obj, strip.name)
-    prev_cycle = _strip_cycles.get(key, 0)
-    last_frame = None
+class AudioManager:
+    """Owns the aud.Device, active playback sources, retry state, and cleanup."""
 
-    # Unpack prev value if it is a (cycle, frame) tuple
-    if isinstance(_strip_cycles.get(key), tuple):
-        prev_cycle, last_frame = _strip_cycles[key]
+    def __init__(self, device_factory=None, monotonic_clock=None):
+        self._device = None
+        self._playback_active = False
+        self._legacy_sounds = {}       # one-time migration from old _playing_sounds
+        self._sources = {}             # source_key -> SoundInfo dict
+        self._strip_cycles = {}        # (obj, strip_name) -> (cycle, last_frame)
+        self._blocklist = {}           # sound_name -> expiry (wall-clock time.time)
+        self._reset_cooldown = 0.0     # monotonic timestamp
+        self._device_factory = device_factory or (lambda: aud.Device())
+        self._clock = monotonic_clock or time.monotonic
 
-    if last_frame is not None and current_frame < last_frame:
-        prev_cycle += 1
+    # --- Device ---
 
-    _strip_cycles[key] = (prev_cycle, current_frame)
-    return prev_cycle
+    def get_device(self):
+        if self._device is None:
+            debug("AUDIO: Creating new aud.Device()")
+            try:
+                self._device = self._device_factory()
+            except Exception as e:
+                error(f"AUDIO: Failed to create aud.Device(): {e}")
+        return self._device
 
+    # --- State flags ---
+
+    @property
+    def is_playback_active(self):
+        return self._playback_active
+
+    def on_playback_start(self):
+        self._playback_active = True
+        debug("Playback STARTED. is_playback_active = True")
+
+    def on_playback_stop(self):
+        self._playback_active = False
+        debug("Playback STOPPED. is_playback_active = False")
+        self._migrate_legacy()
+        self._clear_playback_state()
+
+    def on_stop_all(self):
+        """Stop every handle and clear runtime records (toggle-off, disable)."""
+        self._migrate_legacy()
+        self._clear_playback_state()
+        debug("All playing sounds stopped and cleared.")
+
+    # --- File load ---
+
+    def on_file_load(self):
+        debug("AUDIO: New file loaded — resetting audio system")
+        self._migrate_legacy()
+        self._clear_playback_state()
+        self._playback_active = False
+        self._blocklist.clear()
+        self._reset_cooldown = 0.0
+
+        if self._device is not None:
+            try:
+                debug("AUDIO: Stopping aud device...")
+                self._device.stopAll()
+            except Exception as e:
+                warn(f"Error stopping aud device on new file load: {e}")
+            self._device = None
+
+    # --- Per-frame sync (called by the frame_change_post handler) ---
+
+    def start_or_sync(self, scene):
+        if not self._playback_active:
+            return
+        if not scene.carnivores_nla_sound_enabled:
+            return
+
+        device = self.get_device()
+        if not device:
+            return
+
+        self._migrate_legacy()
+        self._mark_completed_handles()
+        self._prune_deleted_objects(scene)
+
+        # Resolve desired sources
+        desired = {}  # source_key -> (obj, action, snd, strip, cycle, offset)
+        for obj in scene.objects:
+            key, info = self._resolve_active_source(obj, scene)
+            if info:
+                desired[key] = info
+
+        # Stop stale sources
+        for src_key in list(self._sources.keys()):
+            if src_key not in desired:
+                snd_info = self._sources.pop(src_key)
+                try:
+                    snd_info['handle'].stop()
+                except Exception as e:
+                    warn(f"AUDIO: Error stopping stale sound: {e}")
+
+        # Start or restart needed sources
+        for src_key, (obj, action, snd, strip, cycle, offset) in desired.items():
+            if src_key in self._sources:
+                snd_info = self._sources[src_key]
+                if snd_info['state'] == 'completed':
+                    if snd_info.get('sound') == snd:
+                        continue  # completed, same sound — stay quiet
+                    try:
+                        snd_info['handle'].stop()
+                    except Exception:
+                        pass
+                    del self._sources[src_key]
+                else:
+                    continue  # already playing for this source
+
+            # Blocklist check
+            if snd.name in self._blocklist:
+                if time.time() < self._blocklist[snd.name]:
+                    continue
+                del self._blocklist[snd.name]
+
+            factory = _load_sound_factory(snd)
+            if not factory:
+                warn(f"NLA Sound Warning: Could not load audio factory for '{snd.name}'")
+                self._blocklist[snd.name] = time.time() + 5.0
+                continue
+
+            try:
+                debug(f"AUDIO: Triggering '{snd.name}' for {obj.name} (cycle {cycle}, offset {offset:.3f}s)")
+                handle = device.play(factory)
+                if offset > 0.0:
+                    handle.position = offset
+                self._sources[src_key] = {
+                    'sound': snd,
+                    'handle': handle,
+                    'factory': factory,
+                    'state': 'playing',
+                }
+            except Exception as e:
+                error(f"NLA Sound Error: Could not play '{snd.name}': {e}")
+                self._blocklist[snd.name] = time.time() + 5.0
+                self._handle_critical_recovery(e)
+
+    # --- Reset (critical recovery) ---
+
+    def reset(self):
+        """Attempt graceful teardown of all handles and device, then clear state."""
+        for snd_info in list(self._sources.values()):
+            try:
+                snd_info['handle'].stop()
+            except Exception:
+                pass
+        self._sources.clear()
+        self._strip_cycles.clear()
+
+        if self._device is not None:
+            try:
+                self._device.stopAll()
+            except Exception:
+                pass
+            self._device = None
+
+        self._legacy_sounds.clear()
+        self._blocklist.clear()
+        self._reset_cooldown = 0.0
+
+    def _handle_critical_recovery(self, exc):
+        err_str = str(exc)
+        if "Buffer" not in err_str and "OpenAL" not in err_str:
+            return
+        now = self._clock()
+        if now <= self._reset_cooldown + 5.0:
+            warn("AUDIO: Skipping device reset (cooldown active).")
+            return
+        error("AUDIO: Critical OpenAL Error detected. Resetting audio device to recover...")
+        self.reset()
+        self._reset_cooldown = now
+
+    # --- Source resolution helpers ---
+
+    def _resolve_active_source(self, obj, scene):
+        """Priority: preview > tweak > normal NLA. Returns (key, info) or (None, None)."""
+        global _preview_restore_state
+
+        # 1. Preview mode
+        if _preview_restore_state and _preview_restore_state.get('obj') == obj:
+            action_name = _preview_restore_state.get('action_name')
+            if action_name:
+                action = bpy.data.actions.get(action_name)
+                snd = anim_utils.resolve_action_sound(action) if action else None
+                if snd:
+                    key = (obj, action.name if action else "preview", "preview", 0)
+                    return key, (obj, action, snd, None, 0, 0.0)
+
+        anim_data = anim_utils.get_active_animation_data(obj)
+        if not anim_data or not anim_data.nla_tracks:
+            return None, None
+
+        # 2. Tweak mode
+        if scene.is_nla_tweakmode:
+            active_action = anim_data.action
+            if active_action:
+                for track in anim_data.nla_tracks:
+                    if track.mute:
+                        continue
+                    for strip in track.strips:
+                        if strip.action != active_action:
+                            continue
+                        if strip.frame_start <= scene.frame_current < strip.frame_end:
+                            snd = anim_utils.resolve_action_sound(active_action)
+                            if snd:
+                                cycle = self._compute_strip_cycle(obj, strip, scene.frame_current)
+                                offset = _compute_audio_offset(strip, scene)
+                                key = (obj, active_action.name, strip.name, cycle)
+                                return key, (obj, active_action, snd, strip, cycle, offset)
+
+        # 3. Normal NLA playback
+        for track in anim_data.nla_tracks:
+            if track.mute:
+                continue
+            for strip in track.strips:
+                if not strip.action:
+                    continue
+                if strip.frame_start <= scene.frame_current < strip.frame_end:
+                    snd = anim_utils.resolve_action_sound(strip.action)
+                    if snd:
+                        cycle = self._compute_strip_cycle(obj, strip, scene.frame_current)
+                        offset = _compute_audio_offset(strip, scene)
+                        key = (obj, strip.action.name, strip.name, cycle)
+                        return key, (obj, strip.action, snd, strip, cycle, offset)
+
+        return None, None
+
+    def _compute_strip_cycle(self, obj, strip, current_frame):
+        key = (obj, strip.name)
+        prev = self._strip_cycles.get(key)
+        prev_cycle, last_frame = prev if isinstance(prev, tuple) else (0, None)
+
+        if last_frame is not None and current_frame < last_frame:
+            prev_cycle += 1
+
+        self._strip_cycles[key] = (prev_cycle, current_frame)
+        return prev_cycle
+
+    def get_preview_info(self, obj, action_name):
+        """Look up active source info for a preview key. Used by the loop handler."""
+        key = (obj, action_name, "preview", 0)
+        return self._sources.get(key)
+
+    def remove_preview_source(self, obj, action_name):
+        """Remove and stop a preview source entry."""
+        key = (obj, action_name, "preview", 0)
+        snd_info = self._sources.pop(key, None)
+        if snd_info:
+            try:
+                snd_info['handle'].stop()
+            except Exception:
+                pass
+
+    # --- Internal helpers ---
+
+    def _prune_deleted_objects(self, scene):
+        """Remove sources referencing objects no longer in the scene."""
+        live_objs = set(scene.objects)
+        stale = []
+        for src_key in list(self._sources.keys()):
+            try:
+                if src_key[0] not in live_objs:
+                    stale.append(src_key)
+            except ReferenceError:
+                stale.append(src_key)
+        for src_key in stale:
+            self._sources.pop(src_key, None)
+        # Clean cycle records too
+        for cycle_key in list(self._strip_cycles.keys()):
+            try:
+                if cycle_key[0] not in live_objs:
+                    del self._strip_cycles[cycle_key]
+            except ReferenceError:
+                del self._strip_cycles[cycle_key]
+
+    def _mark_completed_handles(self):
+        for snd_info in list(self._sources.values()):
+            if snd_info['state'] != 'playing':
+                continue
+            try:
+                status = snd_info['handle'].status
+                if status in (aud.STATUS_STOPPED, aud.STATUS_INVALID):
+                    snd_info['state'] = 'completed'
+                elif status == aud.STATUS_PLAYING:
+                    if (hasattr(snd_info['handle'], 'position') and
+                        hasattr(snd_info['handle'], 'length') and
+                        snd_info['handle'].length > 0 and
+                        snd_info['handle'].position >= snd_info['handle'].length):
+                        snd_info['state'] = 'completed'
+            except Exception:
+                snd_info['state'] = 'completed'
+
+    def _clear_playback_state(self):
+        for snd_info in self._sources.values():
+            try:
+                snd_info['handle'].stop()
+            except Exception:
+                pass
+        self._sources.clear()
+        self._strip_cycles.clear()
+
+    def _migrate_legacy(self):
+        for (_, handle, _) in list(self._legacy_sounds.values()):
+            try:
+                handle.stop()
+            except Exception:
+                pass
+        self._legacy_sounds.clear()
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton
+# ---------------------------------------------------------------------------
+
+_audio_manager = AudioManager()
+
+
+# ---------------------------------------------------------------------------
+# Pure helpers (no mutable state)
+# ---------------------------------------------------------------------------
 
 def _compute_audio_offset(strip, scene):
-    """
-    Calculate audio playback offset in seconds for the current scene frame
-    relative to the start of the given NLA strip.
-
-    Accounts for strip frame_start, action_frame_start, scale, and reverse.
-    Returns 0.0 if the offset cannot be computed.
-    """
+    """Audio playback offset in seconds for the current frame within a strip."""
     fps = scene.render.fps
     if fps <= 0:
         return 0.0
 
     current = scene.frame_current
-    strip_start = strip.frame_start
+    action_offset_frames = current - strip.frame_start
 
-    # Action-relative offset
-    action_offset_frames = current - strip_start
     if strip.use_reverse:
         action_length = strip.action_frame_end - strip.action_frame_start
         action_offset_frames = action_length - action_offset_frames
 
-    # Apply scale
     action_offset_frames /= strip.scale if strip.scale != 0 else 1.0
-
     return max(0.0, action_offset_frames / fps)
-
-
-def _resolve_active_source(obj, scene):
-    """
-    Resolve the active audio source for an object in priority order:
-
-      1. Extension track preview
-      2. Blender NLA tweak mode
-      3. Normal NLA playback
-
-    Returns a source-identity tuple (action, snd, strip, cycle, offset) or
-    (None, None, None, 0, 0.0) when nothing is active.
-    """
-    # --- 1. Preview mode ---
-    if _preview_restore_state and _preview_restore_state.get('obj') == obj:
-        action_name = _preview_restore_state.get('action_name')
-        if action_name:
-            action = bpy.data.actions.get(action_name)
-            snd = anim_utils.resolve_action_sound(action) if action else None
-            if snd:
-                return (action, snd, None, 0, 0.0)
-
-    anim_data = anim_utils.get_active_animation_data(obj)
-    if not anim_data or not anim_data.nla_tracks:
-        return (None, None, None, 0, 0.0)
-
-    # --- 2. Tweak mode ---
-    if scene.is_nla_tweakmode:
-        active_action = anim_data.action
-        if active_action:
-            for track in anim_data.nla_tracks:
-                if track.mute:
-                    continue
-                for strip in track.strips:
-                    if strip.action != active_action:
-                        continue
-                    if strip.frame_start <= scene.frame_current < strip.frame_end:
-                        snd = anim_utils.resolve_action_sound(active_action)
-                        if snd:
-                            cycle = _compute_strip_cycle(obj, strip, scene.frame_current)
-                            offset = _compute_audio_offset(strip, scene)
-                            return (active_action, snd, strip, cycle, offset)
-
-    # --- 3. Normal NLA playback ---
-    for track in anim_data.nla_tracks:
-        if track.mute:
-            continue
-        for strip in track.strips:
-            if not strip.action:
-                continue
-            if strip.frame_start <= scene.frame_current < strip.frame_end:
-                snd = anim_utils.resolve_action_sound(strip.action)
-                if snd:
-                    cycle = _compute_strip_cycle(obj, strip, scene.frame_current)
-                    offset = _compute_audio_offset(strip, scene)
-                    return (strip.action, snd, strip, cycle, offset)
-
-    return (None, None, None, 0, 0.0)
-
-
-def _make_source_key(obj, action, strip, cycle):
-    """Construct a stable tuple key for source-identity tracking."""
-    action_name = action.name if action else "preview"
-    strip_name = strip.name if strip else "preview"
-    return (obj, action_name, strip_name, cycle)
-
-
-def _clear_all_playback_state():
-    """Stop all handles and reset source/cycle tracking."""
-    global _active_sources, _strip_cycles
-    for snd_info in _active_sources.values():
-        try:
-            snd_info['handle'].stop()
-        except Exception:
-            pass
-    _active_sources.clear()
-    _strip_cycles.clear()
 
 
 def _load_sound_factory(sound_datablock):
@@ -173,15 +375,9 @@ def _load_sound_factory(sound_datablock):
     return None
 
 
-def _remove_legacy_sounds():
-    """Stop and remove any entries remaining in the old _playing_sounds dict."""
-    global _playing_sounds
-    for obj_key, (handle, _, _) in list(_playing_sounds.items()):
-        try:
-            handle.stop()
-        except Exception:
-            pass
-    _playing_sounds.clear()
+def get_aud_device():
+    """Legacy accessor — routes through AudioManager."""
+    return _audio_manager.get_device()
 
 
 def register_audio_handlers():
@@ -199,8 +395,6 @@ def register_audio_handlers():
 
 def unregister_audio_handlers():
     """Remove all audio handlers and stop audio resources."""
-    global _aud_device, _is_real_playback, _failed_sound_blocklist, _audio_reset_cooldown
-
     h = bpy.app.handlers
     if carnivores_nla_sound_handler in h.frame_change_post:
         h.frame_change_post.remove(carnivores_nla_sound_handler)
@@ -211,29 +405,8 @@ def unregister_audio_handlers():
     if clear_aud_device_on_new_file in h.load_post:
         h.load_post.remove(clear_aud_device_on_new_file)
 
-    _remove_legacy_sounds()
-    _clear_all_playback_state()
-
-    if _aud_device is not None:
-        try:
-            _aud_device.stopAll()
-        except Exception:
-            pass
-        _aud_device = None
-
-    _is_real_playback = False
-    _failed_sound_blocklist.clear()
-    _audio_reset_cooldown = 0.0
-
-def get_aud_device():
-    global _aud_device
-    if _aud_device is None:
-        debug("AUDIO: Creating new aud.Device()")
-        try:
-            _aud_device = aud.Device()
-        except Exception as e:
-            error(f"AUDIO: Failed to create aud.Device(): {e}")
-    return _aud_device
+    _audio_manager.on_stop_all()
+    _audio_manager.reset()
 
 class CARNIVORES_OT_play_linked_sound(bpy.types.Operator):
     """Plays the sound linked to the active object's active animation by adding it to the sequencer"""
@@ -292,132 +465,15 @@ class CARNIVORES_OT_play_linked_sound(bpy.types.Operator):
 
 @bpy.app.handlers.persistent
 def playback_started_handler(scene):
-    """This handler is called by Blender right before animation playback starts."""
-    global _is_real_playback
-    _is_real_playback = True
-    debug("Playback STARTED. _is_real_playback = True")
+    _audio_manager.on_playback_start()
 
 @bpy.app.handlers.persistent
 def playback_stopped_handler(scene):
-    """This handler is called by Blender right after animation playback stops."""
-    global _is_real_playback
-    _is_real_playback = False
-    debug("Playback STOPPED. _is_real_playback = False")
-    
-    _remove_legacy_sounds()
-    _clear_all_playback_state()
+    _audio_manager.on_playback_stop()
 
 @bpy.app.handlers.persistent
 def carnivores_nla_sound_handler(scene):
-    global _active_sources, _is_real_playback, _aud_device, _failed_sound_blocklist, _audio_reset_cooldown
-
-    if not _is_real_playback:
-        return
-    if not scene.carnivores_nla_sound_enabled:
-        return
-
-    device = get_aud_device()
-    if not device:
-        return
-
-    # Migrate any legacy _playing_sounds entries
-    _remove_legacy_sounds()
-
-    # Mark completed handles (stop status or position >= length)
-    for src_key, snd_info in list(_active_sources.items()):
-        if snd_info['state'] == 'playing':
-            try:
-                status = snd_info['handle'].status
-                if status in (aud.STATUS_STOPPED, aud.STATUS_INVALID):
-                    snd_info['state'] = 'completed'
-                elif status == aud.STATUS_PLAYING:
-                    # Check if position advanced past the sound length
-                    if hasattr(snd_info['handle'], 'position') and hasattr(snd_info['handle'], 'length'):
-                        if snd_info['handle'].length > 0 and snd_info['handle'].position >= snd_info['handle'].length:
-                            snd_info['state'] = 'completed'
-            except Exception:
-                snd_info['state'] = 'completed'
-
-    # --- Resolve desired sources ---
-    desired_sources = {}  # source_key -> (action, snd, strip, cycle, offset)
-    for obj in scene.objects:
-        action, snd, strip, cycle, offset = _resolve_active_source(obj, scene)
-        if snd:
-            key = _make_source_key(obj, action, strip, cycle)
-            desired_sources[key] = (obj, action, snd, strip, cycle, offset)
-
-    # --- Stop stale sources ---
-    for src_key in list(_active_sources.keys()):
-        if src_key not in desired_sources:
-            snd_info = _active_sources.pop(src_key)
-            try:
-                snd_info['handle'].stop()
-            except Exception as e:
-                warn(f"AUDIO: Error stopping stale sound: {e}")
-
-    # --- Start or restart needed sources ---
-    for src_key, (obj, action, snd, strip, cycle, offset) in desired_sources.items():
-        if src_key in _active_sources:
-            snd_info = _active_sources[src_key]
-            if snd_info['state'] == 'completed':
-                prev_sound = snd_info.get('sound')
-                if prev_sound != snd:
-                    try:
-                        snd_info['handle'].stop()
-                    except Exception:
-                        pass
-                    del _active_sources[src_key]
-                else:
-                    continue  # completed and still current — don't restart
-            else:
-                # Already playing for this source — leave it alone
-                continue
-
-        # Skip blocklisted sounds
-        if snd.name in _failed_sound_blocklist:
-            expiry = _failed_sound_blocklist[snd.name]
-            if time.time() < expiry:
-                continue
-            else:
-                del _failed_sound_blocklist[snd.name]
-
-        factory = _load_sound_factory(snd)
-        if not factory:
-            warn(f"NLA Sound Warning: Could not load audio factory for '{snd.name}'")
-            _failed_sound_blocklist[snd.name] = time.time() + 5.0
-            continue
-
-        try:
-            debug(f"AUDIO: Triggering '{snd.name}' for {obj.name} (cycle {cycle}, offset {offset:.3f}s)")
-            handle = device.play(factory)
-            if offset > 0.0:
-                handle.position = offset
-            _active_sources[src_key] = {
-                'sound': snd,
-                'handle': handle,
-                'factory': factory,
-                'state': 'playing',
-            }
-        except Exception as e:
-            error(f"NLA Sound Error: Could not play '{snd.name}': {e}")
-            _failed_sound_blocklist[snd.name] = time.time() + 5.0
-
-            err_str = str(e)
-            if "Buffer" in err_str or "OpenAL" in err_str:
-                now = time.monotonic()
-                if now > _audio_reset_cooldown + 5.0:
-                    error("AUDIO: Critical OpenAL Error detected. Resetting audio device to recover...")
-                    try:
-                        if _aud_device is not None:
-                            _aud_device.stopAll()
-                        _aud_device = None
-                        _active_sources.clear()
-                        _strip_cycles.clear()
-                        _audio_reset_cooldown = now
-                    except:
-                        pass
-                else:
-                    warn("AUDIO: Skipping device reset (cooldown active).")
+    _audio_manager.start_or_sync(scene)
 
 class CARNIVORES_OT_import_sound_for_action(bpy.types.Operator, bpy_extras.io_utils.ImportHelper):
     """Import a sound file and link it to the specified Action"""
@@ -471,9 +527,7 @@ class CARNIVORES_OT_toggle_nla_sound_playback(bpy.types.Operator):
         if scene.carnivores_nla_sound_enabled:
             self.report({'INFO'}, "NLA Sound Playback Enabled.")
         else:
-            _remove_legacy_sounds()
-            _clear_all_playback_state()
-            debug("All playing sounds stopped and cleared.")
+            _audio_manager.on_stop_all()
             self.report({'INFO'}, "NLA Sound Playback Disabled.")
 
         return {'FINISHED'}
@@ -567,7 +621,7 @@ class CARNIVORES_OT_reset_kps(bpy.types.Operator):
 
 def preview_loop_handler(scene):
     """Loops playback within the preview range"""
-    global _preview_restore_state, _active_sources
+    global _preview_restore_state
     if not _preview_restore_state:
         return
 
@@ -591,10 +645,8 @@ def preview_loop_handler(scene):
         obj = _preview_restore_state.get('obj')
         action_name = _preview_restore_state.get('action_name')
         if obj and action_name:
-            # Find the preview source key and mark it for retrigger
-            preview_key = (obj, action_name, "preview", 0)
-            if preview_key in _active_sources:
-                snd_info = _active_sources[preview_key]
+            snd_info = _audio_manager.get_preview_info(obj, action_name)
+            if snd_info:
                 try:
                     if snd_info['handle'].status == aud.STATUS_PLAYING:
                         snd_info['handle'].position = 0.0
@@ -602,37 +654,16 @@ def preview_loop_handler(scene):
                         snd_info['handle'].position = 0.0
                         snd_info['handle'].resume()
                 except Exception:
-                    # Handle is dead — remove so handler recreates it
-                    try:
-                        snd_info['handle'].stop()
-                    except Exception:
-                        pass
-                    del _active_sources[preview_key]
+                    _audio_manager.remove_preview_source(obj, action_name)
 
 @bpy.app.handlers.persistent
 def clear_aud_device_on_new_file(scene):
-    global _aud_device, _is_real_playback, _failed_sound_blocklist, _audio_reset_cooldown
-
-    debug("AUDIO: New file loaded — resetting audio system")
-
-    _remove_legacy_sounds()
-    _clear_all_playback_state()
-
-    _is_real_playback = False
-    _failed_sound_blocklist.clear()
-    _audio_reset_cooldown = 0.0
-
-    if _aud_device is not None:
-        try:
-            debug("AUDIO: Stopping aud device...")
-            _aud_device.stopAll()
-        except Exception as e:
-            warn(f"Error stopping aud device on new file load: {e}")
-        _aud_device = None
+    _audio_manager.on_file_load()
 
     # Clean up temp sound files from the previous session
     anim_utils.cleanup_temp_sound_files()
 
+    # Defensive re-registration
     register_audio_handlers()
 
     debug("AUDIO: Audio system reset complete.")
