@@ -134,9 +134,9 @@ Combined from `dev_notes.md` and `future_changes.md`.
 
 ### Rig Reconstruction Improvements
 
-Improve the `.car` rig reconstruction pipeline for faithfulness, stability, and determinism. Detailed algorithm documentation is in [Systems: Skeleton Reconstruction](systems.md#skeleton-reconstruction-car-models).
+Improve the `.car` rig reconstruction pipeline for faithfulness, stability, and determinism. Current algorithm documentation is in [Systems: Skeleton Reconstruction](SYSTEMS.md#skeleton-reconstruction-car-models); the complete staged redesign is in [Rig Reconstruction Implementation Plan](RIG_RECONSTRUCTION_PLAN.md).
 
-**Completed (Phase 1–2):**
+**Current baseline:**
 - Preserve imported owner indices on the mesh for reconstruction use
 - Degeneracy pruning (empty groups → filtered out, not mesh_mean)
 - Disconnected cluster detection via BFS spatial clustering
@@ -148,14 +148,15 @@ Improve the `.car` rig reconstruction pipeline for faithfulness, stability, and 
 - Persist reconstruction metadata on armature custom properties
 - Reset-to-imported-owners recovery button
 
-**Remaining:**
+**Planned redesign:**
+- Fix CAR owner validation, raw/compact ID mapping, and reconstruction idempotence first
+- Move inference into a pure, unit-testable NumPy module
+- Replace pairwise-distance clustering and centroid-only joints with owner-boundary topology
+- Add scale-invariant hierarchy scoring, component policies, consistent roll, and safe rig lifecycle handling
+- Add proposal preview, manual confirmation, and true dry-run export reconciliation
+- Add optional animation-assisted rigid-transform and shared-pivot fitting, followed separately by experimental skeletal animation conversion
 
-- **Preview/Confirm step**: Generate a temporary preview mesh showing centroids (points) and MST edges (lines, green=accepted, red=cross-body rejection) before creating the armature
-- **Disconnected cluster policy**: Configurable handling for isolated groups — Skip (default), Hooks (create empties), Force bones (include with warning)
-- **Round-trip reconciliation**: Validate reconstructed bone-to-vertex mapping matches original owner map after armature creation, reporting drift
-- **Hook/bone decision matrix**: Heuristics for choosing deformation type per group (vertex count < 5% → hook, spatial isolation > 2× stddev → hook, terminal single-bone → bone)
-
-**File touch points:** `parsers/parse_car.py`, `utils/animation.py`, `utils/io.py`, `operators/animation.py`, `doc/SYSTEMS.md`
+Milestones, acceptance criteria, tests, risks, and file touch points are maintained in [Rig Reconstruction Implementation Plan](RIG_RECONSTRUCTION_PLAN.md).
 
 ### Phase3: Codebase Architecture
 #### 3.1 Refactor Operators into Modular Files
