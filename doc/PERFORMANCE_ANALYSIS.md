@@ -129,7 +129,7 @@ Each `obj.shape_key_add(name=...)` call triggers a full Blender data-block alloc
 #### D.3 Reconstruct Armature — MST
 Complexity: **O(B²)**, where B = bone count.
 
-Current B is at most 30 (2048-vertex engine limit / sparse ownership). B² = 900 operations. Negligible.
+Typical legacy assets have only a few dozen owner groups, so the current quadratic scans remain negligible in practice. There is no fixed 2048-vertex current-engine limit; profile unusually large custom models before relying on this assumption.
 
 Even with B = 100: 10,000 ops = ~1 ms in NumPy. Still fine.
 

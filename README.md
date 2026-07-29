@@ -81,7 +81,7 @@ Export all selected mesh objects to separate `.3df` files in one operation.
 
 ### Validation
 
-Optional import validation checks vertex/face/bone count limits, file size integrity, UV ranges, degenerate faces, bone cycles, texture alignment, and out-of-range field values. Auto-repair clamps invalid indices and breaks bone hierarchy cycles. All warnings are collected and displayed in a modal dialog after import.
+Non-destructive structural validation always checks section sizes, signed counts, indices, finite coordinates, hierarchy cycles, and texture-row alignment. The optional **Compatibility Checks** import setting reports legacy AltEdit and current C2 MEE constraints, such as fixed animation/sound arrays, without imposing obsolete mesh limits. Validation preserves source owners, UVs, flags, and hierarchy data rather than silently repairing them.
 
 ---
 

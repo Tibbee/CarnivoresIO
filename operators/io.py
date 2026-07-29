@@ -68,9 +68,9 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         default='HOOKS'
     )
     validate: bpy.props.BoolProperty(
-        name="Run Validations",
-        description="Enable file validity and error checking and if possible automatic repairs",
-        default=False
+        name="Compatibility Checks",
+        description="Report legacy AltEdit and current C2 MEE compatibility constraints; structural safety checks always run",
+        default=True
     )
     flip_handedness: bpy.props.BoolProperty(
         name='Flip Handedness',
@@ -489,9 +489,9 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         default=True
     )
     validate: bpy.props.BoolProperty(
-        name='Run Validations', 
-        description='Enable file validity and error checking and if possible automatic repairs',
-        default=False
+        name='Compatibility Checks',
+        description='Report legacy AltEdit and current C2 MEE compatibility constraints; structural safety checks always run',
+        default=True
     )
     flip_handedness: bpy.props.BoolProperty(
         name='Flip Handedness', 

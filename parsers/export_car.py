@@ -476,7 +476,6 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
                flip_u=False, flip_v=False, flip_handedness=True, 
                model_name_override=""):
     
-    print(f"--- Starting .car export to: {filepath} ---")
     debug(f"--- Starting .car export to: {filepath} ---")
     # 1. Gather Base Mesh Data
     start_mesh = time.perf_counter()
@@ -490,7 +489,12 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
     start_anim = time.perf_counter()
     anims = gather_car_animations(obj, export_matrix, vertex_count)
     debug(f"[Timing] gather_car_animations took {time.perf_counter() - start_anim:.6f} seconds")
-    
+    if len(anims) > 64:
+        warn(
+            f"Exporting {len(anims)} animations. Current C2 MEE supports 64 and the fixed "
+            "cross-reference table can map sounds only for the first 64 animations."
+        )
+
     start_sound = time.perf_counter()
     sounds_map = {} # Sound DataBlock -> Index in file
     sound_list = [] # List of dicts to write
@@ -547,16 +551,9 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
         # Faces
         faces_arr.tofile(f)
         
-        # Vertices
-        # The .car format expects 1-based indexing for vertex owners.
-        # Our internal representation (from collect_bones_and_owners) is 0-based.
-        # Create a temporary copy for modification.
-        car_verts_arr = verts_arr.copy()
-        # Increment all owner indices by 1.
-        # A 0-based index of 0 (corresponding to the first bone) becomes 1 (the first bone's ID in .car).
-        # This applies to all vertices, ensuring consistency with the .car format's 1-based bone indexing.
-        car_verts_arr['owner'] += 1
-        car_verts_arr.tofile(f)
+        # Owners are signed, zero-based indices in the engine format. Owner 0
+        # is valid and -1 represents an unowned vertex; no export offset applies.
+        verts_arr.tofile(f)
         
         # Texture
         if texture_raw is not None:

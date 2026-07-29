@@ -222,11 +222,11 @@ Freeze current behavior, expose known failures, and create tests before replacin
 ### Required synthetic cases
 
 - no vertices;
-- all owners zero/unowned;
+- all owners `-1`/unowned;
 - one valid owner group;
 - exactly two groups;
 - sparse raw IDs such as `1, 4, 9`;
-- zero mixed with positive raw IDs;
+- owner `-1` mixed with valid zero and positive raw IDs;
 - duplicate/co-located group centroids;
 - symmetric biped and quadruped;
 - no midline owner group;
@@ -263,8 +263,8 @@ Refactor shared validation into:
 CAR validation should:
 
 - preserve every raw owner value;
-- warn when no positive owner exists;
-- report zero/unowned counts;
+- warn when no non-negative owner exists;
+- report negative/unowned counts;
 - report sparse/noncontiguous IDs;
 - not invent a bone count or clamp owners.
 
@@ -273,8 +273,8 @@ CAR validation should:
 Refactor `utils/io.py::handle_car_owners()` to return an `OwnerMapping` or equivalent arrays:
 
 ```text
-raw positive IDs sorted deterministically → compact IDs 0..G-1
-raw 0 → internal -1
+raw non-negative IDs sorted deterministically → compact IDs 0..G-1
+raw negative IDs (normally -1) → internal -1
 ```
 
 If research or fixtures demonstrate that zero can be a valid CAR owner in supported files, add an explicit compatibility mode; do not silently guess per model.

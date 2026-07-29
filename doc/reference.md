@@ -11,17 +11,22 @@ Defined in `core/constants.py`:
 | `TEXTURE_WIDTH` | 256 | All Carnivores textures are fixed 256 pixels wide |
 | `FACE_FLAG_OPTIONS` | Bitfield map | Maps flag names to bitmasks (see Face Flags below) |
 
-## Engine Limits & Validation Rules
+## Structural Validation and Compatibility Limits
 
-Enforced by `parsers/validate.py`:
+`parsers/validate.py` always performs non-destructive structural checks. Optional compatibility diagnostics report target-specific limits without preventing the addon from importing otherwise valid data.
 
-| Limit | Value | Behavior |
+| Target or rule | Value | Behavior |
 |-------|-------|----------|
-| Max vertices (warning) | 1024 | Triggers AltEdit compatibility warning |
-| Max vertices/faces (hard error) | 2048 | Fatal error on parse/export |
-| Texture size | 256 × 2 × height bytes | Must be multiple of 512 (ARGB1555 format) |
-| Bone name length | 32 bytes | ASCII-only, truncated on import |
-| Animation sound mapping | 64 entries | 1 sound per animation, fixed order in cross-reference table |
+| Structural mesh limit | No fixed vertex/face count | Counts must fit the declared file sections and available memory |
+| Legacy AltEdit | 1024 vertices/faces | Compatibility warning; not an addon or current-engine limit |
+| Current C2 MEE standalone objects | 1024 records | Compatibility warning because the loader uses `gObj[1024]` |
+| Current C2 MEE CAR animations/sounds | 64 each | Compatibility warning because `TCharacterInfo` uses fixed arrays |
+| Texture rows | 256 × 2 bytes | Structural requirement for complete ARGB1555 rows |
+| Current C2 MEE OpenGL texture buffer | 256 × 256 × 2 bytes | Any other declared size warns about incomplete initialization or overflow; the software loader supports variable-height rows |
+| Bone name length | 32 bytes | Compatibility warning/cleanup during Blender object creation |
+| Animation sound mapping | 64 entries | Fixed cross-reference table in the current format and engine |
+
+Current-engine compatibility was source-verified against `Carnivores2MEE1.11` (`Hunt/Core/ModelTypes.h`, `Hunt/Core/GameTypes.h`, `Hunt/Core/GameState.h`, and `Hunt/Loaders/ModelLoader.cpp`).
 
 ## Face Flags (16-bit Bitfield)
 
@@ -51,6 +56,8 @@ Full conversion logic (X-flip, winding order fixes) is documented in [Formats: C
 
 ## Validation Warnings vs. Errors
 
-Collected in `ParserContext.warnings` (list of strings) during parse/export:
-- **Warnings**: Non-fatal issues (vertex count >1024, unknown header fields, bone name cleanup)
-- **Errors**: Fatal issues (vertex count >2048, cyclic bone hierarchies, invalid texture dimensions) raise `ValueError`
+Collected in `ParserContext.warnings` during parsing:
+
+- **Structural errors** raise `ValueError`: truncated sections, negative counts, invalid face/parent indices, non-finite coordinates, cyclic hierarchies, and incomplete texture rows. Structural validation always runs.
+- **Compatibility warnings** are optional: legacy AltEdit mesh counts, fixed current-engine arrays, unknown preserved flags, unusual UVs, and naming issues.
+- Validation does not clamp indices, rewrite owners, break hierarchy cycles, or clip UVs. Repairs must be explicit operations rather than side effects of import validation.

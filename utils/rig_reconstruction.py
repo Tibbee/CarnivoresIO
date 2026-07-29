@@ -10,7 +10,7 @@ import json
 import numpy as np
 
 
-OWNER_MAPPING_SCHEMA_VERSION = 1
+OWNER_MAPPING_SCHEMA_VERSION = 2
 OWNER_MAPPING_PROPERTY = "carnivores_owner_mapping"
 UNOWNED_COMPACT_ID = -1
 
@@ -37,12 +37,12 @@ class OwnerMapping:
 def build_owner_mapping(raw_owners):
     """Build a deterministic positive-raw-ID to dense-ID mapping.
 
-    CAR owner zero is treated as unowned. Negative values are also unowned so
-    callers can safely pass migrated signed attributes. The raw array is copied
-    and never modified.
+    CAR owners are signed shorts: zero and positive values are valid owner
+    groups, while negative values are unowned. The raw array is copied and never
+    modified.
     """
     raw = np.asarray(raw_owners, dtype=np.int32).reshape(-1).copy()
-    owned_mask = raw > 0
+    owned_mask = raw >= 0
     raw_by_compact = np.unique(raw[owned_mask]).astype(np.int32, copy=False)
 
     compact = np.full(raw.shape, UNOWNED_COMPACT_ID, dtype=np.int32)
@@ -66,7 +66,7 @@ def owner_mapping_to_metadata(mapping):
     """Return compact JSON metadata suitable for a Blender ID property."""
     payload = {
         "schema_version": OWNER_MAPPING_SCHEMA_VERSION,
-        "zero_is_unowned": True,
+        "negative_is_unowned": True,
         "raw_by_compact": [int(value) for value in mapping.raw_by_compact],
         "bone_names": mapping.bone_names,
     }
@@ -88,6 +88,6 @@ def raw_ids_from_metadata(value):
     except (TypeError, ValueError, KeyError, json.JSONDecodeError):
         return None
 
-    if np.any(raw_ids <= 0) or np.unique(raw_ids).size != raw_ids.size:
+    if np.any(raw_ids < 0) or np.unique(raw_ids).size != raw_ids.size:
         return None
     return raw_ids

@@ -21,24 +21,24 @@ Covers low-level binary structures, map/resource files, and mathematical convers
 
 | Offset | Type   | Size | Name        | Description             |
 | ------ | ------ | ---- | ----------- | ----------------------- |
-| 0x0000 | uint32 | 4    | VCount      | Number of vertices      |
-| 0x0004 | uint32 | 4    | FCount      | Number of faces         |
-| 0x0008 | uint32 | 4    | BoneCount   | Number of bones         |
-| 0x000C | uint32 | 4    | TextureSize | Texture length in bytes |
+| 0x0000 | int32 | 4    | VCount      | Number of vertices      |
+| 0x0004 | int32 | 4    | FCount      | Number of faces         |
+| 0x0008 | int32 | 4    | BoneCount   | Number of bones         |
+| 0x000C | int32 | 4    | TextureSize | Texture length in bytes |
 
 #### Face (64 bytes each)
 
 | Offset | Type      | Size | Name    | Description                       |
 | ------ | --------- | ---- | ------- | --------------------------------- |
-| 0x00   | uint32    | 4    | v1      | Vertex 1 index                    |
-| 0x04   | uint32    | 4    | v2      | Vertex 2 index                    |
-| 0x08   | uint32    | 4    | v3      | Vertex 3 index                    |
-| 0x0C   | uint32    | 4    | tax     | v1 texture U coordinate           |
-| 0x10   | uint32    | 4    | tbx     | v2 texture U coordinate           |
-| 0x14   | uint32    | 4    | tcx     | v3 texture U coordinate           |
-| 0x18   | uint32    | 4    | tay     | v1 texture V coordinate           |
-| 0x1C   | uint32    | 4    | tby     | v2 texture V coordinate           |
-| 0x20   | uint32    | 4    | tcy     | v3 texture V coordinate           |
+| 0x00   | int32     | 4    | v1      | Vertex 1 index                    |
+| 0x04   | int32     | 4    | v2      | Vertex 2 index                    |
+| 0x08   | int32     | 4    | v3      | Vertex 3 index                    |
+| 0x0C   | int32     | 4    | tax     | v1 texture U coordinate           |
+| 0x10   | int32     | 4    | tbx     | v2 texture U coordinate           |
+| 0x14   | int32     | 4    | tcx     | v3 texture U coordinate           |
+| 0x18   | int32     | 4    | tay     | v1 texture V coordinate           |
+| 0x1C   | int32     | 4    | tby     | v2 texture V coordinate           |
+| 0x20   | int32     | 4    | tcy     | v3 texture V coordinate           |
 | 0x24   | uint16    | 2    | flags   | Bitfield (see **Face Flags**)     |
 | 0x26   | uint16    | 2    | DMask   | Unused (possibly editor-specific) |
 | 0x28   | uint32    | 4    | Distant | Purpose unknown                   |
@@ -55,8 +55,8 @@ Covers low-level binary structures, map/resource files, and mathematical convers
 | 0x00   | float  | 4    | X     | X coordinate                           |
 | 0x04   | float  | 4    | Y     | Y coordinate                           |
 | 0x08   | float  | 4    | Z     | Z coordinate                           |
-| 0x0C   | uint16 | 2    | owner | Bone index attached to                 |
-| 0x0E   | uint16 | 2    | hide  | Hidden in Designer 2 (ignored in-game) |
+| 0x0C   | int16  | 2    | owner | Owner index (`0` is valid; `-1` means unowned) |
+| 0x0E   | int16  | 2    | hide  | Hidden in Designer 2                   |
 
 #### Bone (48 bytes each)
 
@@ -84,11 +84,11 @@ Covers low-level binary structures, map/resource files, and mathematical convers
 | Offset   | Type   | Size | Name         | Description |
 |----------|--------|------|--------------|-------------|
 | `0x0000` | byte   | 32   | **ModelName** | Texture name (often same as CAR filename, e.g., `"Rapt73"` in `ALLO.CAR`). Last 12 bytes usually `msc: #` where `#` is a number. See notes. |
-| `0x0020` | uint32 | 4    | **AniCount**  | Number of animations |
-| `0x0024` | uint32 | 4    | **SfxCount**  | Number of sounds |
-| `0x0028` | uint32 | 4    | **VCount**    | Number of vertices |
-| `0x002C` | uint32 | 4    | **FCount**    | Number of faces |
-| `0x0030` | uint32 | 4    | **TextureSize** | Texture length in bytes |
+| `0x0020` | int32 | 4    | **AniCount**  | Number of animations |
+| `0x0024` | int32 | 4    | **SfxCount**  | Number of sounds |
+| `0x0028` | int32 | 4    | **VCount**    | Number of vertices |
+| `0x002C` | int32 | 4    | **FCount**    | Number of faces |
+| `0x0030` | int32 | 4    | **TextureSize** | Texture length in bytes |
 
 ---
 
@@ -96,15 +96,15 @@ Covers low-level binary structures, map/resource files, and mathematical convers
 
 | Type   | Size | Name       | Description |
 |--------|------|------------|-------------|
-| uint32 | 4    | **v1**     | Vertex 1 index |
-| uint32 | 4    | **v2**     | Vertex 2 index |
-| uint32 | 4    | **v3**     | Vertex 3 index |
-| uint32 | 4    | **tax**    | Texture U coordinate for v1 |
-| uint32 | 4    | **tbx**    | Texture U coordinate for v2 |
-| uint32 | 4    | **tcx**    | Texture U coordinate for v3 |
-| uint32 | 4    | **tay**    | Texture V coordinate for v1 |
-| uint32 | 4    | **tby**    | Texture V coordinate for v2 |
-| uint32 | 4    | **tcy**    | Texture V coordinate for v3 |
+| int32  | 4    | **v1**     | Vertex 1 index |
+| int32  | 4    | **v2**     | Vertex 2 index |
+| int32  | 4    | **v3**     | Vertex 3 index |
+| int32  | 4    | **tax**    | Texture U coordinate for v1 |
+| int32  | 4    | **tbx**    | Texture U coordinate for v2 |
+| int32  | 4    | **tcx**    | Texture U coordinate for v3 |
+| int32  | 4    | **tay**    | Texture V coordinate for v1 |
+| int32  | 4    | **tby**    | Texture V coordinate for v2 |
+| int32  | 4    | **tcy**    | Texture V coordinate for v3 |
 | uint16 | 2    | **flags**  | Bitfield (see [Reference](reference.md#face-flags-16-bit-bitfield)) |
 | uint16 | 2    | **DMask**  | Unused in-game (possibly editor-specific) |
 | uint32 | 4    | **Distant**| Unused in-game; set during face tree sorting |
@@ -119,8 +119,8 @@ Covers low-level binary structures, map/resource files, and mathematical convers
 | float  | 4    | **X**      | X coordinate |
 | float  | 4    | **Y**      | Y coordinate |
 | float  | 4    | **Z**      | Z coordinate |
-| uint16 | 2    | **owner**  | Bone index vertex is attached to |
-| uint16 | 2    | **hide**   | Hidden in Designer 2 (no in-game effect) |
+| int16  | 2    | **owner**  | Owner index (`0` is valid; `-1` means unowned) |
+| int16  | 2    | **hide**   | Hidden in Designer 2 |
 
 #### Texture Data
 
@@ -168,7 +168,7 @@ Covers low-level binary structures, map/resource files, and mathematical convers
 
 **Notes**:
 - ModelName consists of two parts: texture name + `msc: #` string (may have embedded nulls or variable offsets)
-- Each table entry corresponds to an animation: 1 sound per animation, fixed order (see [Reference](reference.md#engine-limits--validation-rules))
+- Each table entry corresponds to an animation: 1 sound per animation, fixed order (see [Reference](reference.md#structural-validation-and-compatibility-limits))
 - Sounds are assigned sequentially, order cannot be changed
 
 ---
@@ -396,4 +396,4 @@ Carnivores uses left-handed coordinates (X: left, Y: up, -Z: forward). Blender u
 ### Testing Notes
 - **Round-Trip**: Export axis gizmo with `flip_handedness=True` + `axis_forward='-X'` + `axis_up='Z'`, re-import → no mirroring/culling
 - **Edge Cases**: Reversal happens after V-flip (`1.0 - all_vs`) but before optional `flip_u/v`
-- **Performance**: O(n) on faces (negligible for <2048 limit)
+- **Performance**: O(n) on faces; there is no fixed current-engine 2048-face limit

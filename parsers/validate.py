@@ -1,321 +1,314 @@
+"""Non-destructive structural and compatibility validation.
 
-import numpy as np
+Structural checks protect the parser and Blender and are always run by the
+importers. Optional compatibility checks report constraints of legacy tools and
+the current C2 MEE loader; they never rewrite parsed source data.
+"""
+
 import os
 
-def detect_bone_cycles(parents, bone_count):
-    def has_cycle(node, visited, path):
-        if node in path:
-            return True
-        if node in visited or node == -1:
-            return False
-        visited.add(node)
-        path.add(node)
-        if node < bone_count:
-            if has_cycle(parents[node], visited, path):
-                return True
-        path.remove(node)
-        return False
+import numpy as np
 
-    for i in range(bone_count):
-        visited = set()
-        path = set()
-        if has_cycle(i, visited, path):
-            return i
+from ..core.constants import FACE_FLAG_OPTIONS, TEXTURE_WIDTH
+from ..core.core import BONE_DTYPE, CAR_HEADER_DTYPE, FACE_DTYPE, HEADER_DTYPE, VERTEX_DTYPE
+
+
+# Compatibility limits, not parser limits.
+ALTEDIT_MESH_WARNING = 1024
+C2_MEE_OBJECT_LIMIT = 1024
+C2_MEE_ANIMATION_LIMIT = 64
+C2_MEE_SOUND_LIMIT = 64
+C2_MEE_TEXTURE_BYTES = TEXTURE_WIDTH * 256 * 2
+TEXTURE_ROW_BYTES = TEXTURE_WIDTH * 2
+
+
+def _warn(context, message):
+    if message not in context.warnings:
+        context.warnings.append(message)
+
+
+def _as_count(value, name):
+    count = int(value)
+    if count < 0:
+        raise ValueError(f"{name} must not be negative (got {count}).")
+    return count
+
+
+def _require_file_bytes(filepath, required_size, section_name):
+    file_size = os.path.getsize(filepath)
+    if required_size > file_size:
+        raise ValueError(
+            f"File is truncated before {section_name}: requires at least "
+            f"{required_size} bytes, got {file_size}."
+        )
+    return file_size
+
+
+def _validate_texture_size(texture_size):
+    texture_size = _as_count(texture_size, "Texture size")
+    if texture_size % 2:
+        raise ValueError("Texture size must contain complete 16-bit pixels.")
+    if texture_size and texture_size % TEXTURE_ROW_BYTES:
+        raise ValueError(
+            f"Texture size {texture_size} is not a whole {TEXTURE_WIDTH}-pixel ARGB1555 row "
+            f"(multiple of {TEXTURE_ROW_BYTES} bytes)."
+        )
+    return texture_size
+
+
+def _report_mesh_compatibility(vertex_count, face_count, context):
+    if vertex_count > ALTEDIT_MESH_WARNING:
+        _warn(
+            context,
+            f"Model has {vertex_count} vertices; legacy AltEdit may not open models above "
+            f"{ALTEDIT_MESH_WARNING}. The addon and current C2 MEE model arrays do not use this limit.",
+        )
+    if face_count > ALTEDIT_MESH_WARNING:
+        _warn(
+            context,
+            f"Model has {face_count} faces; legacy AltEdit may not open models above "
+            f"{ALTEDIT_MESH_WARNING}. The addon and current C2 MEE model arrays do not use this limit.",
+        )
+
+
+def _report_texture_compatibility(texture_size, context):
+    if texture_size != C2_MEE_TEXTURE_BYTES:
+        consequence = (
+            "would overflow that buffer"
+            if texture_size > C2_MEE_TEXTURE_BYTES
+            else "does not initialize the complete buffer"
+        )
+        _warn(
+            context,
+            f"Texture contains {texture_size} bytes; the current C2 MEE OpenGL loader uses a "
+            f"{TEXTURE_WIDTH}x256 buffer ({C2_MEE_TEXTURE_BYTES} bytes), so this file {consequence}. "
+            "The software loader and addon can still handle complete variable-height rows.",
+        )
+
+
+def detect_bone_cycles(parents, bone_count):
+    """Return one node participating in a parent cycle, or -1."""
+    state = np.zeros(bone_count, dtype=np.uint8)  # 0=new, 1=active, 2=done
+
+    for start in range(bone_count):
+        if state[start] != 0:
+            continue
+        path = []
+        node = start
+        while node != -1 and state[node] == 0:
+            state[node] = 1
+            path.append(node)
+            node = int(parents[node])
+        if node != -1 and state[node] == 1:
+            return node
+        for visited in path:
+            state[visited] = 2
     return -1
 
-def validate_3df_header(header, filepath, context):
-    # All counts must be non-negative (redundant for uint32 but explicit)
-    if any(val < 0 for val in header):
-        raise ValueError("Header contains negative values (corrupted file?).")
 
-    # Zero or Negative Checks
-    if header['vertex_count'] <= 0 or header['face_count'] <= 0 or header['bone_count'] < 0:
-        raise ValueError("Counts must be non-negative; vertex/face >0.")
+def validate_3df_header(header, filepath, context, compatibility=True):
+    vertex_count = _as_count(header['vertex_count'], "Vertex count")
+    face_count = _as_count(header['face_count'], "Face count")
+    bone_count = _as_count(header['bone_count'], "Object/bone count")
+    texture_size = _validate_texture_size(header['texture_size'])
 
-    # Bounds checks (aligned with spec/tool limits)
-    if header['vertex_count'] > 2048:
-        raise ValueError("Vertex count exceeds max allowed (2048).")
-    elif header['vertex_count'] > 1024:
-        context.warnings.append(
-            f"High vertex count: {header['vertex_count']}. Above 1024 AltEdit cannot open the file."
-        )
+    if vertex_count == 0 or face_count == 0:
+        raise ValueError("3DF vertex and face counts must be greater than zero.")
 
-    if header['face_count'] > 2048:
-        raise ValueError("Face count exceeds max allowed (2048).")
-    elif header['face_count'] > 1024:
-        context.warnings.append(
-            f"High face count: {header['face_count']}. Above 1024 AltEdit cannot open the file."
-        )
-
-    if header['bone_count'] > 2048:
-        raise ValueError("Bone count exceeds reasonable max (2048).")
-    elif header['bone_count'] > 1024:
-        context.warnings.append(
-            f"High bone count: {header['bone_count']}. Above 1024 may cause issues in tools."
-        )
-
-    if header['texture_size'] > 131072:
-        raise ValueError("Texture size exceeds max allowed (131072 bytes).")
-
-    # Texture alignment and height sanity
-    if header['texture_size'] % 512 != 0:
-        raise ValueError("Texture size not aligned to 256-pixel-wide ARGB1555 format (must be multiple of 512).")
-    texture_height = header['texture_size'] // 512
-    if texture_height > 512:
-        context.warnings.append(
-            f"Unusually high texture height: {texture_height}px (may indicate corruption)."
-        )
-
-    # File size check (expanded for trailing bytes)
-    file_size = os.path.getsize(filepath)
-    expected_size = (
-        16 +
-        header['vertex_count'] * 16 +
-        header['face_count'] * 64 +
-        header['bone_count'] * 48 +
-        header['texture_size']
+    required_size = (
+        HEADER_DTYPE.itemsize
+        + face_count * FACE_DTYPE.itemsize
+        + vertex_count * VERTEX_DTYPE.itemsize
+        + bone_count * BONE_DTYPE.itemsize
+        + texture_size
     )
-    if file_size < expected_size:
-        raise ValueError(
-            f"File too small. Expected ≥ {expected_size} bytes, got {file_size}."
-        )
-    elif file_size > expected_size:
-        context.warnings.append(
-            f"File has {file_size - expected_size} extra bytes at end (trailing garbage or corruption?)."
-        )
+    file_size = _require_file_bytes(filepath, required_size, "3DF payload")
+    if file_size > required_size:
+        _warn(context, f"3DF file has {file_size - required_size} trailing bytes; preserving them is not supported on export.")
 
-def _validate_vertex_fields(vertices, vertex_count, context):
-    """Validate fields shared by 3DF and CAR vertices without changing owners."""
+    if compatibility:
+        _report_mesh_compatibility(vertex_count, face_count, context)
+        _report_texture_compatibility(texture_size, context)
+        if bone_count > C2_MEE_OBJECT_LIMIT:
+            _warn(
+                context,
+                f"Model has {bone_count} object/bone records; current C2 MEE stores standalone "
+                f"model objects in gObj[{C2_MEE_OBJECT_LIMIT}]. Loading this file there is unsafe.",
+            )
+    return header
+
+
+def validate_car_header(header, filepath, context, compatibility=True):
+    animation_count = _as_count(header['ani_count'], "Animation count")
+    sound_count = _as_count(header['sfx_count'], "Sound count")
+    vertex_count = _as_count(header['vertex_count'], "Vertex count")
+    face_count = _as_count(header['face_count'], "Face count")
+    texture_size = _validate_texture_size(header['texture_size'])
+
+    if vertex_count == 0 or face_count == 0:
+        raise ValueError("CAR vertex and face counts must be greater than zero.")
+
+    model_end = (
+        CAR_HEADER_DTYPE.itemsize
+        + face_count * FACE_DTYPE.itemsize
+        + vertex_count * VERTEX_DTYPE.itemsize
+        + texture_size
+    )
+    _require_file_bytes(filepath, model_end, "CAR model payload")
+
+    if compatibility:
+        _report_mesh_compatibility(vertex_count, face_count, context)
+        _report_texture_compatibility(texture_size, context)
+        if animation_count > C2_MEE_ANIMATION_LIMIT:
+            _warn(
+                context,
+                f"CAR contains {animation_count} animations; current C2 MEE stores only "
+                f"{C2_MEE_ANIMATION_LIMIT} TAni entries. Loading this file there is unsafe.",
+            )
+        if sound_count > C2_MEE_SOUND_LIMIT:
+            _warn(
+                context,
+                f"CAR contains {sound_count} sounds; current C2 MEE stores only "
+                f"{C2_MEE_SOUND_LIMIT} TSFX entries. Loading this file there is unsafe.",
+            )
+    return header
+
+
+def _validate_vertex_fields(vertices, vertex_count, context, compatibility=True):
     if vertices.size != vertex_count:
-        raise ValueError(f"Expected {vertex_count} vertices, but got {vertices.size}")
-
+        raise ValueError(f"Expected {vertex_count} vertices, but got {vertices.size}.")
     if not np.isfinite(vertices['coord']).all():
         raise ValueError("Vertex coordinates contain NaN or infinite values.")
-
-    if np.any(vertices['hide'] != 0):
-        count_hidden = np.count_nonzero(vertices['hide'])
-        context.warnings.append(
-            f"{count_hidden} vertices have non-zero 'hide' values (no in-game effect, likely editor-specific)."
-        )
-
+    if compatibility and np.any(vertices['hide'] != 0):
+        _warn(context, f"{np.count_nonzero(vertices['hide'])} vertices have non-zero hide values.")
     return vertices
 
 
-def validate_3df_vertices(vertices, vertex_count, bone_count, context):
-    _validate_vertex_fields(vertices, vertex_count, context)
-
+def validate_3df_vertices(vertices, vertex_count, bone_count, context, compatibility=True):
+    _validate_vertex_fields(vertices, vertex_count, context, compatibility)
+    owners = np.asarray(vertices['owner'], dtype=np.int32)
     if bone_count > 0:
-        invalid_owner = (vertices['owner'] >= bone_count)
-        if invalid_owner.any():
-            count_invalid = np.count_nonzero(invalid_owner)
-            context.warnings.append(
-                f"{count_invalid} vertices have invalid owner indices (≥ {bone_count}); clamped to 0."
+        invalid = (owners < -1) | (owners >= bone_count)
+        if np.any(invalid):
+            _warn(
+                context,
+                f"{np.count_nonzero(invalid)} vertices reference owners outside -1 or "
+                f"0..{bone_count - 1}; values were preserved.",
             )
-            vertices['owner'][invalid_owner] = 0
-    else:
-        if np.any(vertices['owner'] != 0):
-            context.warnings.append("Bone count is zero; all vertex owners set to 0.")
-            vertices['owner'][:] = 0
+    elif np.any(owners < -1):
+        _warn(context, f"{np.count_nonzero(owners < -1)} vertices have owner values below -1; values were preserved.")
+    return vertices
 
-    return vertices  # In-place modified if needed
 
-def validate_3df_faces(faces, face_count, vertex_count, texture_height, context):
-    # Face count sanity
-    if faces.shape[0] != face_count:
-        raise ValueError(f"Expected {face_count} faces, but parsed {faces.shape[0]}")
+def validate_car_vertices(vertices, vertex_count, context, compatibility=True):
+    """Validate signed CAR owners without changing their source values."""
+    _validate_vertex_fields(vertices, vertex_count, context, compatibility)
 
-    # Vertex index bounds
-    idx = faces['v']
-    if (idx < 0).any() or (idx >= vertex_count).any():
-        bad = np.logical_or(idx < 0, idx >= vertex_count)
-        n_bad = np.count_nonzero(bad)
-        context.warnings.append(
-            f"{n_bad} face-vertex indices out of range [0, {vertex_count-1}]; clamped."
-        )
-        faces['v'][bad] = np.clip(faces['v'][bad], 0, vertex_count - 1)
-
-    # Degenerate faces (two or three identical vertex indices)
-    v1, v2, v3 = idx[:, 0], idx[:, 1], idx[:, 2]
-    degenerate = (v1 == v2) | (v2 == v3) | (v1 == v3)
-    if degenerate.any():
-        count_deg = np.count_nonzero(degenerate)
-        context.warnings.append(f"{count_deg} degenerate faces detected (duplicate vertex indices).")
-
-    # Raw UV range checks
-    u_raw, v_raw = faces['u_tex'], faces['v_tex']
-    if (u_raw > 255).any():
-        n_bad = np.count_nonzero(u_raw > 255)
-        context.warnings.append(f"{n_bad} U coords >255; clipped.")
-        faces['u_tex'] = np.clip(u_raw, 0, 255)
-    max_v = max(texture_height - 1, 0)
-    if (v_raw > max_v).any():
-        n_bad = np.count_nonzero(v_raw > max_v)
-        context.warnings.append(f"{n_bad} V coords >{max_v}; clipped.")
-        faces['v_tex'] = np.clip(v_raw, 0, max_v)
-
-    # Flags field: warn if any unknown bits set
-    known_mask = 0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0020 | 0x0040 | 0x0080 | 0x8000
-    flags = faces['flags']
-    unknown = flags & ~known_mask
-    if unknown.any():
-        n_bad = np.count_nonzero(unknown != 0)
-        context.warnings.append(f"{n_bad} faces have unknown flag bits set (mask: 0x{unknown[unknown != 0][0]:04X}).")
-
-    # Check unused fields (dmask, distant, next, group, reserv)
-    for field in ('dmask', 'distant', 'next', 'group'):
-        arr = faces[field]
-        nz = np.count_nonzero(arr)
-        if nz:
-            context.warnings.append(f"{nz} faces have non-zero '{field}' values (likely unused).")
-    if np.any(faces['reserv'] != 0):
-        context.warnings.append("Non-zero 'reserv' values detected in faces (likely unused).")
-
-    return faces
-
-def validate_3df_bones(bones, bone_count, context):
-    # Count check
-    parents = bones['parent']
-    if bones.shape[0] != bone_count:
-        raise ValueError(f"Parsed {bones.shape[0]} bones; expected {bone_count}.")
-
-    # Decode names and check duplicates/empties
-    decoded = []
-    for i, raw in enumerate(bones['name']):
-        s = raw.decode('ascii', errors='ignore').split('\x00', 1)[0]
-        if not s:
-            context.warnings.append(f"Bone #{i} has an empty name; using placeholder.")
-            s = f"Bone_{i}"
-        decoded.append(s)
-    dupes = {n for n in decoded if decoded.count(n) > 1}
-    if dupes:
-        context.warnings.append(f"Duplicate bone names: {sorted(dupes)}. Blender may merge these.")
-
-    # In validate_3df_bones, after parent index validation:
-    # Existing parent validation
-    invalid_parent = ~((parents == -1) | ((parents >= 0) & (parents < bone_count)))
-    if invalid_parent.any():
-        cnt = np.count_nonzero(invalid_parent)
-        raise ValueError(f"{cnt} bones have invalid parent indices (must be -1 or 0..{bone_count-1}).")
-
-    # Add cycle detection
-    # Replace the cycle detection section
-    cycle_start = detect_bone_cycles(bones['parent'], bone_count)
-    if cycle_start != -1:
-        context.warnings.append(f"Cycle detected in bone hierarchy starting at bone {cycle_start}. Clamping to -1.")
-        # Break cycles by setting parent to -1 for any bone that would cause a cycle
-        visited = set()
-        path = set()
-        def break_cycles(node):
-            if node in path:
-                bones['parent'][node] = -1
-                return
-            if node in visited or node == -1:
-                return
-            visited.add(node)
-            path.add(node)
-            if node < bone_count:
-                break_cycles(bones['parent'][node])
-            path.remove(node)
-        for i in range(bone_count):
-            visited.clear()
-            path.clear()
-            break_cycles(i)
-
-    # Position sanity
-    pos = bones['pos']
-    if not np.isfinite(pos).all():
-        raise ValueError("Bone positions contain NaN or infinite values.")
-
-    # Hidden field (warn if non-zero, as it has no in-game effect)
-    if np.any(bones['hidden'] != 0):
-        count_hidden = np.count_nonzero(bones['hidden'])
-        context.warnings.append(
-            f"{count_hidden} bones have non-zero 'hidden' values (no in-game effect, likely editor-specific)."
+    owners = np.asarray(vertices['owner'], dtype=np.int32)
+    invalid_negative = owners < -1
+    if np.any(invalid_negative):
+        _warn(
+            context,
+            f"{np.count_nonzero(invalid_negative)} CAR vertices have owner values below -1; values were preserved.",
         )
 
-    return bones
-
-def validate_3df_texture(texture_raw, texture_size, context):
-    expected_length = texture_size // 2
-    actual_length = texture_raw.size
-
-    if actual_length != expected_length:
-        raise ValueError(f"Texture data length {actual_length} does not match expected {expected_length}.")
-
-    # Alpha channel check: bit 15 only 0 or 1
-    alpha_bits = (texture_raw >> 15) & 0x1
-    if not np.all(np.isin(alpha_bits, [0, 1])):
-        context.warnings.append("Texture contains alpha bits outside expected 0 or 1.")
-
-    # RGB channel range check (0..31)
-    r = (texture_raw >> 10) & 0x1F
-    g = (texture_raw >> 5) & 0x1F
-    b = texture_raw & 0x1F
-    if (r > 31).any() or (g > 31).any() or (b > 31).any():
-        context.warnings.append("Texture RGB values out of expected range 0..31.")
-
-    # Check for completely zeroed texture (potential corruption)
-    if not np.any(texture_raw):
-        context.warnings.append("Texture data is completely zero (black/transparent); possible corruption.")
-
-    return texture_raw
-
-def validate_car_header(header, filepath, context):
-    # Adapt validate_3df_header: reuse core checks, skip/add CAR-specific
-    if any(val < 0 for val in [header['vertex_count'], header['face_count'], header['texture_size']]):
-        raise ValueError('Header contains negative values (corrupted file?).')
-    if header['vertex_count'] <= 0 or header['face_count'] <= 0:
-        raise ValueError('Vertex/face counts must be >0.')
-    if header['ani_count'] < 0 or header['sfx_count'] < 0:
-        raise ValueError('Animation/sound counts must be >=0.')
-    if header['vertex_count'] > 2048:
-        raise ValueError('Vertex count exceeds max allowed (2048).')
-    elif header['vertex_count'] > 1024:
-        context.warnings.append(f"High vertex count: {header['vertex_count']}. Above 1024 AltEdit cannot open the file.")
-    if header['face_count'] > 2048:
-        raise ValueError('Face count exceeds max allowed (2048).')
-    elif header['face_count'] > 1024:
-        context.warnings.append(f"High face count: {header['face_count']}. Above 1024 AltEdit cannot open the file.")
-    if header['texture_size'] > 131072:
-        raise ValueError('Texture size exceeds max allowed (131072 bytes).')
-    if header['texture_size'] % 512 != 0:
-        raise ValueError('Texture size not aligned to 256-pixel-wide ARGB1555 format (must be multiple of 512).')
-    texture_height = header['texture_size'] // 512
-    if texture_height > 512:
-        context.warnings.append(f"Unusually high texture height: {texture_height}px (may indicate corruption).")
-    # File size check: up to texture only (skip anim/sound for now)
-    file_size = os.path.getsize(filepath)
-    expected_size = 52 + header['face_count'] * 64 + header['vertex_count'] * 16 + header['texture_size']
-    if file_size < expected_size:
-        raise ValueError(f"File too small. Expected >= {expected_size} bytes up to texture, got {file_size}.")
-    elif file_size > expected_size:
-        context.warnings.append(f"File has {file_size - expected_size} extra bytes (animations/sounds/cross-ref; ignored).")
-
-def validate_car_vertices(vertices, vertex_count, context):
-    """Validate CAR vertices while preserving raw owner IDs exactly."""
-    _validate_vertex_fields(vertices, vertex_count, context)
-
-    owners = np.asarray(vertices['owner'])
-    positive_owners = np.unique(owners[owners > 0])
-    unowned_count = int(np.count_nonzero(owners == 0))
-
-    if positive_owners.size == 0:
-        context.warnings.append("CAR model has no positive owner IDs; all vertices are unowned.")
+    owned_ids = np.unique(owners[owners >= 0])
+    if owned_ids.size == 0:
+        _warn(context, "CAR model has no non-negative owner IDs; all vertices are unowned.")
         return vertices
 
-    if unowned_count:
-        context.warnings.append(
-            f"{unowned_count} CAR vertices have owner 0 and will remain unowned during rig reconstruction."
-        )
+    unowned_count = int(np.count_nonzero(owners < 0))
+    if unowned_count and compatibility:
+        _warn(context, f"{unowned_count} CAR vertices use negative owner IDs and will remain unowned during reconstruction.")
 
-    expected = np.arange(
-        int(positive_owners[0]),
-        int(positive_owners[-1]) + 1,
-        dtype=positive_owners.dtype,
-    )
-    if not np.array_equal(positive_owners, expected):
-        context.warnings.append(
-            "CAR owner IDs are sparse/noncontiguous; preserving raw IDs and using a compact internal mapping."
-        )
-
+    expected = np.arange(int(owned_ids[0]), int(owned_ids[-1]) + 1, dtype=owned_ids.dtype)
+    if not np.array_equal(owned_ids, expected):
+        _warn(context, "CAR owner IDs are sparse/noncontiguous; raw IDs will be preserved and compacted internally.")
     return vertices
+
+
+def validate_3df_faces(faces, face_count, vertex_count, texture_height, context, compatibility=True):
+    if faces.shape[0] != face_count:
+        raise ValueError(f"Expected {face_count} faces, but parsed {faces.shape[0]}.")
+
+    indices = faces['v']
+    invalid_indices = (indices < 0) | (indices >= vertex_count)
+    if np.any(invalid_indices):
+        raise ValueError(
+            f"{np.count_nonzero(invalid_indices)} face-vertex indices are outside 0..{vertex_count - 1}; "
+            "source data was not clamped."
+        )
+
+    v1, v2, v3 = indices[:, 0], indices[:, 1], indices[:, 2]
+    degenerate = (v1 == v2) | (v2 == v3) | (v1 == v3)
+    if np.any(degenerate):
+        _warn(context, f"{np.count_nonzero(degenerate)} degenerate faces contain duplicate vertex indices.")
+
+    if compatibility:
+        u_raw, v_raw = faces['u_tex'], faces['v_tex']
+        uv_outside = (u_raw < 0) | (u_raw > 255)
+        if np.any(uv_outside):
+            _warn(context, f"{np.count_nonzero(uv_outside)} U coordinates are outside the legacy 0..255 range; values were preserved.")
+        if texture_height > 0:
+            v_outside = (v_raw < 0) | (v_raw > texture_height)
+            if np.any(v_outside):
+                _warn(
+                    context,
+                    f"{np.count_nonzero(v_outside)} V coordinates are outside the legacy 0..{texture_height} edge range; values were preserved.",
+                )
+
+        known_mask = 0
+        for value, _name, _description in FACE_FLAG_OPTIONS:
+            known_mask |= int(value)
+        unknown = np.asarray(faces['flags'], dtype=np.uint16) & np.uint16(~known_mask & 0xFFFF)
+        if np.any(unknown):
+            first_unknown = int(unknown[unknown != 0][0])
+            _warn(
+                context,
+                f"{np.count_nonzero(unknown)} faces use unrecognized flag bits (first mask 0x{first_unknown:04X}); bits were preserved.",
+            )
+    return faces
+
+
+def validate_3df_bones(bones, bone_count, context, compatibility=True):
+    if bones.shape[0] != bone_count:
+        raise ValueError(f"Parsed {bones.shape[0]} object/bone records; expected {bone_count}.")
+
+    parents = np.asarray(bones['parent'], dtype=np.int32)
+    invalid_parent = ~((parents == -1) | ((parents >= 0) & (parents < bone_count)))
+    if np.any(invalid_parent):
+        raise ValueError(
+            f"{np.count_nonzero(invalid_parent)} bones have parent indices outside -1 or 0..{bone_count - 1}; "
+            "source data was not repaired."
+        )
+
+    cycle_start = detect_bone_cycles(parents, bone_count)
+    if cycle_start != -1:
+        raise ValueError(f"Bone hierarchy contains a cycle involving bone {cycle_start}; source data was not repaired.")
+
+    if not np.isfinite(bones['pos']).all():
+        raise ValueError("Bone positions contain NaN or infinite values.")
+
+    if compatibility:
+        decoded = []
+        for index, raw_name in enumerate(bones['name']):
+            name = raw_name.decode('ascii', errors='ignore').split('\x00', 1)[0]
+            if not name:
+                _warn(context, f"Bone #{index} has an empty name; the importer will use a placeholder.")
+                name = f"Bone_{index}"
+            decoded.append(name)
+        duplicates = sorted({name for name in decoded if decoded.count(name) > 1})
+        if duplicates:
+            _warn(context, f"Duplicate bone names {duplicates}; Blender will require unique names.")
+    return bones
+
+
+def validate_3df_texture(texture_raw, texture_size, context, compatibility=True):
+    expected_length = int(texture_size) // 2
+    if texture_raw.size != expected_length:
+        raise ValueError(
+            f"Texture contains {texture_raw.size} pixels; expected {expected_length} from the header."
+        )
+    if compatibility and texture_raw.size and not np.any(texture_raw):
+        _warn(context, "Texture data is completely zero (transparent black).")
+    return texture_raw

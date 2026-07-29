@@ -11,15 +11,14 @@ class ParserContext:
         self.warnings = []
 
 def parse_car_header(file):
-    header = np.fromfile(file, dtype=CAR_HEADER_DTYPE, count=1)[0]
+    parsed = np.fromfile(file, dtype=CAR_HEADER_DTYPE, count=1)
+    if parsed.size != 1:
+        raise ValueError(f"Incomplete CAR header: expected {CAR_HEADER_DTYPE.itemsize} bytes.")
+    header = parsed[0]
     if CAR_HEADER_DTYPE.itemsize != 52:
-        raise ValueError('Incomplete CAR header: expected 52 bytes.')
+        raise ValueError('Internal CAR header definition must be 52 bytes.')
     # Sanitize string: split at first null byte to discard potential garbage
     model_name = header['model_name'].decode('ascii', errors='ignore').split('\x00')[0]
-    # Loose check for expected suffix
-    if not model_name.endswith('msc: #'):
-        context = ParserContext()
-        context.warnings.append(f"Unexpected model name format: '{model_name}' (expected suffix 'msc: #').")
     texture_height = header['texture_size'] // (TEXTURE_WIDTH * 2)
     return header, model_name, texture_height
 
@@ -37,14 +36,22 @@ def parse_car_texture(file, texture_size, texture_height):
     from .parse_3df import parse_3df_texture  # Import to reuse
     return parse_3df_texture(file, texture_size, texture_height)
 
-def parse_car_animations(file, header, context):
+def parse_car_animations(file, header, context, compatibility=True):
     animations = []
     vcount = header['vertex_count']
     used_names = {}  # Map base_name -> count
     
     if header['ani_count'] > 0:
         debug(f"Starting animation parsing: {header['ani_count']} animations, {vcount} vertices")
+        current_pos = file.tell()
+        file.seek(0, os.SEEK_END)
+        file_size = file.tell()
+        file.seek(current_pos, os.SEEK_SET)
+
         for anim_idx in range(header['ani_count']):
+            if file.tell() + 40 > file_size:
+                raise ValueError(f"Animation #{anim_idx} header extends beyond the end of the CAR file.")
+
             # Read 32-byte name
             ani_name_raw = np.fromfile(file, dtype='S32', count=1)[0]
             # Sanitize string: split at first null byte
@@ -63,16 +70,27 @@ def parse_car_animations(file, header, context):
                 used_names[ani_name] = 1
             
             # Read kps and frames_count
-            ani_kps = np.fromfile(file, dtype='<u4', count=1)[0]
-            frames_count = np.fromfile(file, dtype='<u4', count=1)[0]
-            # Compute and read raw data
+            ani_kps = int(np.fromfile(file, dtype='<i4', count=1)[0])
+            frames_count = int(np.fromfile(file, dtype='<i4', count=1)[0])
+            if ani_kps <= 0:
+                raise ValueError(f"Animation '{ani_name}' has invalid KPS {ani_kps}; expected a positive value.")
+            if frames_count < 0:
+                raise ValueError(f"Animation '{ani_name}' has negative frame count {frames_count}.")
+            if compatibility and frames_count == 0:
+                context.warnings.append(f"Animation '{ani_name}' has no frames; current C2 MEE cannot play it safely.")
+
+            # Bound allocation by the bytes that actually remain in the file.
             data_size = frames_count * vcount * 6
-            expected_count = data_size // 2  # int16 per coord
+            remaining_animation_headers = (int(header['ani_count']) - anim_idx - 1) * 40
+            minimum_sound_blocks = int(header['sfx_count']) * 36
+            minimum_tail = remaining_animation_headers + minimum_sound_blocks + 256
+            if file.tell() + data_size + minimum_tail > file_size:
+                raise ValueError(
+                    f"Animation '{ani_name}' data does not leave enough bytes for the remaining "
+                    "CAR sections."
+                )
+            expected_count = data_size // 2  # int16 per coordinate
             raw_data = np.fromfile(file, dtype='<i2', count=expected_count)
-            if raw_data.size != expected_count:
-                context.warnings.append(f"Truncated data for {ani_name}: expected {expected_count}, got {raw_data.size}")
-                warn(f"Truncated {ani_name} (skipping)")
-                continue
             # Decode to absolute positions (float32)
             positions = raw_data.reshape(frames_count, vcount, 3).astype(np.float32) / 16.0
             animations.append({
@@ -94,14 +112,14 @@ def skip_car_sounds_and_crossref(file, header, context):
         for sfx_idx in range(header['sfx_count']):
             # Read 32-byte name + 4-byte length
             _ = np.fromfile(file, dtype='S32', count=1)  # name
-            sfx_length = np.fromfile(file, dtype='<u4', count=1)[0]
-            # Repair odd length to prevent misaligned seek
+            sfx_length = int(np.fromfile(file, dtype='<i4', count=1)[0])
+            if sfx_length < 0:
+                raise ValueError(f"Sound #{sfx_idx} has negative byte length {sfx_length}.")
             if sfx_length % 2 != 0:
                 context.warnings.append(
-                    f"Skipped sound #{sfx_idx} has odd byte length {sfx_length}; repairing to {sfx_length - 1}."
+                    f"Skipped sound #{sfx_idx} has odd byte length {sfx_length}; trailing byte is not a PCM16 sample."
                 )
-                sfx_length -= 1
-            # Seek past data
+            # Seek the exact declared payload to preserve section alignment.
             file.seek(sfx_length, 1)
             if sfx_idx < 3:  # Limit debug spam
                 debug(f"Skipped sound {sfx_idx}: length {sfx_length} bytes")
@@ -136,10 +154,7 @@ def parse_car_sounds_and_crossref(file, header, context, validate=True):
     for sfx_idx in range(header['sfx_count']):
         # Validate each sound header fits
         if file_size is not None and file.tell() + 36 > file_size:
-            context.warnings.append(
-                f"Sound block #{sfx_idx} header (36 bytes) exceeds file boundary; stopping sound parsing."
-            )
-            break
+            raise ValueError(f"Sound block #{sfx_idx} header extends beyond the end of the CAR file.")
 
         name_raw = np.fromfile(file, dtype='S32', count=1)[0]
         name = name_raw.decode('ascii', errors='ignore').split('\x00')[0]
@@ -160,29 +175,31 @@ def parse_car_sounds_and_crossref(file, header, context, validate=True):
         else:
             used_names[name] = 1
 
-        length = np.fromfile(file, dtype='<u4', count=1)[0]
+        length = int(np.fromfile(file, dtype='<i4', count=1)[0])
+        if length < 0:
+            raise ValueError(f"Sound '{name}' has negative byte length {length}.")
 
-        # Reject odd byte length — would misalign all subsequent reads
-        if length % 2 != 0:
-            if validate:
-                context.warnings.append(
-                    f"Sound '{name}' has odd byte length {length}; repair to {length - 1} and skip extra byte."
-                )
-            length -= 1
-            file.seek(1, io.SEEK_CUR)  # consume the misaligned extra byte
-
-        # Check against remaining file size
-        if file_size is not None and file.tell() + length > file_size:
-            remaining = file_size - file.tell()
+        declared_length = length
+        has_trailing_byte = bool(declared_length % 2)
+        pcm_length = declared_length - 1 if has_trailing_byte else declared_length
+        if has_trailing_byte and validate:
             context.warnings.append(
-                f"Sound '{name}' declared length {length} exceeds remaining file size ({remaining}); truncating."
+                f"Sound '{name}' has odd byte length {declared_length}; ignoring its final non-PCM16 byte."
             )
-            length = max(0, remaining)
-            if length < 2:
-                continue  # no meaningful data left
 
-        expected_samples = length // 2
+        remaining_sound_headers = (int(header['sfx_count']) - sfx_idx - 1) * 36
+        minimum_tail = remaining_sound_headers + 256
+        if file_size is not None and file.tell() + declared_length + minimum_tail > file_size:
+            remaining = max(0, file_size - file.tell() - minimum_tail)
+            raise ValueError(
+                f"Sound '{name}' declares {declared_length} bytes but only {remaining} are available "
+                "before the remaining CAR sections."
+            )
+
+        expected_samples = pcm_length // 2
         data = np.fromfile(file, dtype='<i2', count=expected_samples)
+        if has_trailing_byte:
+            file.seek(1, io.SEEK_CUR)
 
         if data.dtype != np.int16:
             data = data.astype(np.int16)
@@ -196,7 +213,7 @@ def parse_car_sounds_and_crossref(file, header, context, validate=True):
         sounds.append({
             'name': name,
             'data': data,
-            'length_bytes': length,
+            'length_bytes': pcm_length,
         })
 
     # ------------------- Cross-reference table -------------------
@@ -232,20 +249,44 @@ def parse_car(filepath, validate=True, parse_texture=True, flip_handedness=True,
     context = ParserContext()
     with open(filepath, 'rb') as file:
         header, model_name, texture_height = parse_car_header(file)
-        if validate:
-            validator.validate_car_header(header, filepath, context)
+        if validate and not model_name.endswith('msc: #'):
+            context.warnings.append(
+                f"Unexpected model name format: '{model_name}' (expected suffix 'msc: #')."
+            )
+        # Structural validation is always active. The option enables additional
+        # compatibility diagnostics for legacy tools and current C2 MEE.
+        validator.validate_car_header(header, filepath, context, compatibility=validate)
         faces, uvs = parse_car_faces(file, header['face_count'], texture_height, flip_handedness)
-        if validate:
-            faces = validator.validate_3df_faces(faces, header['face_count'], header['vertex_count'], texture_height, context)
+        faces = validator.validate_3df_faces(
+            faces,
+            header['face_count'],
+            header['vertex_count'],
+            texture_height,
+            context,
+            compatibility=validate,
+        )
         vertices = parse_car_vertices(file, header['vertex_count'])
-        if validate:
-            vertices = validator.validate_car_vertices(vertices, header['vertex_count'], context)  # Now from validate.py
+        vertices = validator.validate_car_vertices(
+            vertices,
+            header['vertex_count'],
+            context,
+            compatibility=validate,
+        )
         vertices, bone_names, owner_mapping = handle_car_owners(vertices, context)
-        texture, texture_raw = (None, None) if not parse_texture else parse_car_texture(file, header['texture_size'], texture_height)
-        if validate and texture_raw is not None:
-            texture_raw = validator.validate_3df_texture(texture_raw, header['texture_size'], context)
+        if parse_texture:
+            texture, texture_raw = parse_car_texture(file, header['texture_size'], texture_height)
+        else:
+            texture, texture_raw = None, None
+            file.seek(header['texture_size'], os.SEEK_CUR)
+        if texture_raw is not None:
+            texture_raw = validator.validate_3df_texture(
+                texture_raw,
+                header['texture_size'],
+                context,
+                compatibility=validate,
+            )
 
-        animations = parse_car_animations(file, header, context)
+        animations = parse_car_animations(file, header, context, compatibility=validate)
         
         sounds, cross_ref = parse_car_sounds_and_crossref(file, header, context, validate=validate)
 

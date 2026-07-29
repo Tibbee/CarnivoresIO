@@ -13,9 +13,12 @@ class ParserContext:
 
 #@utils.timed('parse_3df_header')
 def parse_3df_header(file):
-    header = np.fromfile(file, dtype=HEADER_DTYPE, count=1)[0]
+    parsed = np.fromfile(file, dtype=HEADER_DTYPE, count=1)
+    if parsed.size != 1:
+        raise ValueError(f"Incomplete 3DF header: expected {HEADER_DTYPE.itemsize} bytes.")
+    header = parsed[0]
     if HEADER_DTYPE.itemsize != 16:
-        raise ValueError("Incomplete header: expected 16 bytes (4 uint32).")
+        raise ValueError("Internal 3DF header definition must be 16 bytes.")
         
     # Texture width is always 256 and we have 2 bytes per pixel (256*2) so we divide the texture size with this to get texture height which can be variable.    
     texture_height = header['texture_size'] // (TEXTURE_WIDTH * 2) 
@@ -128,28 +131,52 @@ def parse_3df(filepath, validate=True, parse_texture=True, flip_handedness=True)
     with open(filepath, 'rb') as file:
         header, texture_height = parse_3df_header(file)
 
-        if validate:
-            validator.validate_3df_header(header, filepath, context)
-            faces, uvs = parse_3df_faces(file, header['face_count'], texture_height, flip_handedness=flip_handedness)
-            faces = validator.validate_3df_faces(faces, header['face_count'], header['vertex_count'], texture_height, context)
-            vertices = parse_3df_vertices(file, header['vertex_count'])
-            vertices = validator.validate_3df_vertices(vertices, header['vertex_count'], header['bone_count'], context)
-            bones, bone_names = parse_3df_bones(file, header['bone_count'])
-            bones = validator.validate_3df_bones(bones, header['bone_count'], context)
+        # Structural validation is always active. The user-facing option only
+        # enables additional engine/tool compatibility diagnostics.
+        validator.validate_3df_header(header, filepath, context, compatibility=validate)
+
+        faces, uvs = parse_3df_faces(
+            file,
+            header['face_count'],
+            texture_height,
+            flip_handedness=flip_handedness,
+        )
+        faces = validator.validate_3df_faces(
+            faces,
+            header['face_count'],
+            header['vertex_count'],
+            texture_height,
+            context,
+            compatibility=validate,
+        )
+
+        vertices = parse_3df_vertices(file, header['vertex_count'])
+        vertices = validator.validate_3df_vertices(
+            vertices,
+            header['vertex_count'],
+            header['bone_count'],
+            context,
+            compatibility=validate,
+        )
+
+        bones, bone_names = parse_3df_bones(file, header['bone_count'])
+        bones = validator.validate_3df_bones(
+            bones,
+            header['bone_count'],
+            context,
+            compatibility=validate,
+        )
+
+        if parse_texture:
             texture, texture_raw = parse_3df_texture(file, header['texture_size'], texture_height)
-            texture_raw = validator.validate_3df_texture(texture_raw, header['texture_size'], context) 
-     
-            # print_parse_preview(header, faces, uvs, vertices, bones, texture, texture_height)
-            
+            texture_raw = validator.validate_3df_texture(
+                texture_raw,
+                header['texture_size'],
+                context,
+                compatibility=validate,
+            )
         else:
-            # Skip all validation, just parse raw
-            faces, uvs = parse_3df_faces(file, header['face_count'], texture_height)
-            vertices = parse_3df_vertices(file, header['vertex_count'])
-            bones, bone_names = parse_3df_bones(file, header['bone_count'])
-            texture, texture_raw = (None, None) if not parse_texture else parse_3df_texture(file, header['texture_size'], texture_height)
-            if not parse_texture:
-                file.seek(header['texture_size'], 1)  # Skip texture
-            
-            # print_parse_preview(header, faces, uvs, vertices, bones, texture, texture_height)
+            texture, texture_raw = None, None
+            file.seek(header['texture_size'], 1)
 
     return header, faces, uvs, vertices, bones, bone_names, texture, texture_height, context.warnings

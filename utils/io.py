@@ -572,7 +572,7 @@ def collect_bones_and_owners(obj, export_matrix):
     bone_names = []
     bone_positions = []
     bone_parents = []
-    vertex_owners = np.zeros(len(obj.data.vertices), dtype=np.uint16)
+    vertex_owners = np.zeros(len(obj.data.vertices), dtype=np.int16)
     bone_index_map = {} # Maps Blender Name -> Integer Index
     clean_name_map = {} # Maps Clean Name -> List of Indices
 
@@ -671,7 +671,7 @@ def collect_bones_and_owners(obj, export_matrix):
 
             bone_names = []
             bone_parents = [-1] * len(temp_list)
-            vertex_owners = np.zeros(len(obj.data.vertices), dtype=np.uint16)
+            vertex_owners = np.zeros(len(obj.data.vertices), dtype=np.int16)
             bone_index_map = {}
 
             for i, (name, hook_obj) in enumerate(temp_list):
@@ -708,8 +708,8 @@ def collect_bones_and_owners(obj, export_matrix):
 def handle_car_owners(vertices, context):
     """Build a lossless raw-to-compact CAR owner mapping.
 
-    The parsed structured vertex array remains unchanged. In particular, owner
-    zero is not rewritten to compact group zero.
+    The parsed structured vertex array remains unchanged. Signed owner -1 stays
+    unowned, while owner zero remains a valid source group.
     """
     mapping = build_owner_mapping(vertices['owner'])
     if mapping.group_count == 0:

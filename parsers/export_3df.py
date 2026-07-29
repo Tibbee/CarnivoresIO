@@ -25,6 +25,8 @@ def gather_mesh_data(obj, export_matrix, export_textures=False, flip_u=False, fl
         # Bones + owners
         bone_names, bone_positions, bone_parents, vertex_owners = utils.collect_bones_and_owners(obj, export_matrix)
         bone_count = len(bone_names)
+        if bone_count > np.iinfo(np.int16).max + 1:
+            raise ValueError("Bone count exceeds the signed 16-bit owner/parent index range.")
 
         # Texture
         texture_image, texture_height = (None, 0)

@@ -730,6 +730,13 @@ def _get_reconstruction_owner_source(obj):
 
     owner_indices = np.empty(len(mesh.vertices), dtype=np.int32)
     attr.data.foreach_get("value", owner_indices)
+
+    # Meshes imported before signed owner support cached file-level -1 as the
+    # unsigned short value 65535. Correct it in memory without rewriting the
+    # legacy source attribute merely by opening the blend file.
+    if raw_ids_from_metadata(mesh.get(OWNER_MAPPING_PROPERTY)) is None and np.any(owner_indices == 65535):
+        owner_indices[owner_indices == 65535] = -1
+        warn(f"Interpreting legacy unsigned owner 65535 as -1 on '{obj.name}'.")
     return owner_indices
 
 
@@ -744,7 +751,7 @@ def _build_reconstruction_bone_names(obj, group_count, owner_source=None):
 
     if owner_source is not None:
         owner_source = np.asarray(owner_source, dtype=np.int32).reshape(-1)
-        raw_ids = np.unique(owner_source[owner_source > 0])
+        raw_ids = np.unique(owner_source[owner_source >= 0])
         if raw_ids.size == group_count:
             return [f"CarBone_{int(raw_id)}" for raw_id in raw_ids]
         if raw_ids.size > 0:

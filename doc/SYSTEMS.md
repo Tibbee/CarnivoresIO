@@ -2,7 +2,7 @@
 
 Documents the sophisticated algorithms bridging Blender's modern animation system with the Carnivores engine's legacy vertex-animation workflow.
 
-> **Note**: Face flag definitions are in [Reference](reference.md#face-flags-16-bit-bitfield). Engine limits are in [Reference](reference.md#engine-limits--validation-rules).
+> **Note**: Face flag definitions are in [Reference](reference.md#face-flags-16-bit-bitfield). Engine limits are in [Reference](reference.md#structural-validation-and-compatibility-limits).
 
 ---
 
@@ -47,7 +47,7 @@ During `.car` import (`parsers/parse_car.py` → `handle_car_owners`), raw owner
 | `carnivores_owner_source` | `int32` per vertex | Raw, unchanged owner value from the file |
 | `carnivores_owner_mapping` | JSON mesh property | Schema version and ordered raw ID/name for every compact group |
 
-Positive raw owner IDs are sorted and compacted explicitly. Raw owner zero remains unowned and cannot collide with compact group zero. Sparse IDs such as `1, 4, 9` therefore map to compact IDs `0, 1, 2` while preserving their exact source values and `CarBone_1`, `CarBone_4`, and `CarBone_9` names.
+Non-negative raw owner IDs are sorted and compacted explicitly. The engine stores owners as signed 16-bit values: owner `0` is a valid group and negative values (normally `-1`) are unowned. Sparse IDs such as `0, 4, 9` therefore map to compact IDs `0, 1, 2` while preserving their exact source values and `CarBone_0`, `CarBone_4`, and `CarBone_9` names.
 
 The reconstruction operator reads the cached compact attribute directly, bypassing potentially edited vertex groups. "Reset to Imported Owners" resolves names from mapping metadata before considering editable vertex-group order. Older meshes without metadata retain a compatibility fallback based on their source attribute.
 
