@@ -147,10 +147,11 @@ Improve the `.car` rig reconstruction pipeline for faithfulness, stability, and 
 - Manual root override in the UI
 - Persist reconstruction metadata on armature custom properties
 - Reset-to-imported-owners recovery button
+- Signed, lossless raw/compact CAR owner mapping with always-on structural validation
+- Pure mesh-analysis input, characteristic-scale normalization, group PCA/bounds, and topology-island diagnostics
 
 **Planned redesign:**
-- Fix CAR owner validation, raw/compact ID mapping, and reconstruction idempotence first
-- Move inference into a pure, unit-testable NumPy module
+- Build topology edge candidates and deterministic `RigProposal` output on the pure geometry foundation
 - Replace pairwise-distance clustering and centroid-only joints with owner-boundary topology
 - Add scale-invariant hierarchy scoring, component policies, consistent roll, and safe rig lifecycle handling
 - Add proposal preview, manual confirmation, and true dry-run export reconciliation

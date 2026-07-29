@@ -20,7 +20,7 @@ Carnivores `.car` files use **Vertex Animation (Shape Keys)**. While every verte
 
 ### Pipeline Overview
 
-The reconstruction pipeline (`reconstruct_armature` in `utils/animation.py`) proceeds through these stages:
+The currently applied `LEGACY` reconstruction pipeline (`reconstruct_armature` in `utils/animation.py`) proceeds through these stages:
 
 ```
 1. Owner Data Retrieval     → mesh attribute (carnivores_owner_index) or vertex groups
@@ -55,7 +55,21 @@ The reconstruction operator reads the cached compact attribute directly, bypassi
 
 ---
 
-### 2. Pre-Reconstruct Smoothing (Optional)
+### 2. Pure Geometry Analysis Foundation
+
+The opt-in topology reconstruction path is built on Blender-independent structures in `utils/rig_reconstruction.py`. `build_mesh_analysis_input()` validates and copies local-space vertices, triangles, unique edges, compact owners, raw IDs, and stable names. `analyze_rig_geometry()` then computes:
+
+- a robust characteristic scale and owned-vertex median origin for translation- and scale-invariant scoring;
+- nonempty owner-region centroids, medians, bounds, and vertex indices;
+- deterministic PCA axes, values, and principal-direction confidence;
+- connected topology islands within each owner region;
+- warnings for empty, disconnected, or directionally ambiguous groups.
+
+`utils/animation.py::extract_rig_mesh_input()` is the thin Blender adapter. It extracts loop triangles and mesh edges without applying object transforms, so proposal coordinates remain in mesh-local space. `analyze_reconstruction_geometry()` is non-destructive and does not yet replace the applied `LEGACY` hierarchy path; topology adjacency and proposal generation are the next stage.
+
+---
+
+### 3. Pre-Reconstruct Smoothing (Optional)
 
 Before centroid calculation, the user may enable Laplacian vertex weight smoothing via the Rigging Utilities panel. This propagates weights across mesh topology to reduce noise from the original `.car` data without destroying the underlying owner cache.
 
@@ -70,7 +84,7 @@ def smooth_vertex_weights(obj, iterations=3, factor=0.5, joints_only=False):
 
 ---
 
-### 3. Centroid Calculation with Degeneracy Pruning
+### 4. Centroid Calculation with Degeneracy Pruning
 
 Each bone's head is calculated as the mean position of all vertices assigned to that bone index:
 
@@ -84,7 +98,7 @@ $$\text{Centroid}_i = \frac{1}{|V_i|} \sum_{v \in V_i} \text{Position}(v)$$
 
 ---
 
-### 4. Disconnected Cluster Detection
+### 5. Disconnected Cluster Detection
 
 Before hierarchy inference, centroids are clustered spatially to isolate detached groups (tongues, jaw flaps, fins) from the main skeleton.
 
@@ -92,7 +106,7 @@ Before hierarchy inference, centroids are clustered spatially to isolate detache
 
 ```
 1. Compute all pairwise Euclidean distances between centroids
-2. Set threshold = 2.0 × std(pairwise_distances) — adaptive to model scale
+2. Set threshold = 2.0 × median(nearest-neighbor distance) — adaptive to model scale
 3. BFS from each unlabeled centroid, connecting neighbors within threshold
 4. Keep only the largest cluster (by centroid count) for the main bone tree
 5. Excluded groups are stored in reconstruction metadata for diagnostics
@@ -104,7 +118,7 @@ This prevents the MST from forcibly attaching disconnected groups to the nearest
 
 ---
 
-### 5. Mirror Partner Detection
+### 6. Mirror Partner Detection
 
 Identifies pairs of bones that are symmetric mirror partners around the mesh's X-center, using adaptive tolerances based on bounding box dimensions:
 
@@ -119,7 +133,7 @@ A bone is a mirror partner if there exists another centroid with opposite X (wit
 
 ---
 
-### 6. Root Selection (Scored Centrality)
+### 7. Root Selection (Scored Centrality)
 
 Root selection uses a weighted scoring system — lower score = better root candidate:
 
@@ -137,7 +151,7 @@ The winner is `argmin(scores)`. An optional manual root override (`root_override
 
 ---
 
-### 7. MST Hierarchy Inference (Scored Edge MST)
+### 8. MST Hierarchy Inference (Scored Edge MST)
 
 Since the file stores no parent-child information, the system infers hierarchy using a **greedy Prim-like Minimum Spanning Tree** where each candidate edge has a scored cost:
 
@@ -176,7 +190,7 @@ def _compute_reconstruction_body_axis(centroids):
 
 ---
 
-### 8. Semantic Naming (_L / _R Suffixing)
+### 9. Semantic Naming (_L / _R Suffixing)
 
 After MST inference, a post-pass appends bilateral suffixes to generic bone names:
 
@@ -195,7 +209,7 @@ def _apply_semantic_suffixes(obj, bone_names, centroids, center_x):
 
 ---
 
-### 9. Armature Creation with PCA Leaf Tail Placement
+### 10. Armature Creation with PCA Leaf Tail Placement
 
 `create_armature` in `utils/io.py` creates Blender edit-bones with head positions at centroids, then sets tails:
 
@@ -228,7 +242,7 @@ The overall model forward direction is determined by comparing AABB dimensions: 
 
 ---
 
-### 10. Reconstruction Metadata
+### 11. Reconstruction Metadata
 
 After armature creation, diagnostic metadata is stored on the armature object as custom properties:
 

@@ -312,6 +312,8 @@ For old `.blend` files:
 
 ## 7. Phase 2 — Pure Reconstruction Core and Scale Normalization
 
+**Implementation status:** Core mesh input validation, deterministic edge derivation, Blender-local extraction, characteristic-scale normalization, stable group geometry/PCA, topology-island reporting, and synthetic scale tests are implemented. The applied armature path remains `LEGACY`; Phase 3 will consume this analysis to build topology edges and a `RigProposal`.
+
 ### 7.1 Extract mesh analysis input
 
 Build a Blender adapter that supplies:

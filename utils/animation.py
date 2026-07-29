@@ -10,7 +10,12 @@ from .common import timed
 from .io import apply_import_matrix
 from . import io as io_utils
 from .logger import info, debug, warn, error
-from .rig_reconstruction import OWNER_MAPPING_PROPERTY, raw_ids_from_metadata
+from .rig_reconstruction import (
+    OWNER_MAPPING_PROPERTY,
+    analyze_rig_geometry,
+    build_mesh_analysis_input,
+    raw_ids_from_metadata,
+)
 
 
 def sound_datablock_to_factory(sound_datablock):
@@ -862,6 +867,70 @@ def _get_reconstruction_owner_indices(obj):
     owner_indices = np.empty(len(mesh.vertices), dtype=np.int32)
     attr.data.foreach_get("value", owner_indices)
     return owner_indices
+
+
+def extract_rig_mesh_input(obj, owner_indices=None, owner_source=None):
+    """Extract mesh-local reconstruction arrays for the pure analysis core."""
+    if not obj or obj.type != 'MESH':
+        raise ValueError("Rig analysis requires a mesh object.")
+
+    mesh = obj.data
+    vertex_count = len(mesh.vertices)
+    vertices = np.empty(vertex_count * 3, dtype=np.float64)
+    mesh.vertices.foreach_get('co', vertices)
+    vertices = vertices.reshape((-1, 3))
+
+    if owner_indices is None:
+        owner_indices = np.full(vertex_count, -1, dtype=np.int32)
+        for vertex in mesh.vertices:
+            if vertex.groups:
+                owner_indices[vertex.index] = max(
+                    vertex.groups, key=lambda assignment: assignment.weight
+                ).group
+    else:
+        owner_indices = np.asarray(owner_indices, dtype=np.int32).reshape(-1)
+
+    group_count = _get_reconstruction_group_count(obj, owner_indices)
+    raw_ids = raw_ids_from_metadata(mesh.get(OWNER_MAPPING_PROPERTY))
+    if raw_ids is None or raw_ids.size != group_count:
+        if owner_source is not None:
+            source_ids = np.unique(np.asarray(owner_source, dtype=np.int32))
+            source_ids = source_ids[source_ids >= 0]
+            raw_ids = source_ids if source_ids.size == group_count else None
+        if raw_ids is None:
+            raw_ids = np.arange(group_count, dtype=np.int32)
+
+    group_names = _build_reconstruction_bone_names(
+        obj, group_count, owner_source=owner_source
+    )
+
+    mesh.calc_loop_triangles()
+    triangles = np.empty(len(mesh.loop_triangles) * 3, dtype=np.int32)
+    if triangles.size:
+        mesh.loop_triangles.foreach_get('vertices', triangles)
+    triangles = triangles.reshape((-1, 3))
+
+    edges = np.empty(len(mesh.edges) * 2, dtype=np.int32)
+    if edges.size:
+        mesh.edges.foreach_get('vertices', edges)
+    edges = edges.reshape((-1, 2))
+
+    return build_mesh_analysis_input(
+        vertices,
+        owner_indices,
+        raw_ids,
+        triangles=triangles,
+        edges=edges if edges.size else None,
+        group_names=group_names,
+    )
+
+
+def analyze_reconstruction_geometry(obj):
+    """Run Phase 2 geometry analysis without changing the Blender scene."""
+    owners = _get_reconstruction_owner_indices(obj)
+    source = _get_reconstruction_owner_source(obj)
+    mesh_input = extract_rig_mesh_input(obj, owners, source)
+    return analyze_rig_geometry(mesh_input)
 
 
 @timed('calculate_vertex_group_centroids')
