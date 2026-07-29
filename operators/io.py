@@ -7,6 +7,11 @@ from ..utils import io as io_utils
 from ..utils import animation as anim_utils
 from ..utils import common
 from ..utils.logger import info, debug, warn, error
+from ..utils.rig_reconstruction import (
+    OWNER_MAPPING_PROPERTY,
+    build_owner_mapping,
+    owner_mapping_to_metadata,
+)
 from ..parsers.parse_3df import parse_3df
 from ..parsers.parse_car import parse_car
 from ..parsers.export_3df import export_3df
@@ -602,6 +607,8 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                     import_sounds=self.import_sounds
                 )
                 
+                owner_mapping = build_owner_mapping(owner_source)
+
                 debug(f"SOUNDS: {len(sounds)}")
                 for s in sounds:
                     debug(f"  -> {s['name']} {s['data'].size} samples")
@@ -615,11 +622,12 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                 obj.carnivores_reconstruct_smooth_iterations = self.smooth_iterations
                 obj.carnivores_reconstruct_smooth_factor = self.smooth_factor
                 obj.carnivores_reconstruct_smooth_joints_only = self.smooth_joints_only
+                obj.data[OWNER_MAPPING_PROPERTY] = owner_mapping_to_metadata(owner_mapping)
 
                 owner_attr = obj.data.attributes.get("carnivores_owner_index")
                 if owner_attr is None:
                     owner_attr = obj.data.attributes.new(name="carnivores_owner_index", type='INT', domain='POINT')
-                owner_values = np.asarray(vertices['owner'], dtype=np.int32)
+                owner_values = owner_mapping.compact_per_vertex
                 if owner_values.size == len(obj.data.vertices):
                     owner_attr.data.foreach_set("value", owner_values)
                 else:
@@ -658,9 +666,9 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                     if self.create_materials:
                         material = io_utils.create_texture_material(image, model_name)
                         obj.data.materials.append(material)
-                # Vertex groups from owners (dummy bones if needed)
+                # Vertex groups use compact IDs; the structured vertices retain raw CAR owners.
                 if len(bone_names) > 0:
-                    io_utils.create_vertex_groups_from_bones(obj, bone_names, vertices['owner'])
+                    io_utils.create_vertex_groups_from_bones(obj, bone_names, owner_mapping.compact_per_vertex)
                     if self.smooth_weights:
                         io_utils.smooth_vertex_weights(obj, iterations=self.smooth_iterations, factor=self.smooth_factor, joints_only=self.smooth_joints_only)
                 # No hooks/armature for .CAR (owners only; no positions/parents)

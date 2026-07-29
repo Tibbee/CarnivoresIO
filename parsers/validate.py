@@ -84,19 +84,25 @@ def validate_3df_header(header, filepath, context):
             f"File has {file_size - expected_size} extra bytes at end (trailing garbage or corruption?)."
         )
 
-def validate_3df_vertices(vertices, vertex_count, bone_count, context):
+def _validate_vertex_fields(vertices, vertex_count, context):
+    """Validate fields shared by 3DF and CAR vertices without changing owners."""
     if vertices.size != vertex_count:
         raise ValueError(f"Expected {vertex_count} vertices, but got {vertices.size}")
 
     if not np.isfinite(vertices['coord']).all():
         raise ValueError("Vertex coordinates contain NaN or infinite values.")
 
-    # Check hide field (warn if non-zero, as it has no in-game effect)
     if np.any(vertices['hide'] != 0):
         count_hidden = np.count_nonzero(vertices['hide'])
         context.warnings.append(
             f"{count_hidden} vertices have non-zero 'hide' values (no in-game effect, likely editor-specific)."
         )
+
+    return vertices
+
+
+def validate_3df_vertices(vertices, vertex_count, bone_count, context):
+    _validate_vertex_fields(vertices, vertex_count, context)
 
     if bone_count > 0:
         invalid_owner = (vertices['owner'] >= bone_count)
@@ -286,9 +292,30 @@ def validate_car_header(header, filepath, context):
         context.warnings.append(f"File has {file_size - expected_size} extra bytes (animations/sounds/cross-ref; ignored).")
 
 def validate_car_vertices(vertices, vertex_count, context):
-    # Reuse 3DF validation, but bone_count=0 and don't clamp owners (warn only)
-    vertices = validate_3df_vertices(vertices, vertex_count, bone_count=0, context=context)
-    non_zero_owners = np.count_nonzero(vertices['owner'])
-    if non_zero_owners > 0:
-        max_owner = np.max(vertices['owner'])
+    """Validate CAR vertices while preserving raw owner IDs exactly."""
+    _validate_vertex_fields(vertices, vertex_count, context)
+
+    owners = np.asarray(vertices['owner'])
+    positive_owners = np.unique(owners[owners > 0])
+    unowned_count = int(np.count_nonzero(owners == 0))
+
+    if positive_owners.size == 0:
+        context.warnings.append("CAR model has no positive owner IDs; all vertices are unowned.")
+        return vertices
+
+    if unowned_count:
+        context.warnings.append(
+            f"{unowned_count} CAR vertices have owner 0 and will remain unowned during rig reconstruction."
+        )
+
+    expected = np.arange(
+        int(positive_owners[0]),
+        int(positive_owners[-1]) + 1,
+        dtype=positive_owners.dtype,
+    )
+    if not np.array_equal(positive_owners, expected):
+        context.warnings.append(
+            "CAR owner IDs are sparse/noncontiguous; preserving raw IDs and using a compact internal mapping."
+        )
+
     return vertices

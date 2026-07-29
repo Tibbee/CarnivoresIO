@@ -10,6 +10,7 @@ from .common import timed
 from .io import apply_import_matrix
 from . import io as io_utils
 from .logger import info, debug, warn, error
+from .rig_reconstruction import OWNER_MAPPING_PROPERTY, raw_ids_from_metadata
 
 
 def sound_datablock_to_factory(sound_datablock):
@@ -733,20 +734,28 @@ def _get_reconstruction_owner_source(obj):
 
 
 def _build_reconstruction_bone_names(obj, group_count, owner_source=None):
+    """Resolve CAR group names without relying on editable vertex-group order."""
     bone_names = [f"Bone_{i}" for i in range(group_count)]
+
+    if obj and obj.data:
+        raw_ids = raw_ids_from_metadata(obj.data.get(OWNER_MAPPING_PROPERTY))
+        if raw_ids is not None and raw_ids.size == group_count:
+            return [f"CarBone_{int(raw_id)}" for raw_id in raw_ids]
+
+    if owner_source is not None:
+        owner_source = np.asarray(owner_source, dtype=np.int32).reshape(-1)
+        raw_ids = np.unique(owner_source[owner_source > 0])
+        if raw_ids.size == group_count:
+            return [f"CarBone_{int(raw_id)}" for raw_id in raw_ids]
+        if raw_ids.size > 0:
+            # Compatibility for meshes imported with the old min-offset schema.
+            min_non_zero = int(raw_ids[0])
+            return [f"CarBone_{i + min_non_zero}" for i in range(group_count)]
 
     if obj and obj.vertex_groups:
         for vg in obj.vertex_groups:
             if 0 <= vg.index < group_count:
                 bone_names[vg.index] = vg.name
-        return bone_names
-
-    if owner_source is not None:
-        owner_source = np.asarray(owner_source, dtype=np.int32).reshape(-1)
-        non_zero = owner_source[owner_source > 0]
-        if non_zero.size > 0:
-            min_non_zero = int(np.min(non_zero))
-            return [f"CarBone_{i + min_non_zero}" for i in range(group_count)]
 
     return bone_names
 
@@ -1029,11 +1038,15 @@ def select_root_bone(centroids, bone_names=None, group_weights=None, root_overri
                 weight_reward *= np.exp(-x_offsets / width_x)
             scores -= weight_reward
 
-    # 4. Blacklist mirror-partner bones
+    # 4. Blacklist mirror-partner bones when at least one finite candidate remains.
+    unfiltered_scores = scores.copy()
     if mirror_partners:
         for i in range(num_bones):
             if mirror_partners[i]:
                 scores[i] = float('inf')
+        if not np.any(np.isfinite(scores)):
+            warn("Every root candidate was mirror-paired; using the best unfiltered candidate.")
+            scores = unfiltered_scores
 
     return int(np.argmin(scores))
 
@@ -1110,6 +1123,10 @@ def _detect_disconnected_clusters(centroids, threshold_factor=2.0):
     n = positions.shape[0]
     if n < 2:
         return {0: 0}
+    if n == 2:
+        # With only one distance there is no statistical evidence that either
+        # group is detached. Preserve the only possible skeletal connection.
+        return {0: 0, 1: 0}
 
     # Pairwise Euclidean
     diff = positions[:, None, :] - positions[None, :, :]
@@ -1120,9 +1137,12 @@ def _detect_disconnected_clusters(centroids, threshold_factor=2.0):
     if finite.size == 0:
         return {i: 0 for i in range(n)}
 
-    threshold = np.std(finite) * threshold_factor
-    if threshold < 1e-6:
-        threshold = 1e-6
+    # Pairwise standard deviation collapses to zero for regular layouts and for
+    # two-group rigs. Typical nearest-neighbor spacing is a more stable local
+    # scale for this legacy fallback (topology mode will replace this heuristic).
+    nearest_distances = np.min(dists, axis=1)
+    typical_spacing = float(np.median(nearest_distances[np.isfinite(nearest_distances)]))
+    threshold = max(typical_spacing * threshold_factor, 1e-6)
 
     labels = -np.ones(n, dtype=np.int32)
     cluster_id = 0
@@ -1136,7 +1156,7 @@ def _detect_disconnected_clusters(centroids, threshold_factor=2.0):
         while idx < len(queue):
             current = queue[idx]
             idx += 1
-            neighbors = np.where(dists[current] < threshold)[0]
+            neighbors = np.where(dists[current] <= threshold)[0]
             for nb in neighbors:
                 if labels[nb] == -1:
                     labels[nb] = cluster_id
@@ -1327,12 +1347,18 @@ def reconstruct_armature(obj, root_override_idx=-1):
     v_pos = v_pos.reshape((v_count, 3))
 
     if owner_indices is not None:
-        v_owners = np.asarray(owner_indices, dtype=np.int32).copy()
+        source_v_owners = np.asarray(owner_indices, dtype=np.int32).copy()
     else:
-        v_owners = np.full(v_count, -1, dtype=np.int32)
+        source_v_owners = np.full(v_count, -1, dtype=np.int32)
         for v_idx, v in enumerate(mesh.vertices):
             if v.groups:
-                v_owners[v_idx] = max(v.groups, key=lambda g: g.weight).group
+                source_v_owners[v_idx] = max(v.groups, key=lambda g: g.weight).group
+
+    # create_armature receives a pruned local bone list, so owners must use the
+    # same local indices rather than the original compact group IDs.
+    v_owners = np.full(v_count, -1, dtype=np.int32)
+    for local_idx, original_idx in enumerate(valid_indices):
+        v_owners[source_v_owners == original_idx] = local_idx
 
     arm_obj = io_utils.create_armature(
         valid_names,
@@ -1343,6 +1369,9 @@ def reconstruct_armature(obj, root_override_idx=-1):
         verticesTransformedPos=v_pos,
         vertex_owners=v_owners,
     )
+    if arm_obj is None:
+        error("Armature construction failed")
+        return None
 
     # Store reconstruction metadata for diagnostics and round-trip validation
     root_local = next((i for i, p in enumerate(parents) if p == -1), -1)

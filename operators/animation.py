@@ -1051,13 +1051,15 @@ class CARNIVORES_OT_reconstruct_armature(bpy.types.Operator):
         obj = context.active_object
         override_idx = getattr(obj, "carnivores_reconstruct_root_override", -1)
         try:
-            anim_utils.reconstruct_armature(obj, root_override_idx=override_idx)
+            armature = anim_utils.reconstruct_armature(obj, root_override_idx=override_idx)
+            if armature is None:
+                self.report({'ERROR'}, "Reconstruction produced no armature. See the system console for details.")
+                return {'CANCELLED'}
             self.report({'INFO'}, "Armature reconstructed and assigned.")
             return {'FINISHED'}
-        except Exception as e:
-            self.report({'ERROR'}, f"Reconstruction failed: {e}")
-            import traceback
-            traceback.print_exc()
+        except Exception as exc:
+            self.report({'ERROR'}, f"Reconstruction failed: {exc}")
+            error(f"Rig reconstruction failed for '{obj.name}': {exc}")
             return {'CANCELLED'}
 
 class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):

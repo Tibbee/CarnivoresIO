@@ -8,6 +8,7 @@ from ..core.constants import TEXTURE_WIDTH
 from .common import timed
 from .flags import assign_face_flag_int
 from .logger import info, warn, error
+from .rig_reconstruction import build_owner_mapping
 
 @timed("create_mesh_object")
 def create_mesh_object(mesh_name, verticesTransformedPos, faces, object_name, smooth_faces, face_flags):
@@ -705,18 +706,14 @@ def collect_bones_and_owners(obj, export_matrix):
     return bone_names, bone_positions, bone_parents, vertex_owners
 
 def handle_car_owners(vertices, context):
-    owner_source = vertices['owner'].astype(np.int32, copy=True)
-    non_zero_owners = owner_source[owner_source > 0]
-    if non_zero_owners.size == 0:
-        return vertices, np.array([], dtype='U32'), owner_source
+    """Build a lossless raw-to-compact CAR owner mapping.
 
-    min_non_zero = int(np.min(non_zero_owners))
-    shifted_owners = owner_source.copy()
-    shifted_mask = shifted_owners > 0
-    shifted_owners[shifted_mask] -= min_non_zero
-    shifted_owners = np.clip(shifted_owners, 0, None)
-    vertices['owner'] = shifted_owners.astype(vertices['owner'].dtype, copy=False)
+    The parsed structured vertex array remains unchanged. In particular, owner
+    zero is not rewritten to compact group zero.
+    """
+    mapping = build_owner_mapping(vertices['owner'])
+    if mapping.group_count == 0:
+        return vertices, np.array([], dtype='U32'), mapping
 
-    max_owner_adjusted = int(np.max(vertices['owner']))
-    bone_names = np.array([f"CarBone_{i + min_non_zero}" for i in range(max_owner_adjusted + 1)], dtype='U32')
-    return vertices, bone_names, owner_source
+    bone_names = np.asarray(mapping.bone_names, dtype='U32')
+    return vertices, bone_names, mapping

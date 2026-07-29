@@ -39,18 +39,19 @@ The reconstruction pipeline (`reconstruct_armature` in `utils/animation.py`) pro
 
 ### 1. Owner Cache Preservation
 
-During `.car` import (`parsers/parse_car.py` → `handle_car_owners`), raw owner indices are stored as two mesh attributes:
+During `.car` import (`parsers/parse_car.py` → `handle_car_owners`), raw owners and their explicit compact mapping are stored on the mesh:
 
-| Attribute | Type | Content |
+| Data | Type | Content |
 |---|---|---|
-| `carnivores_owner_index` | `int32` per vertex | Zero-indexed, normalized owner ID (min non-zero subtracted) |
-| `carnivores_owner_source` | `int32` per vertex | Raw, unshifted owner index from the file (for diagnostics) |
+| `carnivores_owner_index` | `int32` per vertex | Dense reconstruction group ID `0..G-1`; `-1` means unowned |
+| `carnivores_owner_source` | `int32` per vertex | Raw, unchanged owner value from the file |
+| `carnivores_owner_mapping` | JSON mesh property | Schema version and ordered raw ID/name for every compact group |
 
-The sub-zero normalization subtracts `min_non_zero` from all positive owner values, compacting the bone index space (some `.car` files have a minimum bone ID > 0, leaving an index gap at zero).
+Positive raw owner IDs are sorted and compacted explicitly. Raw owner zero remains unowned and cannot collide with compact group zero. Sparse IDs such as `1, 4, 9` therefore map to compact IDs `0, 1, 2` while preserving their exact source values and `CarBone_1`, `CarBone_4`, and `CarBone_9` names.
 
-The reconstruction operator can read the cached owner attribute directly, bypassing potentially-edited vertex groups entirely. A "reset to imported owners" recovery button rebuilds vertex groups from this cache.
+The reconstruction operator reads the cached compact attribute directly, bypassing potentially edited vertex groups. "Reset to Imported Owners" resolves names from mapping metadata before considering editable vertex-group order. Older meshes without metadata retain a compatibility fallback based on their source attribute.
 
-**Files**: `parsers/parse_car.py`, `utils/animation.py` (`_get_reconstruction_owner_indices`, `_get_reconstruction_owner_source`)
+**Files**: `parsers/parse_car.py`, `utils/rig_reconstruction.py`, `utils/animation.py` (`_get_reconstruction_owner_indices`, `_get_reconstruction_owner_source`)
 
 ---
 
