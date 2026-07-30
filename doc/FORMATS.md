@@ -377,23 +377,49 @@ Complement .map files. Carnivores 1 has 32-byte header; Carnivores 2/Ice Age hav
 
 ## Coordinate & Axis Conversion
 
-### Background
-Carnivores uses left-handed coordinates (X: left, Y: up, -Z: forward). Blender uses right-handed (X: left, Y: forward, Z: up). Without adjustment, exported models appear mirrored in-game.
+### File Space, Engine Runtime Space, and Blender Space
 
-### Solution: X-Axis Flip + Winding Fix
-1. **X-Flip**: Apply `mathutils.Matrix.Scale(-1, 4, (1, 0, 0))` to mirror across YZ plane, swapping chirality.
-   - Controlled by user-toggleable `flip_handedness` BoolProperty in import/export operators.
-2. **Winding Order Fix**:
-   - Blender exports CCW winding (right-handed front-face)
-   - Post-flip, winding becomes CW (invisible front-faces in left-handed engine)
-   - Fix: Reverse vertex index order (`faces_arr['v'][:, ::-1]`) and UV arrays when `flip_handedness` is enabled
+The binary model coordinates and the Carnivores 2 runtime coordinates must be distinguished. The model files use `+Y` as up and `+Z` as model-forward. When Carnivores 2 loads static `.3df`/`.car` vertices, `LoadModel`/`LoadCharacterInfo` convert them to runtime coordinates as follows:
+
+```text
+runtime_x =  2 × file_x
+runtime_y =  2 × file_y
+runtime_z = -2 × file_z
+```
+
+CAR/VTL animation decoding applies the equivalent Z negation and scale (`raw X/Y/Z` become `raw_x/8`, `raw_y/8`, `-raw_z/8`). Therefore, describing the entire pipeline only as a "left-handed Carnivores coordinate system" or an "X flip" is incomplete: the file-to-runtime conversion itself reflects Z.
+
+Blender uses `+Z` as up and the add-on's conventional model-forward direction is `+Y`. With the default operator settings (`axis_forward='Z'`, `axis_up='Y'`, `flip_handedness=True`), the complete file-to-Blender mapping is:
+
+```text
+Blender_x = scale × file_x
+Blender_y = scale × file_z
+Blender_z = scale × file_y
+```
+
+Thus file `+X`, `+Y` (up), and `+Z` (forward) become Blender `+X`, `+Z` (up), and `+Y` (forward), respectively. The default import scale is `0.01`; the default export scale is `100`, so the two transforms are exact inverses.
+
+### Matrix Composition and Winding
+
+Blender's `axis_conversion(from_forward='Z', from_up='Y', to_forward='Y', to_up='Z')` is a proper rotation with determinant `+1`. Its intermediate X direction is negative. The legacy UI option named **Flip Handedness** applies `Matrix.Scale(-1, 4, (1, 0, 0))` after that axis conversion. With the defaults, the two operations combine into the Y/Z swap shown above; the final visible result does **not** negate file X.
+
+The complete default coordinate transform has determinant `-1`, so it reverses triangle orientation. When `flip_handedness` is enabled, the add-on therefore also:
+
+1. reverses each triangle's vertex indices (`faces_arr['v'][:, ::-1]`); and
+2. reverses the U and V corner arrays so every UV remains attached to the same vertex.
+
+This preserves front faces and recalculated normals in Blender and performs the inverse operation on export. The reversal is controlled by the same option because custom axis conversions remain determinant `+1`; the optional reflection is the operation that changes orientation.
 
 ### Implementation References
-- **Operators**: `flip_handedness` prop in `CARNIVORES_OT_import_3df`/`CARNIVORES_OT_export_3df` (operators/), matrix composition in `execute()`
-- **Export**: `parsers/export_3df.py` reverses `v`, `all_us`, `all_vs` arrays after collecting face data
-- **Import**: `parsers/parse_3df.py` reverses arrays in `parse_3df_faces()` for round-trip consistency
+
+- **Operators**: matrix composition and `flip_handedness` are in `operators/io.py`.
+- **Import**: `parsers/parse_3df.py::parse_3df_faces()` reverses face and UV corner arrays; vertices, bones, and CAR animation frames all receive the same import matrix.
+- **Export**: `parsers/export_3df.py` and `parsers/export_car.py` use the inverse matrix and reverse face/UV corners.
+- **Engine reference**: `Hunt/Loaders/ModelLoader.cpp` performs the static vertex `×2, ×2, ×-2` conversion; `Hunt/Game/CharacterMorph.cpp` performs the corresponding animation conversion.
 
 ### Testing Notes
-- **Round-Trip**: Export axis gizmo with `flip_handedness=True` + `axis_forward='-X'` + `axis_up='Z'`, re-import → no mirroring/culling
-- **Edge Cases**: Reversal happens after V-flip (`1.0 - all_vs`) but before optional `flip_u/v`
-- **Performance**: O(n) on faces; there is no fixed current-engine 2048-face limit
+
+- **Default round trip**: import with `flip_handedness=True`, `axis_forward='Z'`, and `axis_up='Y'`, then export with the same settings and reciprocal scales; coordinates return to their original values without mirroring or culling changes.
+- **UV order**: corner reversal happens after the format's V conversion (`1.0 - V`) and before optional `flip_u`/`flip_v` operations.
+- **Performance**: face and UV reversal is O(n); there is no fixed current-engine 2048-face limit.
+- **3DN scope**: the exporter currently applies the same convention, but the Carnivores 2 desktop source does not establish the coordinate convention of the mobile `.3dn` format independently.

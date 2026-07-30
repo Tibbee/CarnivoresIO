@@ -1,4 +1,5 @@
 import bpy
+import json
 import re
 import wave
 import io
@@ -14,6 +15,7 @@ from .rig_reconstruction import (
     OWNER_MAPPING_PROPERTY,
     analyze_rig_geometry,
     build_mesh_analysis_input,
+    build_topology_rig_proposal,
     raw_ids_from_metadata,
 )
 
@@ -1289,6 +1291,197 @@ def _apply_semantic_suffixes(obj, bone_names, centroids, center_x):
     return new_names
 
 
+def _reconstruct_armature_topology(obj, root_override_idx=-1):
+    """Apply a topology proposal while preserving compact/raw owner identities."""
+    owner_indices = _get_reconstruction_owner_indices(obj)
+    owner_source = _get_reconstruction_owner_source(obj)
+    if owner_indices is None and not obj.vertex_groups:
+        error("Object has no vertex groups or owner cache to reconstruct from")
+        return None
+
+    analysis = analyze_rig_geometry(
+        extract_rig_mesh_input(obj, owner_indices, owner_source)
+    )
+    policy = getattr(obj, "carnivores_reconstruct_component_policy", "MULTI_ROOT")
+    proposal = build_topology_rig_proposal(
+        analysis,
+        disconnected_policy=policy,
+        root_override=root_override_idx,
+    )
+    for message in proposal.warnings:
+        warn(f"Topology proposal: {message}")
+
+    skipped = set(proposal.skipped_groups)
+    active_ids = [
+        group.compact_id for group in proposal.groups
+        if group.compact_id not in skipped
+    ]
+    if not active_ids:
+        error("Topology analysis produced no reconstructable owner groups")
+        return None
+
+    local_by_compact = {
+        compact_id: local_id for local_id, compact_id in enumerate(active_ids)
+    }
+    group_by_id = {group.compact_id: group for group in proposal.groups}
+    bone_names = [group_by_id[compact_id].name for compact_id in active_ids]
+
+    # Topology always analyzes canonical imported owners, but its generated
+    # deform groups may be rebuilt and smoothed non-cumulatively on request.
+    smooth_enabled = bool(getattr(
+        obj,
+        "carnivores_reconstruct_smooth_weights",
+        obj.get("carnivores_reconstruct_smooth_weights", False),
+    ))
+    if smooth_enabled or not obj.vertex_groups:
+        for vertex_group in list(obj.vertex_groups):
+            obj.vertex_groups.remove(vertex_group)
+        canonical_names = _build_reconstruction_bone_names(
+            obj, analysis.mesh.raw_by_compact.size, owner_source=owner_source
+        )
+        io_utils.create_vertex_groups_from_bones(obj, canonical_names, analysis.mesh.compact_owners)
+
+    semantic_enabled = bool(getattr(
+        obj,
+        "carnivores_reconstruct_semantic_naming",
+        obj.get("carnivores_reconstruct_semantic_naming", True),
+    ))
+    if semantic_enabled:
+        active_centroids = [group_by_id[compact_id].centroid for compact_id in active_ids]
+        center_x = float(np.median(
+            analysis.mesh.vertices[analysis.mesh.compact_owners >= 0, 0]
+        ))
+        bone_names = _apply_semantic_suffixes(
+            obj, bone_names, active_centroids, center_x
+        )
+
+    if smooth_enabled:
+        io_utils.smooth_vertex_weights(
+            obj,
+            iterations=int(getattr(obj, "carnivores_reconstruct_smooth_iterations", 3)),
+            factor=float(getattr(obj, "carnivores_reconstruct_smooth_factor", 0.5)),
+            joints_only=bool(getattr(obj, "carnivores_reconstruct_smooth_joints_only", True)),
+        )
+
+    bone_heads = [proposal.head_by_group[compact_id] for compact_id in active_ids]
+    bone_tails = [proposal.tail_by_group[compact_id] for compact_id in active_ids]
+    roll_references = [proposal.roll_reference_by_group[compact_id] for compact_id in active_ids]
+    parents = []
+    for compact_id in active_ids:
+        parent_compact = int(proposal.parent_by_group[compact_id])
+        parents.append(local_by_compact.get(parent_compact, -1))
+
+    vertex_count = len(obj.data.vertices)
+    positions = np.empty(vertex_count * 3, dtype=np.float32)
+    obj.data.vertices.foreach_get('co', positions)
+    positions = positions.reshape((-1, 3))
+    if owner_indices is None:
+        source_owners = analysis.mesh.compact_owners
+    else:
+        source_owners = np.asarray(owner_indices, dtype=np.int32)
+    local_owners = np.full(vertex_count, -1, dtype=np.int32)
+    for compact_id, local_id in local_by_compact.items():
+        local_owners[source_owners == compact_id] = local_id
+
+    arm_obj = io_utils.create_armature(
+        bone_names,
+        bone_heads,
+        parents,
+        obj.name,
+        obj.users_collection[0] if obj.users_collection else None,
+        verticesTransformedPos=positions,
+        vertex_owners=local_owners,
+        explicit_tail_positions=bone_tails,
+        roll_reference_vectors=roll_references,
+    )
+    if arm_obj is None:
+        error("Topology armature construction failed")
+        return None
+
+    raw_by_compact = analysis.mesh.raw_by_compact
+    parent_map_raw = {}
+    for compact_id in active_ids:
+        raw_id = int(raw_by_compact[compact_id])
+        parent_compact = int(proposal.parent_by_group[compact_id])
+        parent_map_raw[str(raw_id)] = (
+            int(raw_by_compact[parent_compact]) if parent_compact >= 0 else -1
+        )
+    arm_obj["carnivores_rig_algorithm"] = "TOPOLOGY"
+    arm_obj["carnivores_rig_algorithm_version"] = proposal.algorithm_version
+    arm_obj["carnivores_rig_metadata_version"] = 1
+    arm_obj["carnivores_reconstruct_parent_map"] = json.dumps(
+        parent_map_raw, separators=(",", ":"), sort_keys=True
+    )
+    root_raw_ids = [int(raw_by_compact[root]) for root in proposal.root_groups]
+    arm_obj["carnivores_reconstruct_roots"] = json.dumps(root_raw_ids)
+    if proposal.root_groups:
+        first_root = proposal.root_groups[0]
+        arm_obj["carnivores_reconstruct_root"] = group_by_id[first_root].name
+        arm_obj["carnivores_reconstruct_root_idx"] = int(first_root)
+    arm_obj["carnivores_reconstruct_cluster_count"] = len(proposal.root_groups)
+    arm_obj["carnivores_reconstruct_skipped_count"] = len(proposal.skipped_groups)
+    arm_obj["carnivores_reconstruct_skipped"] = ",".join(
+        str(int(raw_by_compact[group])) for group in proposal.skipped_groups
+        if group < raw_by_compact.size
+    )
+    arm_obj["carnivores_reconstruct_component_policy"] = policy
+    arm_obj["carnivores_reconstruct_smoothing"] = smooth_enabled
+    arm_obj["carnivores_reconstruct_semantic_naming"] = semantic_enabled
+    arm_obj["carnivores_reconstruct_mirror_pair_count"] = int(
+        proposal.settings.get("mirror_pair_count", 0)
+    )
+    arm_obj["carnivores_reconstruct_mirror_pairs"] = json.dumps(
+        proposal.settings.get("mirror_pairs", []), separators=(",", ":")
+    )
+    arm_obj["carnivores_reconstruct_central_group_count"] = int(
+        proposal.settings.get("central_group_count", 0)
+    )
+    arm_obj["carnivores_reconstruct_accepted_edges"] = json.dumps(
+        [
+            [int(raw_by_compact[first]), int(raw_by_compact[second])]
+            for first, second in proposal.accepted_edges
+        ]
+    )
+    accepted_pairs = {tuple(sorted(pair)) for pair in proposal.accepted_edges}
+    accepted_details = []
+    for first, second in sorted(accepted_pairs):
+        matching = [
+            edge for edge in proposal.edge_candidates
+            if (edge.group_a, edge.group_b) == (first, second)
+        ]
+        if not matching:
+            continue
+        edge = min(matching, key=lambda candidate: candidate.total_cost)
+        accepted_details.append(edge)
+    accepted_confidence = [edge.confidence for edge in accepted_details]
+    arm_obj["carnivores_reconstruct_edge_details"] = json.dumps(
+        [
+            {
+                "owners": [int(raw_by_compact[edge.group_a]), int(raw_by_compact[edge.group_b])],
+                "reason": list(edge.reason_codes),
+                "boundary_edges": int(edge.boundary_edge_count),
+                "cost": round(float(edge.total_cost), 6),
+                "confidence": round(float(edge.confidence), 6),
+            }
+            for edge in accepted_details
+        ],
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    arm_obj["carnivores_reconstruct_confidence"] = (
+        float(np.mean(accepted_confidence)) if accepted_confidence else 0.0
+    )
+    arm_obj["carnivores_owner_attribute"] = OWNER_ATTR_NAME if owner_indices is not None else ""
+    arm_obj["carnivores_owner_source_attribute"] = OWNER_SOURCE_ATTR_NAME if owner_source is not None else ""
+
+    io_utils.assign_armature_modifier(obj, arm_obj)
+    info(
+        f"Topology rig reconstruction complete: {len(active_ids)} groups, "
+        f"{len(proposal.accepted_edges)} edges, {len(proposal.root_groups)} roots."
+    )
+    return arm_obj
+
+
 @timed('reconstruct_armature')
 def reconstruct_armature(obj, root_override_idx=-1):
     """
@@ -1297,6 +1490,10 @@ def reconstruct_armature(obj, root_override_idx=-1):
     if not obj or obj.type != 'MESH':
         error("Active object must be a mesh")
         return None
+
+    algorithm = getattr(obj, "carnivores_reconstruct_algorithm", "LEGACY")
+    if algorithm == "TOPOLOGY":
+        return _reconstruct_armature_topology(obj, root_override_idx=root_override_idx)
 
     mesh = obj.data
     owner_indices = _get_reconstruction_owner_indices(obj)
@@ -1367,7 +1564,10 @@ def reconstruct_armature(obj, root_override_idx=-1):
     # Only keep the largest spatial cluster; warn about isolated ones.
     cluster_labels = _detect_disconnected_clusters(valid_centroids)
     unique_clusters = set(cluster_labels.values())
-    if len(unique_clusters) > 1:
+    filter_legacy_clusters = bool(
+        getattr(obj, "carnivores_reconstruct_legacy_filter_clusters", False)
+    )
+    if len(unique_clusters) > 1 and filter_legacy_clusters:
         from collections import Counter
         cluster_counts = Counter(cluster_labels.values())
         main_cluster_id = max(cluster_counts, key=lambda cid: cluster_counts[cid])
@@ -1385,6 +1585,11 @@ def reconstruct_armature(obj, root_override_idx=-1):
         valid_centroids = [v[1] for v in valid_entries]
         valid_weights = [v[2] for v in valid_entries]
         valid_names = [v[3] for v in valid_entries]
+    elif len(unique_clusters) > 1:
+        info(
+            f"Legacy centroid analysis found {len(unique_clusters)} spatial clusters; "
+            "preserving every nonempty group for compatibility with the original reconstruction."
+        )
 
     # 2. Infer Hierarchy (on stable main cluster only)
     local_override_idx = -1

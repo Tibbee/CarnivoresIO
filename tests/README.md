@@ -1,6 +1,6 @@
 # Tests
 
-Owner-mapping, validation, pure rig-geometry, and Blender-adapter tests run with Blender's bundled Python because the project depends on Blender and its NumPy installation.
+Owner-mapping, validation, pure rig-geometry/hierarchy, and Blender-adapter tests run with Blender's bundled Python because the project depends on Blender and its NumPy installation.
 
 From the repository root in Git Bash:
 

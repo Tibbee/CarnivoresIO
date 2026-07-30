@@ -205,8 +205,9 @@ def _calculate_pca_direction(verts, fallback_dir):
         return fallback_dir
 
 @timed("create_armature")
-def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name, target_coll, 
-                    verticesTransformedPos=None, vertex_owners=None):
+def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name, target_coll,
+                    verticesTransformedPos=None, vertex_owners=None,
+                    explicit_tail_positions=None, roll_reference_vectors=None):
     arm_data = bpy.data.armatures.new(f"{object_name}_Armature")
     arm_obj = bpy.data.objects.new(f"{object_name}_ArmatureObj", arm_data)
     coll = target_coll or bpy.context.scene.collection
@@ -273,6 +274,12 @@ def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name
     min_len = 0.01 # Safety to prevent mesh corruption
 
     # 5. Set Parents and Calculate Tails
+    explicit_tails = None
+    if explicit_tail_positions is not None:
+        candidate_tails = np.asarray(explicit_tail_positions, dtype=np.float64)
+        if candidate_tails.shape == (len(bone_names), 3) and np.isfinite(candidate_tails).all():
+            explicit_tails = candidate_tails
+
     for i, bone in enumerate(bone_list):
         parent_idx = parent_indices[i]
         if parent_idx != -1:
@@ -281,7 +288,28 @@ def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name
         children = children_map[i]
         my_head = mathutils.Vector(bone.head)
         used_pca = False  # Tracks whether we used a local PCA-derived direction
-        
+
+        # Topology proposals provide deterministic heads and tails directly.
+        if explicit_tails is not None:
+            target_tail = mathutils.Vector(explicit_tails[i])
+            direction = target_tail - my_head
+            if direction.length <= min_len:
+                direction = model_forward * min_len
+                target_tail = my_head + direction
+            bone.tail = target_tail
+            bone.use_connect = False
+            if parent_idx != -1:
+                parent_tail = mathutils.Vector(explicit_tails[parent_idx])
+                bone.use_connect = (parent_tail - my_head).length <= 1e-5
+            if roll_reference_vectors is not None and i < len(roll_reference_vectors):
+                reference = mathutils.Vector(roll_reference_vectors[i])
+                if reference.length > 1e-8:
+                    try:
+                        bone.align_roll(reference)
+                    except ValueError:
+                        pass
+            continue
+
         # Priority 1: Parent-Child Chain (Standard)
         if children:
             child_heads = [mathutils.Vector(bonesTransformedPos[c]) for c in children]

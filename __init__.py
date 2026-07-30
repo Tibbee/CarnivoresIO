@@ -97,6 +97,26 @@ def register():
     )
     
     bpy.types.Object.carnivores_active_nla_index = bpy.props.IntProperty(name="Active NLA Track Index", default=0)
+    bpy.types.Object.carnivores_reconstruct_algorithm = bpy.props.EnumProperty(
+        name="Reconstruction Algorithm",
+        description="Choose the stable legacy autorig or the experimental topology-first proposal",
+        items=[
+            ('LEGACY', "Legacy", "Use centroid clustering and scored MST reconstruction"),
+            ('TOPOLOGY', "Topology (Experimental)", "Use owner boundaries and deterministic topology analysis"),
+        ],
+        default='LEGACY',
+    )
+    bpy.types.Object.carnivores_reconstruct_component_policy = bpy.props.EnumProperty(
+        name="Disconnected Components",
+        description="Choose how topology reconstruction handles owner regions without boundary connections",
+        items=[
+            ('MULTI_ROOT', "Multiple Roots", "Preserve every component as a separate root"),
+            ('ATTACH_NEAREST', "Attach Nearest", "Connect components using low-confidence nearest-region edges"),
+            ('SKIP', "Skip Detached", "Rig only the component with the most owned vertices"),
+            ('HOOKS', "Reserve for Hooks", "Skip detached groups and report them for a future hook workflow"),
+        ],
+        default='MULTI_ROOT',
+    )
     bpy.types.Object.carnivores_reconstruct_root_override = bpy.props.IntProperty(
         name="Root Override Index",
         description="Manually specify the bone index to use as root (set to -1 for auto)",
@@ -108,14 +128,19 @@ def register():
         description="Automatically append _L or _R to generic bone names and vertex groups based on symmetry plane alignment",
         default=True,
     )
+    bpy.types.Object.carnivores_reconstruct_legacy_filter_clusters = bpy.props.BoolProperty(
+        name="Filter Detached Centroid Clusters",
+        description="Legacy compatibility option that discards every centroid cluster except the one with the most groups; may remove valid limb chains",
+        default=False,
+    )
     bpy.types.Object.carnivores_reconstruct_smooth_weights = bpy.props.BoolProperty(
         name="Smooth Weights",
-        description="Apply weight smoothing before rig reconstruction",
+        description="Generate smoothed deform weights from imported owners; Legacy also uses them for centroid inference while Topology keeps canonical boundaries for structure",
         default=False,
     )
     bpy.types.Object.carnivores_reconstruct_smooth_iterations = bpy.props.IntProperty(
         name="Smoothing Iterations",
-        description="Number of smoothing passes to apply before reconstruction",
+        description="Number of generated deform-weight smoothing passes",
         default=3,
         min=1,
         max=10,
@@ -129,7 +154,7 @@ def register():
     )
     bpy.types.Object.carnivores_reconstruct_smooth_joints_only = bpy.props.BoolProperty(
         name="Smooth Joints Only",
-        description="Only smooth joint areas before reconstruction",
+        description="Only smooth vertices near owner-group boundaries",
         default=True,
     )
     
@@ -213,8 +238,11 @@ def unregister():
         
     del bpy.types.Object.carnivores_anim_source
     del bpy.types.Object.carnivores_active_nla_index
+    del bpy.types.Object.carnivores_reconstruct_algorithm
+    del bpy.types.Object.carnivores_reconstruct_component_policy
     del bpy.types.Object.carnivores_reconstruct_root_override
     del bpy.types.Object.carnivores_reconstruct_semantic_naming
+    del bpy.types.Object.carnivores_reconstruct_legacy_filter_clusters
     del bpy.types.Object.carnivores_reconstruct_smooth_weights
     del bpy.types.Object.carnivores_reconstruct_smooth_iterations
     del bpy.types.Object.carnivores_reconstruct_smooth_factor

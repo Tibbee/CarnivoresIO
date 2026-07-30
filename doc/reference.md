@@ -49,10 +49,12 @@ Face flags are stored as a face-domain `INT` attribute named `3df_flags` on Blen
 
 ## Coordinate System Summary
 
-- **Carnivores**: Left-handed (X: left, Y: up, -Z: forward)
-- **Blender**: Right-handed (X: left, Y: forward, Z: up)
+- **Carnivores model files**: `+Y` is up and `+Z` is model-forward.
+- **Carnivores 2 runtime**: loading reflects file Z (`x, y, z` → `2x, 2y, -2z`).
+- **Blender/add-on convention**: `+Z` is up and `+Y` is model-forward.
+- **Default file-to-Blender mapping**: `(x, y, z)` → `(x, z, y)`, followed by the import scale.
 
-Full conversion logic (X-flip, winding order fixes) is documented in [Formats: Coordinate & Axis Conversion](formats.md#coordinate--axis-conversion).
+Because the default mapping has determinant `-1`, face and UV corner order is reversed with it. Full matrix composition, engine-source evidence, winding handling, and reciprocal export logic are documented in [Formats: Coordinate & Axis Conversion](formats.md#coordinate--axis-conversion).
 
 ## Validation Warnings vs. Errors
 

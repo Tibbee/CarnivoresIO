@@ -12,6 +12,8 @@ Consolidated technical documentation for the CarnivoresIO Blender add-on, coveri
 | [Reference](reference.md) | Canonical constants, face flag definitions, engine limits, validation rules |
 | [Improvements](IMPROVEMENTS.md) | Implementation roadmap for audio system correctness, lifecycle, and deferred workflow enhancements |
 | [Rig Reconstruction Plan](RIG_RECONSTRUCTION_PLAN.md) | Staged implementation plan for owner correctness, topology-aware rigs, previews, reconciliation, and motion-assisted reconstruction |
+| [Rig Reconstruction Handoff](RIG_RECONSTRUCTION_HANDOFF.md) | Copyable fresh-session prompt, current uncommitted state, latest `dilo2b` findings, and immediate next actions |
+| [Rig Test Checklist](RIG_TEST_CHECKLIST.md) | Manual smoke tests, component-policy checks, known experimental limitations, and reporting guidance |
 | [Performance Analysis](PERFORMANCE_ANALYSIS.md) | Top-down cost analysis of every function, operator, and subsystem by execution frequency |
 | [Audio Test Checklist](AUDIO_TEST_CHECKLIST.md) | Manual verification checklist for audio import/export and focused playback testing |
 

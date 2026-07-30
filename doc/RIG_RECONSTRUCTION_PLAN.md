@@ -312,7 +312,7 @@ For old `.blend` files:
 
 ## 7. Phase 2 — Pure Reconstruction Core and Scale Normalization
 
-**Implementation status:** Core mesh input validation, deterministic edge derivation, Blender-local extraction, characteristic-scale normalization, stable group geometry/PCA, topology-island reporting, and synthetic scale tests are implemented. The applied armature path remains `LEGACY`; Phase 3 will consume this analysis to build topology edges and a `RigProposal`.
+**Implementation status:** Core mesh input validation, deterministic edge derivation, Blender-local extraction, characteristic-scale normalization, stable group geometry/PCA, topology-island reporting, and synthetic scale tests are implemented. Both `LEGACY` and the experimental `TOPOLOGY` adapter now consume the canonical owner analysis; Legacy remains the default.
 
 ### 7.1 Extract mesh analysis input
 
@@ -366,6 +366,8 @@ Move or wrap the current centroid, mirror, root, cluster, and MST helpers so the
 ---
 
 ## 8. Phase 3 — Topology-Aware Static Reconstruction
+
+**Implementation status:** The experimental `TOPOLOGY` path builds cross-owner boundary candidates, robust boundary joints, topology components, and explicit `MULTI_ROOT`, `ATTACH_NEAREST`, `SKIP`, and reserved `HOOKS` policies. Topology algorithm v2 is anatomy-constrained: deterministic bilateral pairing separates lateral components from a proximity-completed central backbone, each lateral component attaches once, and paired components prefer the same central owner. The pure `RigProposal` supplies explicit heads, tails, and roll references to Blender. Debug metadata records classification and accepted-edge evidence. Manual `dilo2b` testing confirmed seven correct mirror pairs, independent forelimbs, symmetric rear-limb attachment through `CarBone_30`, restoration of the `CarBone_30–35` tail chain, and one low-confidence `CarBone_9–10` attachment. Pose checks and automatic-root pivot evaluation remain pending. General body-axis inference and transactional lifecycle remain for later work.
 
 ### 8.1 Build the owner-region adjacency graph
 
@@ -484,6 +486,8 @@ Replace the raw integer UI override with a group selector showing source name an
 ---
 
 ## 9. Phase 4 — Non-Destructive Weight Generation
+
+**Implementation status:** Topology now rebuilds one-hot deform vertex groups from the canonical owner cache whenever smoothing is enabled, applies the existing Laplacian smoother to that fresh output, and leaves source owner attributes and hierarchy evidence unchanged. This makes repeated Topology smoothing non-cumulative. Legacy retains its compatibility behavior of using smoothed groups for centroid inference. A future pure NumPy weight generator can replace the current Blender/BMesh adapter.
 
 ### 9.1 Separate source owners from deform weights
 

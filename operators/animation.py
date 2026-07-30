@@ -1097,7 +1097,12 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
             else:
                 lines.append(f"{attr_name}: missing")
         lines.append(
-            f"Pre-Reconstruct Smoothing: enabled={getattr(obj, 'carnivores_reconstruct_smooth_weights', False)} "
+            f"Algorithm: {getattr(obj, 'carnivores_reconstruct_algorithm', 'LEGACY')} | "
+            f"Components: {getattr(obj, 'carnivores_reconstruct_component_policy', 'MULTI_ROOT')} | "
+            f"Legacy Cluster Filter: {getattr(obj, 'carnivores_reconstruct_legacy_filter_clusters', False)}"
+        )
+        lines.append(
+            f"Weight Smoothing: enabled={getattr(obj, 'carnivores_reconstruct_smooth_weights', False)} "
             f"iters={getattr(obj, 'carnivores_reconstruct_smooth_iterations', 3)} "
             f"factor={getattr(obj, 'carnivores_reconstruct_smooth_factor', 0.5):.3f} "
             f"joints_only={getattr(obj, 'carnivores_reconstruct_smooth_joints_only', True)}"
@@ -1136,12 +1141,46 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
             skipped_str = arm.get("carnivores_reconstruct_skipped", "")
             cluster_count = arm.get("carnivores_reconstruct_cluster_count", 1)
             parent_map = arm.get("carnivores_reconstruct_parent_map", "")
+            algorithm = arm.get("carnivores_rig_algorithm", "LEGACY")
+            confidence = arm.get("carnivores_reconstruct_confidence", None)
+            edge_details = arm.get("carnivores_reconstruct_edge_details", "")
+            algorithm_version = arm.get("carnivores_rig_algorithm_version", None)
+            lines.append(
+                f"Algorithm: {algorithm}"
+                + (f" v{int(algorithm_version)}" if algorithm_version is not None else "")
+            )
+            if algorithm == "TOPOLOGY":
+                lines.append(
+                    f"Anatomy Classification: "
+                    f"{int(arm.get('carnivores_reconstruct_central_group_count', 0))} central groups, "
+                    f"{int(arm.get('carnivores_reconstruct_mirror_pair_count', 0))} mirror pairs"
+                )
+                lines.append(
+                    f"Mirror Pairs: {arm.get('carnivores_reconstruct_mirror_pairs', '[]')}"
+                )
+            if confidence is not None:
+                lines.append(f"Mean Edge Confidence: {float(confidence):.3f}")
             lines.append(f"Selected Root: {root_name} (orig idx: {root_idx})")
             lines.append(f"Clusters Detected: {cluster_count}")
             if skipped_str:
                 lines.append(f"Skipped Groups: {skipped_str}")
             else:
                 lines.append("Skipped Groups: none")
+            if edge_details:
+                try:
+                    import json
+                    decoded_edges = json.loads(edge_details)
+                    lines.append(f"Accepted Edges ({len(decoded_edges)}):")
+                    for edge in decoded_edges:
+                        owners = edge.get("owners", ["?", "?"])
+                        reason = "+".join(edge.get("reason", []))
+                        lines.append(
+                            f"  [{owners[0]}] -- [{owners[1]}] | {reason} | "
+                            f"boundary={edge.get('boundary_edges', 0)} | "
+                            f"confidence={float(edge.get('confidence', 0.0)):.3f}"
+                        )
+                except (TypeError, ValueError):
+                    lines.append("Accepted Edges: (could not decode)")
             # Decode and display parent map
             try:
                 import ast
@@ -1178,10 +1217,21 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
                     mismatch_count += 1
             if mismatch_count > 0:
                 pct = (mismatch_count / max(n, 1)) * 100.0
-                lines.append(f"⚠️  {mismatch_count} vertices ({pct:.1f}%) diverge from imported owners!")
-                lines.append("   Tip: Use 'Reset to Imported Owners' to restore them.")
+                if arm and bool(arm.get("carnivores_reconstruct_smoothing", False)):
+                    lines.append(
+                        f"ℹ️  Generated smoothed deform weights change the dominant group on "
+                        f"{mismatch_count} vertices ({pct:.1f}%)."
+                    )
+                    lines.append("   Canonical imported owner attributes remain unchanged.")
+                else:
+                    lines.append(f"⚠️  {mismatch_count} vertices ({pct:.1f}%) diverge from imported owners!")
+                    lines.append("   Tip: Use 'Reset to Imported Owners' to restore them.")
             else:
-                lines.append("✅ Vertex groups match imported owner cache.")
+                if arm and bool(arm.get("carnivores_reconstruct_smoothing", False)):
+                    lines.append("✅ Smoothed deform weights retain imported owners as dominant groups.")
+                    lines.append("   Canonical imported owner attributes remain unchanged.")
+                else:
+                    lines.append("✅ Vertex groups match imported owner cache.")
         else:
             lines.append("\nDIVERGENCE CHECK: No owner cache or no VGs")
 
@@ -1282,18 +1332,25 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
             box.label(text="Rigging Utilities:", icon='ARMATURE_DATA')
 
             if obj and obj.type == 'MESH':
-                box.label(text="Pre-Reconstruct Smoothing:", icon='MOD_SMOOTH')
+                box.prop(obj, "carnivores_reconstruct_algorithm")
+                if obj.carnivores_reconstruct_algorithm == 'TOPOLOGY':
+                    box.prop(obj, "carnivores_reconstruct_component_policy")
+                    box.label(text="Structure uses canonical owner boundaries", icon='MESH_DATA')
+                else:
+                    box.prop(obj, "carnivores_reconstruct_legacy_filter_clusters")
+
+                box.label(text="Generated Deform Weights:", icon='MOD_SMOOTH')
                 box.prop(obj, "carnivores_reconstruct_smooth_weights")
                 if obj.carnivores_reconstruct_smooth_weights:
                     sub = box.column(align=True)
                     sub.prop(obj, "carnivores_reconstruct_smooth_iterations")
                     sub.prop(obj, "carnivores_reconstruct_smooth_factor")
                     sub.prop(obj, "carnivores_reconstruct_smooth_joints_only")
-                
+                box.prop(obj, "carnivores_reconstruct_semantic_naming")
+
                 # Expose manual root override index
                 box.separator()
                 box.prop(obj, "carnivores_reconstruct_root_override")
-                box.prop(obj, "carnivores_reconstruct_semantic_naming")
                 box.separator()
 
             col = box.column(align=True)

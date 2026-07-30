@@ -139,7 +139,7 @@ Improve the `.car` rig reconstruction pipeline for faithfulness, stability, and 
 **Current baseline:**
 - Preserve imported owner indices on the mesh for reconstruction use
 - Degeneracy pruning (empty groups → filtered out, not mesh_mean)
-- Disconnected cluster detection via BFS spatial clustering
+- Diagnostic disconnected-cluster detection via BFS; destructive largest-cluster filtering is an explicit Legacy option and disabled by default
 - Scored root selection with symmetry blacklisting and X-offset penalties
 - Richer MST edge scoring (centrality + body-axis + weight bias)
 - PCA-derived leaf tail placement via SVD on owner-group vertices
@@ -149,15 +149,16 @@ Improve the `.car` rig reconstruction pipeline for faithfulness, stability, and 
 - Reset-to-imported-owners recovery button
 - Signed, lossless raw/compact CAR owner mapping with always-on structural validation
 - Pure mesh-analysis input, characteristic-scale normalization, group PCA/bounds, and topology-island diagnostics
+- Experimental anatomy-constrained topology graph with robust boundary joints, bilateral limb isolation, a proximity-completed central backbone, deterministic `RigProposal`, explicit tails/roll references, and disconnected-component policies
 
 **Planned redesign:**
-- Build topology edge candidates and deterministic `RigProposal` output on the pure geometry foundation
-- Replace pairwise-distance clustering and centroid-only joints with owner-boundary topology
+- Add scored body/symmetry axes and refine topology root/hierarchy costs against real assets
+- Replace legacy cumulative smoothing with idempotent generated deform weights
 - Add scale-invariant hierarchy scoring, component policies, consistent roll, and safe rig lifecycle handling
 - Add proposal preview, manual confirmation, and true dry-run export reconciliation
 - Add optional animation-assisted rigid-transform and shared-pivot fitting, followed separately by experimental skeletal animation conversion
 
-Milestones, acceptance criteria, tests, risks, and file touch points are maintained in [Rig Reconstruction Implementation Plan](RIG_RECONSTRUCTION_PLAN.md).
+Milestones, acceptance criteria, tests, risks, and file touch points are maintained in [Rig Reconstruction Implementation Plan](RIG_RECONSTRUCTION_PLAN.md). The current uncommitted implementation state and copyable fresh-session prompt are maintained in [Rig Reconstruction Session Handoff](RIG_RECONSTRUCTION_HANDOFF.md).
 
 ### Phase3: Codebase Architecture
 #### 3.1 Refactor Operators into Modular Files

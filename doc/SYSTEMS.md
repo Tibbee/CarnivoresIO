@@ -65,13 +65,27 @@ The opt-in topology reconstruction path is built on Blender-independent structur
 - connected topology islands within each owner region;
 - warnings for empty, disconnected, or directionally ambiguous groups.
 
-`utils/animation.py::extract_rig_mesh_input()` is the thin Blender adapter. It extracts loop triangles and mesh edges without applying object transforms, so proposal coordinates remain in mesh-local space. `analyze_reconstruction_geometry()` is non-destructive and does not yet replace the applied `LEGACY` hierarchy path; topology adjacency and proposal generation are the next stage.
+`utils/animation.py::extract_rig_mesh_input()` is the thin Blender adapter. It extracts loop triangles and mesh edges without applying object transforms, so proposal coordinates remain in mesh-local space.
+
+The experimental `TOPOLOGY` algorithm builds a `RigProposal` from this analysis:
+
+1. Cross-owner mesh edges become primary candidates with robust median boundary joints.
+2. Deterministic mirror pairing separates central owner regions from bilateral lateral regions.
+3. A central backbone is built first. Low-confidence nearest-region candidates fill central gaps where surface ownership routes through a limb instead of exposing a direct body boundary.
+4. Each same-side lateral component is built internally and attached to the backbone exactly once. Mirrored components prefer a shared central attachment, preventing limbs from becoming bridges between torso regions or opposite limbs.
+5. Original topology components remain explicit and are handled by `MULTI_ROOT`, `ATTACH_NEAREST`, `SKIP`, or reserved `HOOKS` policy.
+6. Trees are oriented from central root candidates, and explicit proposal heads, tails, and roll references are passed to Blender without Legacy child-head averaging.
+7. Compact IDs are mapped explicitly into armature-local indices.
+8. Optional deform smoothing rebuilds one-hot vertex groups from the canonical owner cache before each run, preventing cumulative Topology smoothing; hierarchy analysis still uses unchanged canonical owners.
+9. Optional semantic naming renames generated bones and matching vertex groups together with `_L`/`_R` suffixes.
+
+`LEGACY` remains the default. Select **Topology (Experimental)** in Rigging Utilities for manual testing. Generated armatures record algorithm version, accepted raw-owner edges with reasons and confidence, roots, skipped groups, component policy, parent map, smoothing state, and semantic-naming state.
 
 ---
 
-### 3. Pre-Reconstruct Smoothing (Optional)
+### 3. Generated Weight Smoothing (Optional)
 
-Before centroid calculation, the user may enable Laplacian vertex weight smoothing via the Rigging Utilities panel. This propagates weights across mesh topology to reduce noise from the original `.car` data without destroying the underlying owner cache.
+The user may enable Laplacian deform-weight smoothing via Rigging Utilities. This propagates weights across mesh topology without modifying the owner attributes. Legacy uses the resulting groups for centroid inference for compatibility. Topology first analyzes canonical owner boundaries, then rebuilds one-hot groups from the cache and smooths only the generated deformation output.
 
 ```python
 def smooth_vertex_weights(obj, iterations=3, factor=0.5, joints_only=False):
@@ -108,11 +122,11 @@ Before hierarchy inference, centroids are clustered spatially to isolate detache
 1. Compute all pairwise Euclidean distances between centroids
 2. Set threshold = 2.0 × median(nearest-neighbor distance) — adaptive to model scale
 3. BFS from each unlabeled centroid, connecting neighbors within threshold
-4. Keep only the largest cluster (by centroid count) for the main bone tree
-5. Excluded groups are stored in reconstruction metadata for diagnostics
+4. Report the number of detected clusters but preserve all nonempty groups by default
+5. If **Filter Detached Centroid Clusters** is explicitly enabled, keep only the largest cluster by group count and report excluded groups
 ```
 
-This prevents the MST from forcibly attaching disconnected groups to the nearest spine bone, which would produce a wildly incorrect hierarchy.
+Preserving all groups matches the original Legacy behavior and avoids deleting valid distal limb chains, as occurred when a global centroid threshold split a connected anatomical limb. The optional filter remains available for assets where forcing detached accessories into the MST is less desirable.
 
 **File**: `utils/animation.py` (`_detect_disconnected_clusters`)
 
@@ -192,7 +206,7 @@ def _compute_reconstruction_body_axis(centroids):
 
 ### 9. Semantic Naming (_L / _R Suffixing)
 
-After MST inference, a post-pass appends bilateral suffixes to generic bone names:
+After hierarchy inference, a post-pass shared by Legacy and Topology appends bilateral suffixes to generic bone names:
 
 ```python
 def _apply_semantic_suffixes(obj, bone_names, centroids, center_x):
@@ -203,7 +217,8 @@ def _apply_semantic_suffixes(obj, bone_names, centroids, center_x):
 
 - Only renames names that don't already end in `_L`, `_R`, `.L`, `.R`, ` left`, ` right`
 - **Vertex groups on the mesh are renamed in sync** to preserve skinning weights
-- Gated by a panel toggle: `Auto-detect Left/Right` (on by default)
+- Gated by **Semantic L/R Suffixes** (on by default)
+- Topology determines structure from canonical owner IDs before renaming, so display/deform names cannot change the proposal
 
 **File**: `utils/animation.py` (`_apply_semantic_suffixes`)
 
@@ -264,7 +279,7 @@ After armature creation, diagnostic metadata is stored on the armature object as
 
 1. Import `.car` file
 2. Open `Carnivores` tab in N-Panel → `Carnivores Animation`
-3. Optionally enable **Pre-Reconstruct Smoothing** in the Rigging Utilities box and tune the parameters
+3. Optionally enable **Smooth Weights** in Rigging Utilities and tune the generated deform-weight parameters
 4. Optionally set a **Manual Root Override** (by index) for asymmetric creatures
 5. Ensure **Auto-detect Left/Right** is enabled for semantic naming
 6. Click **"Reconstruct Rig from Owners"**

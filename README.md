@@ -45,7 +45,7 @@ Enable **Check for updates on startup** under the Extensions tab to sync automat
 | `.3dn` | No | Yes | Static models for mobile/HD Carnivores titles |
 | `.vtl` | No | Yes | Standalone vertex animation export |
 
-All binary I/O uses NumPy for performance. Textures use the ARGB1555 format at a fixed 256-pixel width. Configurable axis conversion and a **Flip Handedness** option handle the engine's left-handed coordinate system.
+All binary I/O uses NumPy for performance. Textures use the ARGB1555 format at a fixed 256-pixel width. Configurable axis conversion and the legacy-named **Flip Handedness** option convert Carnivores model-file space (`+Y` up, `+Z` forward) to Blender space (`+Z` up, `+Y` forward). With the defaults, `(x, y, z)` maps to `(x, z, y)` and triangle/UV corner order is reversed to preserve face orientation.
 
 ### Skeleton Reconstruction
 
@@ -100,7 +100,7 @@ Tools are accessed through two locations in Blender:
 1. Open **File > Import > Carnivores Engine (.3df, .car) > Static Model (.3df)**.
 2. Select one or more `.3df` files and configure:
    - **Scale** -- import scale factor (default 0.01).
-   - **Flip Handedness** -- negate X-axis to match the engine's left-handed system (enabled by default).
+   - **Flip Handedness** -- enable the orientation-changing part of the file-to-Blender conversion and its matching face/UV corner reversal (enabled by default). Despite the legacy name, the complete default mapping is `(x, y, z)` → `(x, z, y)`, not a visible X negation.
    - **Import Textures / Create Materials** -- loads the embedded ARGB1555 texture as a Blender image and assigns a material.
    - **Bone Import Type** -- None, Armature, or Hooks. Hooks (default) create vertex groups with Hook modifiers for each bone. Armature builds an Armature object with proper bone positions and parent-child relationships from the file's bone data.
    - **Smooth Weights** -- apply Laplacian smoothing to vertex weights (configurable iterations, factor, and joints-only mode).
