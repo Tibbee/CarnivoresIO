@@ -310,7 +310,6 @@ def gather_vtl_animation(obj, export_matrix, vertex_count):
 
 
 def export_vtl(filepath, obj, export_matrix):
-    print(f"--- Starting .vtl export to: {filepath} ---")
     debug(f"--- Starting .vtl export to: {filepath} ---")
     
     start_time = time.perf_counter()

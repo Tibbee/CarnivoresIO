@@ -4,11 +4,36 @@ import numpy as np
 from ..utils import flags as flag_utils
 from ..core.constants import FACE_FLAG_OPTIONS
 
+
+def _poll_message(cls, message):
+    """Set a Blender operator poll explanation when available."""
+    try:
+        cls.poll_message_set(message)
+    except (AttributeError, TypeError, RuntimeError):
+        pass
+    return False
+
+
+def _active_mesh(context):
+    obj = getattr(context, "active_object", None)
+    return obj if obj and obj.type == 'MESH' else None
+
+
 class CARNIVORES_OT_create_3df_flags(bpy.types.Operator):
     """Create a face-domain integer attribute named '3df_flags' (initialized to 0)"""
     bl_idname = "carnivores.create_3df_flags"
     bl_label = "Create 3df_flags Attribute"
     bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = _active_mesh(context)
+        if not obj:
+            return _poll_message(cls, "Select a mesh object before creating face flags.")
+        attr = obj.data.attributes.get("3df_flags")
+        if attr is not None:
+            return _poll_message(cls, "The active mesh already has a '3df_flags' attribute.")
+        return True
 
     def execute(self, context):
         obj = context.active_object
@@ -104,6 +129,16 @@ class CARNIVORES_OT_visualize_flags(bpy.types.Operator):
     bl_idname = "carnivores.visualize_flags"
     bl_label = "Visualize Flags"
     bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = _active_mesh(context)
+        if not obj:
+            return _poll_message(cls, "Select a mesh with 3DF flags to visualize them.")
+        attr = obj.data.attributes.get("3df_flags")
+        if not attr or attr.domain != 'FACE' or attr.data_type != 'INT':
+            return _poll_message(cls, "The active mesh needs a valid FACE-domain INT '3df_flags' attribute.")
+        return True
     
     def execute(self, context):
         obj = context.active_object
@@ -123,6 +158,24 @@ class CARNIVORES_OT_select_by_flags(bpy.types.Operator):
     bl_idname = "carnivores.select_by_flags"
     bl_label = "Select Faces by 3DF Flags"
     bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = _active_mesh(context)
+        if not obj:
+            return _poll_message(cls, "Select a mesh with 3DF flags to select faces.")
+        attr = obj.data.attributes.get("3df_flags")
+        if not attr or attr.domain != 'FACE' or attr.data_type != 'INT':
+            return _poll_message(cls, "The active mesh needs a valid FACE-domain INT '3df_flags' attribute.")
+        scene = getattr(context, "scene", None)
+        if scene is not None:
+            has_selected_flags = any(
+                getattr(scene, f"cf_flag_{i}", False)
+                for i, _ in enumerate(FACE_FLAG_OPTIONS)
+            )
+            if not has_selected_flags:
+                return _poll_message(cls, "Select at least one face flag in the Selection Tools panel.")
+        return True
 
     def execute(self, context):
         scene = context.scene
@@ -249,6 +302,16 @@ class CARNIVORES_OT_modify_3df_flag(bpy.types.Operator):
     bl_idname = 'carnivores.modify_3df_flag'
     bl_label = 'Modify 3DF Flag'
     bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = _active_mesh(context)
+        if not obj:
+            return _poll_message(cls, "Select a mesh with 3DF flags to modify them.")
+        attr = obj.data.attributes.get("3df_flags")
+        if not attr or attr.domain != 'FACE' or attr.data_type != 'INT':
+            return _poll_message(cls, "The active mesh needs a valid FACE-domain INT '3df_flags' attribute.")
+        return True
     
     action: bpy.props.EnumProperty(
         name='Action',
@@ -284,49 +347,62 @@ class CARNIVORES_OT_modify_3df_flag(bpy.types.Operator):
         
         prev_mode = obj.mode
         was_edit = prev_mode == 'EDIT'
+
+        # Face-domain attribute data is synchronized to the Mesh in Object
+        # Mode. For Edit Mode, preserve the selected-face scope while using the
+        # same reliable Mesh attribute path as the other flag operations.
+        if self.action == 'CLEAR_ALL' and was_edit:
+            bpy.ops.object.mode_set(mode='OBJECT')
+            context.view_layer.update()
+            try:
+                # Refresh the RNA attribute wrapper after leaving Edit Mode;
+                # the pre-edit wrapper may still report zero data elements.
+                attr = mesh.attributes.get('3df_flags')
+                selected_indices = flag_utils.get_selected_face_indices(obj)
+                vals = np.empty(face_count, dtype=np.int32)
+                attr.data.foreach_get('value', vals)
+                before_selected = vals[selected_indices].copy()
+                vals[selected_indices] = 0
+                attr.data.foreach_set('value', vals)
+                mesh.update()
+                flag_utils.update_flag_colors(mesh)
+                changed = int(np.count_nonzero(before_selected != 0))
+                self.report({'INFO'}, f"Cleared flags on {changed} selected faces.")
+                return {'FINISHED'}
+            finally:
+                bpy.ops.object.mode_set(mode='EDIT')
+                context.view_layer.update()
+
         if was_edit:
             bpy.ops.object.mode_set(mode='OBJECT')
             context.view_layer.update()
-        
+            # Refresh the RNA attribute wrapper after leaving Edit Mode.
+            attr = mesh.attributes.get('3df_flags')
+
         try:
             if self.action == 'CLEAR_ALL':
-                if was_edit:
-                    bm = bmesh.from_edit_mesh(mesh)
-                    bm.faces.ensure_lookup_table()
-                    layer = bm.faces.layers.int.get('3df_flags')
-                    if not layer:
-                        self.report({'ERROR'}, "'3df_flags' layer missing in BMesh.")
-                        return {'CANCELLED'}
-                    changed = 0
-                    for f in bm.faces:
-                        if f.select or not was_edit:
-                            f[layer] = 0
-                            changed += 1
-                    bmesh.update_edit_mesh(mesh)
-                    self.report({'INFO'}, f"Cleared all flags on {changed} faces.")
-                else:
-                    vals = np.zeros(face_count, dtype=np.int32)
-                    attr.data.foreach_set('value', vals)
-                    mesh.update()
-                    self.report({'INFO'}, f"Cleared all flags on {face_count} faces.")
-                
-                # Auto-Update Colors
-                flag_utils.update_flag_colors(mesh)
-                return {'FINISHED'}
-            else:
-                selected_indices = flag_utils.get_selected_face_indices(obj)
-                if selected_indices.size == 0:
-                    self.report({'WARNING'}, 'No faces selected.')
-                    return {'CANCELLED'}
-                changed = flag_utils.bulk_modify_flag(mesh, selected_indices, self.flag_bit, self.action.lower())
+                vals = np.zeros(face_count, dtype=np.int32)
+                attr.data.foreach_set('value', vals)
                 mesh.update()
-                
+                self.report({'INFO'}, f"Cleared all flags on {face_count} faces.")
+
                 # Auto-Update Colors
                 flag_utils.update_flag_colors(mesh)
-                
-                action_name = {'SET': 'Set', 'CLEAR': 'Cleared', 'TOGGLE': 'Toggled'}[self.action]
-                self.report({'INFO'}, f"{action_name} flag 0x{self.flag_bit:04X} on {changed} faces.")
                 return {'FINISHED'}
+
+            selected_indices = flag_utils.get_selected_face_indices(obj)
+            if selected_indices.size == 0:
+                self.report({'WARNING'}, 'No faces selected.')
+                return {'CANCELLED'}
+            changed = flag_utils.bulk_modify_flag(mesh, selected_indices, self.flag_bit, self.action.lower())
+            mesh.update()
+
+            # Auto-Update Colors
+            flag_utils.update_flag_colors(mesh)
+
+            action_name = {'SET': 'Set', 'CLEAR': 'Cleared', 'TOGGLE': 'Toggled'}[self.action]
+            self.report({'INFO'}, f"{action_name} flag 0x{self.flag_bit:04X} on {changed} faces.")
+            return {'FINISHED'}
         finally:
             if was_edit:
                 bpy.ops.object.mode_set(mode='EDIT')

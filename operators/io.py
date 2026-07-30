@@ -19,6 +19,61 @@ from ..parsers.export_car import export_car
 from ..parsers.export_3dn import export_3dn
 from ..parsers.export_vtl import export_vtl
 
+
+def _poll_message(cls, message):
+    """Set a Blender operator poll explanation when the API supports it."""
+    try:
+        cls.poll_message_set(message)
+    except (AttributeError, TypeError, RuntimeError):
+        # Blender versions without poll_message_set can still use the boolean
+        # result of poll().
+        pass
+    return False
+
+
+def _active_mesh(context):
+    obj = getattr(context, "active_object", None)
+    return obj if obj and obj.type == 'MESH' else None
+
+
+def _remove_failed_import_collection(collection):
+    """Remove a collection created for an import that did not complete."""
+    if collection is None:
+        return
+    try:
+        collection_name = collection.name
+    except ReferenceError:
+        collection_name = "<invalid collection>"
+
+    try:
+        live_collection = bpy.data.collections.get(collection_name)
+        if live_collection is not None:
+            bpy.data.collections.remove(live_collection, do_unlink=True)
+    except Exception as cleanup_error:
+        warn(f"Failed to remove partial import collection '{collection_name}': {cleanup_error}")
+
+
+def _report_batch_summary(operator, operation, attempted, succeeded, failed):
+    """Report a consistent result for single-file and batch operations."""
+    success_count = len(succeeded)
+    failure_count = len(failed)
+    if failure_count == 0:
+        operator.report({'INFO'}, f"{operation}: {success_count}/{attempted} succeeded.")
+        return True
+
+    failed_names = ", ".join(failed[:3])
+    if failure_count > 3:
+        failed_names += f", +{failure_count - 3} more"
+    message = (
+        f"{operation}: {success_count}/{attempted} succeeded; "
+        f"{failure_count} failed"
+    )
+    if failed_names:
+        message += f" ({failed_names})"
+    operator.report({'WARNING' if success_count else 'ERROR'}, message + ".")
+    return success_count > 0
+
+
 @bpy_extras.io_utils.orientation_helper(axis_forward='Z', axis_up='Y')
 class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHelper):
     bl_idname = "carnivores.import_3df"
@@ -156,8 +211,13 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         if not valid_paths:
             self.report({'ERROR'}, "No valid .3df files selected.")
             return {'CANCELLED'}
-        for filepath in valid_paths:
+        imported_files = []
+        failed_files = []
+        warning_messages = []
 
+        for filepath in valid_paths:
+            coll = None
+            filename = os.path.basename(filepath)
             try:
                 # Your existing parsing and importing logic here
                 mesh_name, object_name = io_utils.generate_names(filepath)
@@ -210,18 +270,37 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                     io_utils.assign_armature_modifier(obj, armature_obj)
 
                 if warnings:
-                    bpy.ops.carnivores.modal_message('INVOKE_DEFAULT', message="\n".join(warnings))
+                    warning_messages.extend(f"{filename}: {warning}" for warning in warnings)
+                imported_files.append(filename)
 
-            except Exception as e:
-                self.report({'ERROR'}, f"Failed to import {os.path.basename(filepath)} at parsing step: {str(e)}")
-                if 'coll' in locals() and coll in bpy.data.collections:
-                    bpy.data.collections.remove(coll, do_unlink=True)
+            except Exception as exc:
+                message = f"Failed to import {filename}: {exc}"
+                self.report({'ERROR'}, message)
+                error(f"[Import .3DF] {message}")
+                failed_files.append(filename)
+                _remove_failed_import_collection(coll)
                 continue
-                
-        if self.create_materials and self.import_textures:
+
+        if self.create_materials and self.import_textures and imported_files:
             io_utils.setup_custom_world_shader()
-            
-        return {'FINISHED'}
+
+        completed = _report_batch_summary(
+            self,
+            ".3DF import",
+            len(valid_paths),
+            imported_files,
+            failed_files,
+        )
+        if warning_messages:
+            try:
+                bpy.ops.carnivores.modal_message(
+                    'INVOKE_DEFAULT',
+                    message="\n".join(warning_messages),
+                )
+            except Exception as report_error:
+                warn(f"Could not display .3DF import warnings: {report_error}")
+
+        return {'FINISHED'} if completed else {'CANCELLED'}
 
 @bpy_extras.io_utils.orientation_helper(axis_forward='Z', axis_up='Y')
 class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
@@ -263,6 +342,13 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         description='Negate X-axis to match game\'s left-handed coordinate system (fixes mirroring)',
         default=True  # Start disabled to match your current diff
     )
+
+    @classmethod
+    def poll(cls, context):
+        if _active_mesh(context):
+            return True
+        return _poll_message(cls, "Select an active mesh object to export as .3DF.")
+
     def draw(self, context):
         layout = self.layout
         layout.label(text="Export Options")
@@ -299,11 +385,14 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         base_dir = os.path.dirname(base_filepath)
         base_name = os.path.splitext(os.path.basename(base_filepath))[0]
         exported_files = []
+        failed_files = []
+        attempted_count = 0
         if self.use_multi_export:
             mesh_objects = [obj for obj in context.selected_objects if obj.type == 'MESH']
             if not mesh_objects:
                 self.report({'ERROR'}, "No mesh objects selected for export.")
                 return {'CANCELLED'}
+            attempted_count = len(mesh_objects)
             for obj in mesh_objects:
                 obj_name = obj.name.replace('.', '_')  # Sanitize object name
                 # If no base_name provided, use object name directly; otherwise, use as prefix
@@ -320,13 +409,17 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
                         flip_handedness=self.flip_handedness
                     )
                     exported_files.append(os.path.basename(filepath))
-                except Exception as e:
-                    self.report({'ERROR'}, f"Failed to export {obj.name} to {os.path.basename(filepath)}: {e}")
+                except Exception as exc:
+                    message = f"Failed to export {obj.name} to {os.path.basename(filepath)}: {exc}"
+                    self.report({'ERROR'}, message)
+                    error(f"[Export .3DF] {message}")
+                    failed_files.append(obj.name)
         else:
             obj = context.active_object
             if not obj or obj.type != 'MESH':
                 self.report({'ERROR'}, "No active mesh object selected for single-file export.")
                 return {'CANCELLED'}
+            attempted_count = 1
             filepath = base_filepath if base_name else os.path.join(base_dir, f"{obj.name.replace('.', '_')}.3df")
             try:
                 export_3df(
@@ -339,13 +432,20 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
                     flip_handedness=self.flip_handedness
                 )
                 exported_files.append(os.path.basename(filepath))
-            except Exception as e:
-                self.report({'ERROR'}, f"Failed to export {obj.name} to {os.path.basename(filepath)}: {e}")
-        if exported_files:
-            self.report({'INFO'}, f"Exported {len(exported_files)} file(s): {', '.join(exported_files)}")
-        else:
-            self.report({'ERROR'}, "No files were exported due to errors.")
-        return {'FINISHED'}
+            except Exception as exc:
+                message = f"Failed to export {obj.name} to {os.path.basename(filepath)}: {exc}"
+                self.report({'ERROR'}, message)
+                error(f"[Export .3DF] {message}")
+                failed_files.append(obj.name)
+
+        completed = _report_batch_summary(
+            self,
+            ".3DF export",
+            attempted_count,
+            exported_files,
+            failed_files,
+        )
+        return {'FINISHED'} if completed else {'CANCELLED'}
 
 @bpy_extras.io_utils.orientation_helper(axis_forward='Z', axis_up='Y')
 class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
@@ -395,6 +495,12 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         description='Negate X-axis to match game\'s left-handed coordinate system',
         default=True
     )
+
+    @classmethod
+    def poll(cls, context):
+        if _active_mesh(context):
+            return True
+        return _poll_message(cls, "Select an active mesh object to export as .CAR.")
 
     def draw(self, context):
         layout = self.layout
@@ -446,8 +552,10 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
             )
             self.report({'INFO'}, f"Exported {os.path.basename(self.filepath)}")
             return {'FINISHED'}
-        except Exception as e:
-            self.report({'ERROR'}, f"Export failed: {e}")
+        except Exception as exc:
+            message = f"Export failed: {exc}"
+            self.report({'ERROR'}, message)
+            error(f"[Export .CAR] {message}")
             return {'CANCELLED'}
 
 @bpy_extras.io_utils.orientation_helper(axis_forward='Z', axis_up='Y')
@@ -595,10 +703,17 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         if not valid_paths:
             self.report({'ERROR'}, 'No valid .car files selected.')
             return {'CANCELLED'}
+
+        imported_files = []
+        failed_files = []
+        warning_messages = []
+
         for filepath in valid_paths:
+            coll = None
+            filename = os.path.basename(filepath)
             try:
                 mesh_name, _ = io_utils.generate_names(filepath)  # Ignore basename; use model_name below
-                coll = io_utils.create_import_collection(os.path.splitext(os.path.basename(filepath))[0])
+                coll = io_utils.create_import_collection(os.path.splitext(filename)[0])
                 header, model_name, faces, uvs, vertices, bone_names, owner_source, texture, texture_height, warnings, animations, sounds, cross_ref = parse_car(
                     filepath,
                     validate=self.validate,
@@ -644,6 +759,7 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
 
                 io_utils.create_uv_map(obj.data, uvs)
                 # Create shape keys
+                actions = []
                 if self.import_animations and animations:
                     anim_utils.create_shape_keys_from_car_animations(obj, animations, import_matrix_np, use_absolute=self.use_absolute_shape_keys)
                     # Automatically create fast actions + NLA strips
@@ -673,14 +789,36 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                         io_utils.smooth_vertex_weights(obj, iterations=self.smooth_iterations, factor=self.smooth_factor, joints_only=self.smooth_joints_only)
                 # No hooks/armature for .CAR (owners only; no positions/parents)
                 if warnings:
-                    bpy.ops.carnivores.modal_message('INVOKE_DEFAULT', message='\n'.join(warnings))
-            except Exception as e:
-                self.report({'ERROR'}, f"Failed to import {os.path.basename(filepath)} at parsing step: {str(e)}")
-                if 'coll' in locals() and bpy.data.collections.get(coll.name) is not None:
-                    continue
-        if self.create_materials and self.import_textures:
+                    warning_messages.extend(f"{filename}: {warning}" for warning in warnings)
+                imported_files.append(filename)
+            except Exception as exc:
+                message = f"Failed to import {filename}: {exc}"
+                self.report({'ERROR'}, message)
+                error(f"[Import .CAR] {message}")
+                failed_files.append(filename)
+                _remove_failed_import_collection(coll)
+                continue
+
+        if self.create_materials and self.import_textures and imported_files:
             io_utils.setup_custom_world_shader()
-        return {'FINISHED'}
+
+        completed = _report_batch_summary(
+            self,
+            ".CAR import",
+            len(valid_paths),
+            imported_files,
+            failed_files,
+        )
+        if warning_messages:
+            try:
+                bpy.ops.carnivores.modal_message(
+                    'INVOKE_DEFAULT',
+                    message="\n".join(warning_messages),
+                )
+            except Exception as report_error:
+                warn(f"Could not display .CAR import warnings: {report_error}")
+
+        return {'FINISHED'} if completed else {'CANCELLED'}
 
 @bpy_extras.io_utils.orientation_helper(axis_forward='Z', axis_up='Y')
 class CARNIVORES_OT_export_3dn(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
@@ -737,6 +875,12 @@ class CARNIVORES_OT_export_3dn(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         description='Negate X-axis to match game\'s left-handed coordinate system',
         default=True
     )
+
+    @classmethod
+    def poll(cls, context):
+        if _active_mesh(context):
+            return True
+        return _poll_message(cls, "Select an active mesh object to export as .3DN.")
 
     def draw(self, context):
         layout = self.layout
@@ -795,10 +939,10 @@ class CARNIVORES_OT_export_3dn(bpy.types.Operator, bpy_extras.io_utils.ExportHel
             )
             self.report({'INFO'}, f"Exported {os.path.basename(self.filepath)}")
             return {'FINISHED'}
-        except Exception as e:
-            self.report({'ERROR'}, f"Export failed: {e}")
-            import traceback
-            traceback.print_exc()
+        except Exception as exc:
+            message = f"Export failed: {exc}"
+            self.report({'ERROR'}, message)
+            error(f"[Export .3DN] {message}")
             return {'CANCELLED'}
 
 @bpy_extras.io_utils.orientation_helper(axis_forward='Z', axis_up='Y')
@@ -824,6 +968,24 @@ class CARNIVORES_OT_export_vtl(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         description='Negate X-axis to match game\'s left-handed coordinate system',
         default=True
     )
+
+    @classmethod
+    def poll(cls, context):
+        obj = _active_mesh(context)
+        if not obj:
+            return _poll_message(cls, "Select an active mesh object to export .VTL animation.")
+
+        has_shape_key_animation = bool(
+            obj.data.shape_keys and obj.data.shape_keys.animation_data
+        )
+        parent = getattr(obj, "parent", None)
+        has_parent_animation = bool(
+            parent and parent.type == 'ARMATURE' and parent.animation_data
+        )
+        has_object_animation = bool(obj.animation_data)
+        if has_shape_key_animation or has_parent_animation or has_object_animation:
+            return True
+        return _poll_message(cls, "The active mesh has no shape-key, object, or parent-armature animation data.")
 
     def draw(self, context):
         layout = self.layout
@@ -864,10 +1026,10 @@ class CARNIVORES_OT_export_vtl(bpy.types.Operator, bpy_extras.io_utils.ExportHel
             )
             self.report({'INFO'}, f"Exported {os.path.basename(self.filepath)}")
             return {'FINISHED'}
-        except Exception as e:
-            self.report({'ERROR'}, f"Export failed: {e}")
-            import traceback
-            traceback.print_exc()
+        except Exception as exc:
+            message = f"Export failed: {exc}"
+            self.report({'ERROR'}, message)
+            error(f"[Export .VTL] {message}")
             return {'CANCELLED'}
 
 class CARNIVORES_OT_modal_message(bpy.types.Operator):

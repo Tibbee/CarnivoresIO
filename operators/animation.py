@@ -13,6 +13,15 @@ from ..utils.logger import info, debug, warn, error
 _preview_restore_state = None
 
 
+def _poll_message(cls, message):
+    """Set a Blender operator poll explanation when available."""
+    try:
+        cls.poll_message_set(message)
+    except (AttributeError, TypeError, RuntimeError):
+        pass
+    return False
+
+
 # ---------------------------------------------------------------------------
 # AudioManager — owns all runtime audio state
 # ---------------------------------------------------------------------------
@@ -544,6 +553,13 @@ class CARNIVORES_OT_play_linked_sound(bpy.types.Operator):
     bl_label = "Play Linked Sound"
     bl_options = {'REGISTER', 'UNDO'}
 
+    @classmethod
+    def poll(cls, context):
+        obj = getattr(context, "active_object", None)
+        if not obj or not obj.animation_data or not obj.animation_data.action:
+            return _poll_message(cls, "The active object needs an active animation action.")
+        return True
+
     def execute(self, context):
         obj = context.active_object
         if not obj:
@@ -806,6 +822,15 @@ class CARNIVORES_OT_play_track_preview(bpy.types.Operator):
 
     action_name: bpy.props.StringProperty()
 
+    @classmethod
+    def poll(cls, context):
+        obj = getattr(context, "active_object", None)
+        if not obj:
+            return _poll_message(cls, "Select an object with animation data to preview a track.")
+        if not anim_utils.get_active_animation_data(obj):
+            return _poll_message(cls, "The active object has no animation data to preview.")
+        return True
+
     def stop_preview(self, context):
         global _preview_restore_state
         if not _preview_restore_state:
@@ -939,6 +964,15 @@ class CARNIVORES_OT_resync_animation(bpy.types.Operator):
 
     action_name: bpy.props.StringProperty()
 
+    @classmethod
+    def poll(cls, context):
+        obj = getattr(context, "active_object", None)
+        if not obj:
+            return _poll_message(cls, "Select an animated object before re-syncing timing.")
+        if not anim_utils.get_active_animation_data(obj):
+            return _poll_message(cls, "The active object has no animation data to re-sync.")
+        return True
+
     def get_anim_data(self, obj):
         # Helper to find where this action is used (ShapeKey or Object)
         datas = []
@@ -1043,9 +1077,11 @@ class CARNIVORES_OT_reconstruct_armature(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         obj = context.active_object
-        return obj and obj.type == 'MESH' and (
-            obj.vertex_groups or obj.data.attributes.get('carnivores_owner_index')
-        )
+        if not obj or obj.type != 'MESH':
+            return _poll_message(cls, "Select a mesh with imported owner data or vertex groups.")
+        if bool(obj.vertex_groups) or obj.data.attributes.get('carnivores_owner_index'):
+            return True
+        return _poll_message(cls, "The active mesh has no vertex groups or imported owner cache.")
 
     def execute(self, context):
         obj = context.active_object
@@ -1067,6 +1103,13 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
     bl_idname = "carnivores.debug_rig_info"
     bl_label = "Log Rig Debug Info"
     bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = getattr(context, "active_object", None)
+        if obj and obj.type == 'MESH':
+            return True
+        return _poll_message(cls, "Select a mesh to generate rig debug information.")
 
     def execute(self, context):
         obj = context.active_object
