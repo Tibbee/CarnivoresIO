@@ -2,7 +2,7 @@
 
 Implementation-oriented design and handoff document for improving the CarnivoresIO Blender extension UI. This document is intended to give another coding agent enough context, priorities, constraints, and acceptance criteria to implement the work incrementally.
 
-> **Status:** Proposal; no implementation is implied by this document.
+> **Status:** WP-01 (operator context/outcomes) and WP-03 (result and warning reports) are implemented; remaining work packages remain proposals unless marked otherwise.
 >
 > **Target:** Blender 4.2+ extension supporting `.3df`, `.car`, `.3dn`, and `.vtl` workflows.
 >
@@ -292,6 +292,8 @@ Specific changes:
 ## WP-03: Result and warning report system
 
 **Priority:** Required
+
+**Status:** Implemented in `utils/reporting.py`, `operators/reporting.py`, and `operators/io.py`.
 
 ### Problems
 

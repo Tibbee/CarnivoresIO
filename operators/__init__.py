@@ -1,6 +1,9 @@
-from . import io, flags, animation
+from . import io, flags, animation, reporting
 
 classes = (
+    reporting.CARNIVORES_OT_open_report,
+    reporting.CARNIVORES_OT_copy_report,
+
     io.CARNIVORES_OT_import_3df,
     io.CARNIVORES_OT_export_3df,
     io.CARNIVORES_OT_export_car,

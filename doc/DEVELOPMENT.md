@@ -208,7 +208,7 @@ Milestones, acceptance criteria, tests, risks, and file touch points are maintai
 - **BMesh**: Used for Edit Mode operations to access selected faces efficiently.
 - **Validation Layers**: Non-destructive structural validation always runs. The import `validate` property enables optional legacy-tool and current-engine compatibility diagnostics.
 - **Hook vs. Armature**: Hooks default for simplicity; armatures supported for advanced rigging.
-- **Error Reporting**: Warnings collected in `ParserContext.warnings`, displayed via modal dialog.
+- **Error Reporting**: Parser warnings remain in `ParserContext.warnings` and are recorded in structured operation reports. Import/export reports are written to stable Blender Text datablocks (`Carnivores_Import_Report` or `Carnivores_Export_Report`) and summarized in one popup with explicit `Open Report` and `Copy Report` actions.
 
 ---
 
