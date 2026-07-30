@@ -25,7 +25,7 @@ Use duplicate `.blend` files or disposable imports while the **Topology** algori
 
 ## `dilo2b` Reference Regression
 
-Topology v2 with **Attach Nearest**, automatic root (`-1`), and smoothing disabled should report:
+Topology v4 with **Attach Nearest**, automatic root (`-1`), and smoothing disabled should report:
 
 - 21 central groups and 7 mirror pairs: `15↔18`, `16↔19`, `17↔20`, `22↔26`, `23↔27`, `24↔28`, `25↔29`;
 - `CarBone_18 → 19 → 20` without `CarBone_21` below the forelimb;
@@ -35,11 +35,12 @@ Topology v2 with **Attach Nearest**, automatic root (`-1`), and smoothing disabl
 - only `CarBone_9–10` marked as `PROXIMITY_FALLBACK`;
 - all 35 groups represented and no owner-cache divergence.
 
-Pending pose checks:
+Confirmed pose checks:
 
 1. rotating `CarBone_18` moves only its forelimb;
-2. rotating `CarBone_30` moves the rear limbs and tail but not the forward torso;
-3. compare automatic `CarBone_3` root pivot with override compact index `29` (`CarBone_30`).
+2. rotating `CarBone_30` moves the rear limbs and tail but not the forward torso.
+
+Earlier scoring selected `CarBone_3`; Topology v4 should automatically select source-ordered backbone candidate `CarBone_1`. `CarBone_30` (override compact index `29`) remains a useful pelvis-root comparison. Recheck both pose isolation tests after the automatic-root change.
 
 ## Component Policies
 

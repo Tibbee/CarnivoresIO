@@ -52,6 +52,65 @@ class RigHierarchyTests(unittest.TestCase):
         self.assertEqual(tiny.root_groups, baseline.root_groups)
         self.assertEqual(huge.root_groups, baseline.root_groups)
 
+    def test_source_order_prior_selects_earliest_supported_backbone_group(self):
+        # Both groups 0 and 3 are three-way central junctions. Raw owner 1 is
+        # the source-ordered torso/root, while raw owner 17 represents a later
+        # belly control that graph centrality must not promote to root.
+        vertices = []
+        centers = [
+            [0.0, 0.0, 0.0],
+            [0.0, -2.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.5, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 2.0, 0.0],
+        ]
+        for center in centers:
+            vertices.extend([
+                [center[0] - 0.1, center[1], center[2]],
+                [center[0] + 0.1, center[1], center[2]],
+            ])
+        edges = [[2 * group_id, 2 * group_id + 1] for group_id in range(6)]
+        edges.extend([[0, 2], [0, 6], [0, 10], [6, 4], [6, 8]])
+        mesh = rig.build_mesh_analysis_input(
+            vertices,
+            [group_id for group_id in range(6) for _ in range(2)],
+            [1, 2, 16, 17, 18, 31],
+            edges=edges,
+        )
+
+        proposal = rig.build_topology_rig_proposal(rig.analyze_rig_geometry(mesh))
+
+        self.assertEqual(proposal.root_groups, (0,))
+        self.assertEqual(proposal.settings["root_selection_policy"], "SOURCE_ORDERED_BACKBONE_V1")
+
+    def test_midline_lateral_leaf_pca_follows_signed_body_y_flow(self):
+        # Midline control regions can span the model laterally, making PCA
+        # point along X even though their useful control orientation follows
+        # the head/tail flow on Blender Y.
+        mesh = rig.build_mesh_analysis_input(
+            [
+                [-0.2, 0.0, 0.0], [0.2, 0.0, 0.0],
+                [-1.0, -2.0, 0.0], [1.0, -2.0, 0.0],
+                [-1.0, 2.0, 0.0], [1.0, 2.0, 0.0],
+            ],
+            [0, 0, 1, 1, 2, 2],
+            [1, 8, 20],
+            edges=[[0, 1], [0, 2], [2, 3], [1, 4], [4, 5]],
+        )
+        proposal = rig.build_topology_rig_proposal(
+            rig.analyze_rig_geometry(mesh), root_override=0
+        )
+
+        forward = proposal.tail_by_group[1] - proposal.head_by_group[1]
+        rearward = proposal.tail_by_group[2] - proposal.head_by_group[2]
+        self.assertAlmostEqual(forward[0], 0.0)
+        self.assertLess(forward[1], 0.0)
+        self.assertAlmostEqual(forward[2], 0.0)
+        self.assertAlmostEqual(rearward[0], 0.0)
+        self.assertGreater(rearward[1], 0.0)
+        self.assertAlmostEqual(rearward[2], 0.0)
+
     def test_two_adjacent_groups_produce_one_edge(self):
         mesh = rig.build_mesh_analysis_input(
             [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]],

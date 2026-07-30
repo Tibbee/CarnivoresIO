@@ -798,16 +798,37 @@ def _select_component_root(component, accepted, group_by_id, scale, override, al
     if override in component:
         return override
     adjacency = {group_id: [] for group_id in component}
+    supported_degree = {group_id: 0 for group_id in component}
     for edge in accepted:
         if edge.group_a in adjacency and edge.group_b in adjacency:
             weight = max(float(edge.total_cost), np.finfo(np.float64).eps)
             adjacency[edge.group_a].append((edge.group_b, weight, edge.confidence))
             adjacency[edge.group_b].append((edge.group_a, weight, edge.confidence))
+            if edge.boundary_edge_count > 0:
+                supported_degree[edge.group_a] += 1
+                supported_degree[edge.group_b] += 1
     positions = np.asarray([group_by_id[group_id].centroid for group_id in component])
     masses = np.asarray([group_by_id[group_id].vertex_count for group_id in component], dtype=np.float64)
     allowed = set(component) if allowed_roots is None else set(component) & set(allowed_roots)
     if not allowed:
         allowed = set(component)
+
+    # CAR owner IDs usually retain source bone ordering even though the file no
+    # longer contains hierarchy records. Prefer the earliest central owner that
+    # is demonstrably inside the supported topology rather than an endpoint.
+    # This prevents tiny, late belly/control groups from winning purely because
+    # they happen to be graph-central. Endpoint chains still use geometric and
+    # graph scoring below.
+    source_ordered_backbone = [
+        group_id for group_id in allowed
+        if supported_degree[group_id] >= 2
+    ]
+    if source_ordered_backbone:
+        return min(
+            source_ordered_backbone,
+            key=lambda group_id: (group_by_id[group_id].raw_owner_id, group_id),
+        )
+
     scores = []
     for local_index, group_id in enumerate(component):
         if group_id not in allowed:
@@ -942,6 +963,18 @@ def build_topology_rig_proposal(
         else:
             heads[group_id] = group_by_id[group_id].centroid
 
+    owned_vertices = analysis.mesh.vertices[analysis.mesh.compact_owners >= 0]
+    center_x = float(np.median(owned_vertices[:, 0])) if owned_vertices.size else 0.0
+    x_span = float(np.ptp(owned_vertices[:, 0])) if owned_vertices.size else 0.0
+    midline_margin = max(x_span * 0.04, analysis.characteristic_scale * 0.2)
+
+    root_by_group = {}
+    for group_id in active_ids:
+        ancestor = group_id
+        while parents[ancestor] >= 0:
+            ancestor = parents[ancestor]
+        root_by_group[group_id] = ancestor
+
     for group_id in active_ids:
         group = group_by_id[group_id]
         roll_references[group_id] = group.principal_axes[1]
@@ -957,13 +990,39 @@ def build_topology_rig_proposal(
             tails[group_id] = heads[continuation]
         else:
             direction = group.principal_axes[0].copy()
+            principal_extent = float(np.ptp(
+                analysis.mesh.vertices[group.vertex_indices] @ direction
+            ))
             parent_id = parents[group_id]
-            if parent_id >= 0:
+            lateral_pca = abs(direction[0]) > max(abs(direction[1]), abs(direction[2]))
+            on_midline = (
+                abs(group.centroid[0] - center_x) <= midline_margin
+                or group.bounds_min[0] <= center_x <= group.bounds_max[0]
+            )
+            if parent_id >= 0 and group_id in central_ids and on_midline and lateral_pca:
+                # Midline eye, belly, and other floating controls often span X,
+                # making PCA produce an arbitrary lateral tail. Follow the
+                # imported model's longitudinal Blender Y flow instead.
+                root_center = group_by_id[root_by_group[group_id]].centroid
+                longitudinal_offset = float(group.centroid[1] - root_center[1])
+                if abs(longitudinal_offset) <= analysis.characteristic_scale * 1e-8:
+                    longitudinal_offset = float(
+                        group.centroid[1] - analysis.normalization_origin[1]
+                    )
+                direction = np.array(
+                    [0.0, -1.0 if longitudinal_offset < 0.0 else 1.0, 0.0],
+                    dtype=np.float64,
+                )
+            elif parent_id >= 0:
                 away = group.centroid - heads[group_id]
                 if np.dot(direction, away) < 0:
                     direction *= -1.0
+            directional_extent = float(np.ptp(
+                analysis.mesh.vertices[group.vertex_indices] @ direction
+            ))
             extent = max(
-                float(np.ptp(analysis.mesh.vertices[group.vertex_indices] @ direction)),
+                principal_extent,
+                directional_extent,
                 analysis.characteristic_scale * 0.05,
             )
             tails[group_id] = heads[group_id] + direction * extent
@@ -990,8 +1049,10 @@ def build_topology_rig_proposal(
                 if first < second
             ],
             "central_group_count": len(central_ids),
+            "leaf_tail_policy": "MIDLINE_BODY_Y_V1",
+            "root_selection_policy": "SOURCE_ORDERED_BACKBONE_V1",
         },
-        algorithm_version=2,
+        algorithm_version=4,
     )
 
 

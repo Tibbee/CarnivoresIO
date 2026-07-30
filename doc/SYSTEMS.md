@@ -74,10 +74,11 @@ The experimental `TOPOLOGY` algorithm builds a `RigProposal` from this analysis:
 3. A central backbone is built first. Low-confidence nearest-region candidates fill central gaps where surface ownership routes through a limb instead of exposing a direct body boundary.
 4. Each same-side lateral component is built internally and attached to the backbone exactly once. Mirrored components prefer a shared central attachment, preventing limbs from becoming bridges between torso regions or opposite limbs.
 5. Original topology components remain explicit and are handled by `MULTI_ROOT`, `ATTACH_NEAREST`, `SKIP`, or reserved `HOOKS` policy.
-6. Trees are oriented from central root candidates, and explicit proposal heads, tails, and roll references are passed to Blender without Legacy child-head averaging.
-7. Compact IDs are mapped explicitly into armature-local indices.
-8. Optional deform smoothing rebuilds one-hot vertex groups from the canonical owner cache before each run, preventing cumulative Topology smoothing; hierarchy analysis still uses unchanged canonical owners.
-9. Optional semantic naming renames generated bones and matching vertex groups together with `_L`/`_R` suffixes.
+6. Root selection first prefers the earliest raw owner among central candidates with at least two real topology-boundary connections. CAR owner order commonly retains source skeleton ordering, while the connection requirement prevents an early endpoint from overriding a supported backbone root. Components without such a candidate retain graph/geometric scoring, and a manual override always wins.
+7. Trees are oriented from the selected roots, and explicit proposal heads, tails, and roll references are passed to Blender without Legacy child-head averaging. Midline leaf controls whose PCA axis points laterally follow signed Blender Y body flow instead: controls on the root's negative-Y side point toward `-Y`, while controls on its positive-Y side point toward `+Y`. This avoids arbitrary `+X` tails on belly-wiggle and shared eye-control regions while retaining PCA for lateral limb leaves.
+8. Compact IDs are mapped explicitly into armature-local indices.
+9. Optional deform smoothing rebuilds one-hot vertex groups from the canonical owner cache before each run, preventing cumulative Topology smoothing; hierarchy analysis still uses unchanged canonical owners.
+10. Optional semantic naming renames generated bones and matching vertex groups together with `_L`/`_R` suffixes.
 
 `LEGACY` remains the default. Select **Topology (Experimental)** in Rigging Utilities for manual testing. Generated armatures record algorithm version, accepted raw-owner edges with reasons and confidence, roots, skipped groups, component policy, parent map, smoothing state, and semantic-naming state.
 
