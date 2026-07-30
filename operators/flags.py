@@ -23,6 +23,7 @@ class CARNIVORES_OT_create_3df_flags(bpy.types.Operator):
     """Create a face-domain integer attribute named '3df_flags' (initialized to 0)"""
     bl_idname = "carnivores.create_3df_flags"
     bl_label = "Create 3df_flags Attribute"
+    bl_description = "Create the face-domain INT attribute used to store serialized C2 surface flags, initialized to zero."
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -128,6 +129,7 @@ class CARNIVORES_OT_visualize_flags(bpy.types.Operator):
     """Generates Vertex Colors on the 'FlagColors' layer to visualize face flags"""
     bl_idname = "carnivores.visualize_flags"
     bl_label = "Visualize Flags"
+    bl_description = "Rebuild the non-serialized FlagColors color attribute from 3df_flags for viewport inspection."
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -157,6 +159,7 @@ class CARNIVORES_OT_select_by_flags(bpy.types.Operator):
     """Select/Deselect/Invert faces on the active mesh by 3DF flag mask"""
     bl_idname = "carnivores.select_by_flags"
     bl_label = "Select Faces by 3DF Flags"
+    bl_description = "Find faces by the selected C2 surface flags, then select, deselect, or invert the matching faces."
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -301,6 +304,7 @@ class CARNIVORES_OT_select_by_flags(bpy.types.Operator):
 class CARNIVORES_OT_modify_3df_flag(bpy.types.Operator):
     bl_idname = 'carnivores.modify_3df_flag'
     bl_label = 'Modify 3DF Flag'
+    bl_description = 'Set, clear, or toggle the C2 surface flag shown on this row; Clear All uses selected Edit Mode faces or the whole mesh in Object Mode.'
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -316,14 +320,19 @@ class CARNIVORES_OT_modify_3df_flag(bpy.types.Operator):
     action: bpy.props.EnumProperty(
         name='Action',
         items=[
-            ('SET', 'Set', 'Set the specified flag on selected faces'),
-            ('CLEAR', 'Clear', 'Clear the specified flag on selected faces'),
-            ('TOGGLE', 'Toggle', 'Toggle the specified flag on selected faces'),
-            ('CLEAR_ALL', 'Clear All', 'Clear all flags on selected or all faces')
+            ('SET', 'Set', 'Set this C2 surface flag on the selected faces.'),
+            ('CLEAR', 'Clear', 'Clear this C2 surface flag from the selected faces.'),
+            ('TOGGLE', 'Toggle', 'Invert this C2 surface flag on the selected faces.'),
+            ('CLEAR_ALL', 'Clear All', 'Clear every C2 surface flag on selected Edit Mode faces or the whole mesh in Object Mode.'),
         ],
+        description='Operation to perform on the C2 face flag.',
         default='SET'
     )
-    flag_bit: bpy.props.IntProperty(name='Flag Bit', default=0)
+    flag_bit: bpy.props.IntProperty(
+        name='C2 Flag Bit',
+        description='Serialized C2 surface-flag bit. The Face Flags panel assigns this automatically.',
+        default=0,
+    )
 
     def execute(self, context):
         obj = context.active_object
@@ -465,6 +474,7 @@ class CARNIVORES_OT_clear_flag_selections(bpy.types.Operator):
     """Clear all flag selections in the Selection Tools panel"""
     bl_idname = "carnivores.clear_flag_selections"
     bl_label = "Clear Flag Selections"
+    bl_description = "Clear the temporary flag mask used by Select Faces by 3DF Flags; this does not modify mesh face flags."
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):

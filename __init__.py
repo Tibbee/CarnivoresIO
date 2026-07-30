@@ -49,7 +49,7 @@ class CARNIVORES_MT_export(bpy.types.Menu):
         layout = self.layout
         layout.operator("carnivores.export_3df", text="Static Model (.3df)")
         layout.operator("carnivores.export_car", text="Animated Model (.car)")
-        layout.operator("carnivores.export_3dn", text="Static Model Hunter (.3dn)")
+        layout.operator("carnivores.export_3dn", text="Dinosaur Hunter Mobile/HD (.3dn)")
         layout.operator("carnivores.export_vtl", text="Animation (.vtl)")
 
 classes = (
@@ -71,19 +71,43 @@ def register():
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
     
     # Register Properties
-    bpy.types.Scene.cf_flag_section = bpy.props.BoolProperty(default=False)
+    bpy.types.Scene.cf_flag_section = bpy.props.BoolProperty(
+        name="Flag Selection",
+        description="Show the C2 face flags used by the Select Faces by 3DF Flags tool.",
+        default=False,
+    )
     bpy.types.Scene.cf_select_mode = bpy.props.EnumProperty(
-        items=[('ANY', "Has Any", ""), ('ALL', "Has All", ""), ('NONE', "Has None", "")],
-        name="Mode", default='ANY'
+        items=[
+            ('ANY', "Has Any", "Match faces with at least one selected flag (OR)."),
+            ('ALL', "Has All", "Match faces with every selected flag (AND)."),
+            ('NONE', "Has None", "Match faces with none of the selected flags (NOT)."),
+        ],
+        name="Flag Match Mode",
+        description="Choose how the selected C2 face flags are combined when finding faces.",
+        default='ANY',
     )
     bpy.types.Scene.cf_select_action = bpy.props.EnumProperty(
-        items=[('SELECT', "Select", ""), ('DESELECT', "Deselect", ""), ('INVERT', "Invert", "")],
-        name="Action", default='SELECT'
+        items=[
+            ('SELECT', "Select", "Select faces that match the flag mask."),
+            ('DESELECT', "Deselect", "Deselect faces that match the flag mask."),
+            ('INVERT', "Invert", "Invert selection only on faces that match the flag mask."),
+        ],
+        name="Selection Action",
+        description="Choose what to do with faces matched by the selected C2 face flags.",
+        default='SELECT',
     )
     # Register flags
     from .core.constants import FACE_FLAG_OPTIONS
-    for i, (bit, _, _) in enumerate(FACE_FLAG_OPTIONS):
-        setattr(bpy.types.Scene, f"cf_flag_{i}", bpy.props.BoolProperty(default=False))
+    for i, (bit, label, description) in enumerate(FACE_FLAG_OPTIONS):
+        setattr(
+            bpy.types.Scene,
+            f"cf_flag_{i}",
+            bpy.props.BoolProperty(
+                name=label,
+                description=f"C2 face flag 0x{bit:04X}: {description}",
+                default=False,
+            ),
+        )
 
     bpy.types.Object.carnivores_anim_source = bpy.props.EnumProperty(
         name="Animation Source",
@@ -96,7 +120,11 @@ def register():
         default='AUTO'
     )
     
-    bpy.types.Object.carnivores_active_nla_index = bpy.props.IntProperty(name="Active NLA Track Index", default=0)
+    bpy.types.Object.carnivores_active_nla_index = bpy.props.IntProperty(
+        name="Active NLA Track Index",
+        description="NLA track whose sound, KPS, preview, and timing controls are shown.",
+        default=0,
+    )
     bpy.types.Object.carnivores_reconstruct_algorithm = bpy.props.EnumProperty(
         name="Reconstruction Algorithm",
         description="Choose the stable legacy autorig or the experimental topology-first proposal",

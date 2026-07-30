@@ -45,7 +45,7 @@ Enable **Check for updates on startup** under the Extensions tab to sync automat
 | `.3dn` | No | Yes | Static models for mobile/HD Carnivores titles |
 | `.vtl` | No | Yes | Standalone vertex animation export |
 
-All binary I/O uses NumPy for performance. Textures use the ARGB1555 format at a fixed 256-pixel width. Configurable axis conversion and the legacy-named **Flip Handedness** option convert Carnivores model-file space (`+Y` up, `+Z` forward) to Blender space (`+Z` up, `+Y` forward). With the defaults, `(x, y, z)` maps to `(x, z, y)` and triangle/UV corner order is reversed to preserve face orientation.
+All binary I/O uses NumPy for performance. Textures use the ARGB1555 format at a fixed 256-pixel width. Configurable axis conversion and the **Use Carnivores Coordinate Conversion** option convert Carnivores model-file space (`+Y` up, `+Z` forward) to Blender space (`+Z` up, `+Y` forward). With the defaults, `(x, y, z)` maps to `(x, z, y)` and triangle/UV corner order is reversed to preserve face orientation.
 
 ### Skeleton Reconstruction
 
@@ -99,8 +99,8 @@ Tools are accessed through two locations in Blender:
 
 1. Open **File > Import > Carnivores Engine (.3df, .car) > Static Model (.3df)**.
 2. Select one or more `.3df` files and configure:
-   - **Scale** -- import scale factor (default 0.01).
-   - **Flip Handedness** -- enable the orientation-changing part of the file-to-Blender conversion and its matching face/UV corner reversal (enabled by default). Despite the legacy name, the complete default mapping is `(x, y, z)` → `(x, z, y)`, not a visible X negation.
+   - **Import Scale** -- import scale factor (default 0.01). Use **Export Scale** 100.0 for the standard round trip.
+   - **Use Carnivores Coordinate Conversion** -- enable the default file-to-Blender conversion and its matching face/UV corner reversal (enabled by default). The complete mapping is `(x, y, z)` → `(x, z, y)`, not a visible X negation.
    - **Import Textures / Create Materials** -- loads the embedded ARGB1555 texture as a Blender image and assigns a material.
    - **Bone Import Type** -- None, Armature, or Hooks. Hooks (default) create vertex groups with Hook modifiers for each bone. Armature builds an Armature object with proper bone positions and parent-child relationships from the file's bone data.
    - **Smooth Weights** -- apply Laplacian smoothing to vertex weights (configurable iterations, factor, and joints-only mode).
@@ -113,7 +113,7 @@ Tools are accessed through two locations in Blender:
    - **Import Animations** -- converts vertex animations to Shape Key Actions with NLA strips (enabled by default).
    - **Absolute Shape Keys** -- use Absolute (Evaluation Time) shape keys instead of the default Relative ones.
    - **Respect KPS Timing** -- align keyframes to sub-frame positions per the file's KPS; disable to snap to integer frames.
-   - **Import Sounds** -- load embedded WAV data and link sounds to the corresponding Actions.
+   - **Import Sounds** -- load embedded WAV data and link sounds to the corresponding Actions. If **Import Animations** is disabled, sounds are imported as unlinked sound datablocks.
    - **Smooth Weights** -- apply weight smoothing after vertex group creation.
 3. Click **Import**. Each model receives vertex groups (with synthetic names like `CarBone_0` mapping the file's raw ownership indices) and, if enabled, shape keys and NLA tracks.
 
@@ -157,15 +157,17 @@ Linked audio retains its authored timing. KPS changes, NLA strip scaling, and re
 5. **Select by flags:** In the **Selection Tools** panel, check the flags to match, choose a mode (**Has Any** = OR, **Has All** = AND, **Has None** = NOT), an action (Select, Deselect, Invert), and click **Apply**.
 6. **Clear All Flags** resets every flag bit on selected or all faces.
 
+The flag tooltips and runtime meanings are documented in [Face Flags](doc/reference.md#face-flags-16-bit-bitfield), based on C2 MEE 1.11 renderer, loader, and hit-test behavior.
+
 ### Exporting
 
 1. **Prepare the scene:** ensure meshes are triangulated, textures are 256px wide, and `3df_flags` attributes are assigned where needed.
 2. Open **File > Export > Carnivores Engine (.3df, .car, .3dn)** and choose:
    - **Static Model (.3df)** -- supports single-file or multi-export of all selected mesh objects. Each file is named after the object, optionally with a base name prefix.
    - **Animated Model (.car)** -- exports the active mesh with its shape keys, armature, linked sounds, and KPS metadata. The model name field accepts a 32-character string; suffix with `msc: #` for engine-specific behavior.
-   - **Static Model Hunter (.3dn)** -- for mobile/HD titles. Supports an optional sprite name.
+   - **Dinosaur Hunter Mobile/HD (.3dn)** -- static models for mobile/HD Carnivores titles. Supports an optional sprite name.
    - **Animation (.vtl)** -- exports vertex animation data as a standalone file.
-3. Configure **Scale** (default 100.0 to compensate for the 0.01 import default), **Flip Handedness**, and optional UV flipping.
+3. Configure **Export Scale** (default 100.0 to compensate for the 0.01 import default), **Use Carnivores Coordinate Conversion**, and optional UV flipping.
 4. Click **Export**.
 
 ---

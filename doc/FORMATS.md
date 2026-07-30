@@ -401,7 +401,7 @@ Thus file `+X`, `+Y` (up), and `+Z` (forward) become Blender `+X`, `+Z` (up), an
 
 ### Matrix Composition and Winding
 
-Blender's `axis_conversion(from_forward='Z', from_up='Y', to_forward='Y', to_up='Z')` is a proper rotation with determinant `+1`. Its intermediate X direction is negative. The legacy UI option named **Flip Handedness** applies `Matrix.Scale(-1, 4, (1, 0, 0))` after that axis conversion. With the defaults, the two operations combine into the Y/Z swap shown above; the final visible result does **not** negate file X.
+Blender's `axis_conversion(from_forward='Z', from_up='Y', to_forward='Y', to_up='Z')` is a proper rotation with determinant `+1`. Its intermediate X direction is negative. The legacy RNA property `flip_handedness`, now labelled **Use Carnivores Coordinate Conversion**, applies `Matrix.Scale(-1, 4, (1, 0, 0))` after that axis conversion. With the defaults, the two operations combine into the Y/Z swap shown above; the final visible result does **not** negate file X.
 
 The complete default coordinate transform has determinant `-1`, so it reverses triangle orientation. When `flip_handedness` is enabled, the add-on therefore also:
 

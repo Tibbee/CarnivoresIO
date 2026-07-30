@@ -551,6 +551,7 @@ class CARNIVORES_OT_play_linked_sound(bpy.types.Operator):
     """Plays the sound linked to the active object's active animation by adding it to the sequencer"""
     bl_idname = "carnivores.play_linked_sound"
     bl_label = "Play Linked Sound"
+    bl_description = "Add the active animation's linked sound as a VSE strip at the current frame; this does not start playback."
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -625,6 +626,7 @@ class CARNIVORES_OT_import_sound_for_action(bpy.types.Operator, bpy_extras.io_ut
     """Import a sound file and link it to the specified Action"""
     bl_idname = "carnivores.import_sound_for_action"
     bl_label = "Import Sound"
+    bl_description = "Load a sound file and link it to the selected animation Action for preview and CAR export."
     bl_options = {'REGISTER', 'UNDO'}
 
     filter_glob: bpy.props.StringProperty(
@@ -632,7 +634,10 @@ class CARNIVORES_OT_import_sound_for_action(bpy.types.Operator, bpy_extras.io_ut
         options={'HIDDEN'},
     )
 
-    action_name: bpy.props.StringProperty(name="Action Name")
+    action_name: bpy.props.StringProperty(
+        name="Action Name",
+        description="Animation Action that receives the imported sound. Set automatically by the Animation panel.",
+    )
 
     def execute(self, context):
         if not self.action_name:
@@ -663,7 +668,7 @@ class CARNIVORES_OT_import_sound_for_action(bpy.types.Operator, bpy_extras.io_ut
 class CARNIVORES_OT_toggle_nla_sound_playback(bpy.types.Operator):
     bl_idname = "carnivores.toggle_nla_sound_playback"
     bl_label = "Toggle NLA Sound Playback"
-    bl_description = "Toggles automatic sound playback based on active NLA strips"
+    bl_description = "Enable or disable automatic playback of sounds linked to the focused NLA animation strip."
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -738,10 +743,18 @@ class CARNIVORES_OT_set_kps(bpy.types.Operator):
     """Set a custom Keys Per Second (KPS) override for this animation"""
     bl_idname = "carnivores.set_kps"
     bl_label = "Set KPS"
+    bl_description = "Store a custom Keys Per Second value on the Action instead of using the scene frame rate."
     bl_options = {'REGISTER', 'UNDO'}
 
-    action_name: bpy.props.StringProperty()
-    default_value: bpy.props.IntProperty(default=30)
+    action_name: bpy.props.StringProperty(
+        name="Action Name",
+        description="Action receiving the KPS override.",
+    )
+    default_value: bpy.props.IntProperty(
+        name="KPS",
+        description="Keys per second to store on the Action.",
+        default=30,
+    )
 
     def execute(self, context):
         action = bpy.data.actions.get(self.action_name)
@@ -754,9 +767,13 @@ class CARNIVORES_OT_reset_kps(bpy.types.Operator):
     """Remove the KPS override and use Scene FPS (Auto)"""
     bl_idname = "carnivores.reset_kps"
     bl_label = "Reset KPS to Auto"
+    bl_description = "Remove the Action's custom KPS override so timing follows the scene frame rate."
     bl_options = {'REGISTER', 'UNDO'}
 
-    action_name: bpy.props.StringProperty()
+    action_name: bpy.props.StringProperty(
+        name="Action Name",
+        description="Action whose KPS override will be removed.",
+    )
 
     def execute(self, context):
         action = bpy.data.actions.get(self.action_name)
@@ -818,9 +835,13 @@ class CARNIVORES_OT_play_track_preview(bpy.types.Operator):
     """Solo this track and play it in a loop with sound. Stops when you pause playback."""
     bl_idname = "carnivores.play_track_preview"
     bl_label = "Play Preview"
+    bl_description = "Solo the selected NLA track, play it in a loop with its linked sound, and restore the previous timeline state when stopped."
     bl_options = {'REGISTER'}
 
-    action_name: bpy.props.StringProperty()
+    action_name: bpy.props.StringProperty(
+        name="Action Name",
+        description="NLA Action to solo and preview. Set automatically by the animation list.",
+    )
 
     @classmethod
     def poll(cls, context):
@@ -960,9 +981,13 @@ class CARNIVORES_OT_resync_animation(bpy.types.Operator):
     """Re-calculate keyframes for this animation based on current KPS and Scene FPS"""
     bl_idname = "carnivores.resync_animation"
     bl_label = "Re-Sync Timing"
+    bl_description = "Rebuild or rescale this Action's keyframes using its KPS and the current scene frame rate, then update NLA strips."
     bl_options = {'REGISTER', 'UNDO'}
 
-    action_name: bpy.props.StringProperty()
+    action_name: bpy.props.StringProperty(
+        name="Action Name",
+        description="Action whose keyframes and NLA timing will be rebuilt.",
+    )
 
     @classmethod
     def poll(cls, context):
@@ -1072,6 +1097,7 @@ class CARNIVORES_OT_reconstruct_armature(bpy.types.Operator):
     """Reconstruct a skeletal rig from vertex groups (bone owners). Useful for .car models."""
     bl_idname = "carnivores.reconstruct_armature"
     bl_label = "Reconstruct Rig from Owners"
+    bl_description = "Build and assign a Blender armature from imported CAR owner groups using the selected reconstruction algorithm."
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -1102,6 +1128,7 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
     """Log detailed skeletal information to a text datablock for debugging."""
     bl_idname = "carnivores.debug_rig_info"
     bl_label = "Log Rig Debug Info"
+    bl_description = "Write owner-cache, generated-bone, hierarchy, topology, and vertex-group diagnostics to Carnivores_Rig_Debug."
     bl_options = {'REGISTER'}
 
     @classmethod
@@ -1292,14 +1319,17 @@ class CARNIVORES_OT_reset_to_imported_owners(bpy.types.Operator):
     """Recreate vertex groups from the cached carnivores_owner_index attribute."""
     bl_idname = "carnivores.reset_to_imported_owners"
     bl_label = "Reset to Imported Owners"
+    bl_description = "Replace generated vertex groups with one-hot groups rebuilt from the imported CAR owner cache."
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
-        obj = context.active_object
+        obj = getattr(context, "active_object", None)
         if not obj or obj.type != 'MESH':
-            return False
-        return "carnivores_owner_index" in (obj.data.attributes.keys() if obj.data else [])
+            return _poll_message(cls, "Select an imported mesh with an owner cache to reset its vertex groups.")
+        if "carnivores_owner_index" not in (obj.data.attributes.keys() if obj.data else []):
+            return _poll_message(cls, "The active mesh has no imported owner cache to restore.")
+        return True
 
     def execute(self, context):
         import numpy as np

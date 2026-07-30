@@ -37,6 +37,31 @@ def _active_mesh(context):
     return obj if obj and obj.type == 'MESH' else None
 
 
+def _section(layout, title):
+    """Create a consistently labelled import/export dialog section."""
+    box = layout.box()
+    box.label(text=title)
+    return box
+
+
+def _draw_scale_note(layout, direction):
+    layout.label(text=f"Standard: 0.01 import / 100.0 export ({direction.lower()}).")
+
+
+def _draw_advanced_coordinate_conversion(layout, operator):
+    box = _section(layout, "Advanced Coordinate Conversion")
+    box.label(text="Keep the defaults for normal Carnivores files.")
+    box.prop(operator, "flip_handedness")
+    box.prop(operator, "axis_forward")
+    box.prop(operator, "axis_up")
+
+
+def _draw_default_compatibility_note(layout, target="Carnivores runtime"):
+    box = _section(layout, "Compatibility")
+    box.label(text=f"Default settings target the {target} conventions.")
+    return box
+
+
 def _remove_failed_import_collection(collection):
     """Remove a collection created for an import that did not complete."""
     if collection is None:
@@ -115,8 +140,8 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
     files: bpy.props.CollectionProperty(type=bpy.types.OperatorFileListElement)
     directory: bpy.props.StringProperty(subtype='DIR_PATH')
     scale: bpy.props.FloatProperty(
-        name="Scale",
-        description="Scale factor for the imported model",
+        name="Import Scale",
+        description="Scale factor applied to imported coordinates. The standard Carnivores counterpart is Export Scale 100.0.",
         default=0.01,
         min=0.01,
         max=100.0,
@@ -139,11 +164,11 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
     )
     bone_import_type: bpy.props.EnumProperty(
         name="Bone Import Type",
-        description="Choose how bones are imported",
+        description="Choose whether to import no deformation objects, lightweight hooks, or one editable armature",
         items=[
-            ('NONE', "None", "Do not import bones"),
-            ('ARMATURE', "Armature", "Import as armature"),
-            ('HOOKS', "Hooks", "Import as hooks"),
+            ('NONE', "None", "Import the mesh without bone deformation objects"),
+            ('ARMATURE', "Armature", "Create one editable Blender armature with vertex groups"),
+            ('HOOKS', "Hooks", "Create lightweight hook modifiers and control objects instead of one armature"),
         ],
         default='HOOKS'
     )
@@ -153,8 +178,8 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         default=True
     )
     flip_handedness: bpy.props.BoolProperty(
-        name='Flip Handedness',
-        description='Negate X-axis to match game\'s left-handed coordinate system (fixes mirroring)',
+        name='Use Carnivores Coordinate Conversion',
+        description='Apply the default Carnivores file-to-Blender coordinate conversion. Disable only for a deliberately custom coordinate workflow.',
         default=True
     )
     smooth_weights: bpy.props.BoolProperty(
@@ -185,35 +210,32 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
     def draw(self, context):
         layout = self.layout
 
-        layout.label(text="Import Options")
-        layout.prop(self, "scale")
-        layout.prop(self, "import_textures")
-        row = layout.row()
-        row.enabled = self.import_textures  # Disable based on the checkbox
+        content = _section(layout, "Content")
+        content.prop(self, "import_textures")
+        row = content.row()
+        row.enabled = self.import_textures
         row.prop(self, "create_materials")
-        layout.prop(self, "normal_smooth")
-        layout.prop(self, "validate")
-        layout.prop(self, 'flip_handedness')
-        
-        layout.separator() 
-        
-        layout.label(text="Bone Import")
-        layout.prop(self, "bone_import_type")
+
+        geometry = _section(layout, "Geometry")
+        geometry.prop(self, "scale")
+        _draw_scale_note(geometry, "Import")
+        geometry.prop(self, "normal_smooth")
+
+        rig = _section(layout, "Rig / Deformation")
+        rig.prop(self, "bone_import_type")
+        rig.label(text="Hooks are lightweight controls; Armature creates one editable skeleton.")
         if self.bone_import_type != 'NONE':
-            layout.prop(self, "smooth_weights")
+            rig.prop(self, "smooth_weights")
             if self.smooth_weights:
-                layout.prop(self, "smooth_iterations")
-                layout.prop(self, "smooth_factor")
-                layout.prop(self, "smooth_joints_only")
-        
-        layout.separator() 
-        
-        box = layout.box()
-        box.label(text="Axis Conversion")
-        box.prop(self, "axis_forward")
-        box.prop(self, "axis_up")
-        
-        layout.separator() 
+                rig.prop(self, "smooth_iterations")
+                rig.prop(self, "smooth_factor")
+                rig.prop(self, "smooth_joints_only")
+
+        compatibility = _section(layout, "Compatibility")
+        compatibility.prop(self, "validate")
+        compatibility.label(text="Structural checks always run; this option adds compatibility diagnostics.")
+
+        _draw_advanced_coordinate_conversion(layout, self)
         
     @common.timed("CARNIVORES_OT_import_3df.execute", is_operator=True)
     def execute(self, context):
@@ -356,8 +378,8 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
     filename_ext = ".3df"
     filter_glob: bpy.props.StringProperty(default="*.3df", options={'HIDDEN'}, maxlen=255)
     scale: bpy.props.FloatProperty(
-        name="Scale",
-        description="Scale factor to apply on export (applies to vertex coordinates)",
+        name="Export Scale",
+        description="Scale factor applied to exported coordinates. The standard Carnivores counterpart is Import Scale 0.01.",
         default=100.0,
         min=1.0,
         max=1000.0,
@@ -383,9 +405,9 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         default=False,
     )
     flip_handedness: bpy.props.BoolProperty(
-        name='Flip Handedness',
-        description='Negate X-axis to match game\'s left-handed coordinate system (fixes mirroring)',
-        default=True  # Start disabled to match your current diff
+        name='Use Carnivores Coordinate Conversion',
+        description='Apply the default Carnivores Blender-to-file coordinate conversion. Disable only for a deliberately custom coordinate workflow.',
+        default=True
     )
 
     @classmethod
@@ -396,21 +418,22 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
 
     def draw(self, context):
         layout = self.layout
-        layout.label(text="Export Options")
-        layout.prop(self, "use_multi_export")
-        layout.label(text="Exports active object to the specified file" if not self.use_multi_export else "Exports selected objects to separate files with filename as prefix")
-        layout.prop(self, "scale")
-        layout.prop(self, "export_textures")
-        row = layout.row()
+
+        content = _section(layout, "Content")
+        content.prop(self, "export_textures")
+        row = content.row()
         row.enabled = self.export_textures
         row.prop(self, "flip_u")
         row.prop(self, "flip_v")
-        layout.prop(self, 'flip_handedness')
-        layout.separator()
-        box = layout.box()
-        box.label(text="Axis Conversion")
-        box.prop(self, "axis_forward")
-        box.prop(self, "axis_up")
+
+        geometry = _section(layout, "Geometry")
+        geometry.prop(self, "scale")
+        _draw_scale_note(geometry, "Export")
+        geometry.prop(self, "use_multi_export")
+        geometry.label(text="Exports the active object or each selected mesh, depending on the option above.")
+
+        _draw_default_compatibility_note(layout)
+        _draw_advanced_coordinate_conversion(layout, self)
 
     @common.timed("CARNIVORES_OT_export_3df.execute", is_operator=True)
     def execute(self, context):
@@ -548,8 +571,8 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
     filter_glob: bpy.props.StringProperty(default="*.car", options={'HIDDEN'}, maxlen=255)
     
     scale: bpy.props.FloatProperty(
-        name="Scale",
-        description="Scale factor to apply on export (applies to vertex coordinates)",
+        name="Export Scale",
+        description="Scale factor applied to exported coordinates. The standard Carnivores counterpart is Import Scale 0.01.",
         default=100.0,
         min=1.0,
         max=1000.0,
@@ -581,8 +604,8 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
     )
     
     flip_handedness: bpy.props.BoolProperty(
-        name='Flip Handedness',
-        description='Negate X-axis to match game\'s left-handed coordinate system',
+        name='Use Carnivores Coordinate Conversion',
+        description='Apply the default Carnivores Blender-to-file coordinate conversion. Disable only for a deliberately custom coordinate workflow.',
         default=True
     )
 
@@ -594,20 +617,23 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
 
     def draw(self, context):
         layout = self.layout
-        layout.label(text="Export Options")
-        layout.prop(self, "scale")
-        layout.prop(self, "model_name")
-        layout.prop(self, "export_textures")
-        row = layout.row()
+
+        content = _section(layout, "Content")
+        content.prop(self, "export_textures")
+        row = content.row()
         row.enabled = self.export_textures
         row.prop(self, "flip_u")
         row.prop(self, "flip_v")
-        layout.prop(self, 'flip_handedness')
-        layout.separator()
-        box = layout.box()
-        box.label(text="Axis Conversion")
-        box.prop(self, "axis_forward")
-        box.prop(self, "axis_up")
+
+        geometry = _section(layout, "Geometry")
+        geometry.prop(self, "scale")
+        _draw_scale_note(geometry, "Export")
+
+        compatibility = _section(layout, "Compatibility")
+        compatibility.prop(self, "model_name")
+        compatibility.label(text="CAR internal names are limited to 32 characters; leave empty to use the filename.")
+
+        _draw_advanced_coordinate_conversion(layout, self)
 
     @common.timed("CARNIVORES_OT_export_car.execute", is_operator=True)
     def execute(self, context):
@@ -692,10 +718,10 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
     directory: bpy.props.StringProperty(subtype='DIR_PATH')
 
     scale: bpy.props.FloatProperty(
-        name='Scale', 
-        description='Scale factor for the imported model', 
-        default=0.01, 
-        min=0.01, 
+        name='Import Scale',
+        description='Scale factor applied to imported coordinates. The standard Carnivores counterpart is Export Scale 100.0.',
+        default=0.01,
+        min=0.01,
         max=100
     )
     import_textures: bpy.props.BoolProperty(
@@ -719,8 +745,8 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         default=True
     )
     flip_handedness: bpy.props.BoolProperty(
-        name='Flip Handedness', 
-        description="Negate X-axis to match game\'s left-handed coordinate system (fixes mirroring)", 
+        name='Use Carnivores Coordinate Conversion',
+        description='Apply the default Carnivores file-to-Blender coordinate conversion. Disable only for a deliberately custom coordinate workflow.',
         default=True
     )
     import_animations: bpy.props.BoolProperty(
@@ -740,12 +766,12 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
     )
     import_sounds: bpy.props.BoolProperty(
         name='Import Sounds',
-        description='Import embedded sounds as sound datablocks',
+        description='Import embedded sounds as sound datablocks. If animations are disabled, sounds are imported without linked Actions.',
         default=True
     )
     smooth_weights: bpy.props.BoolProperty(
         name="Smooth Weights",
-        description="Procedurally smooth vertex weights for more organic deformation",
+        description="Smooth generated deform groups. CAR stores owner IDs rather than a bone hierarchy, so this affects generated weights only.",
         default=False
     )
     smooth_iterations: bpy.props.IntProperty(
@@ -770,44 +796,42 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
 
     def draw(self, context):
         layout = self.layout
-        
-        # General Settings
-        box = layout.box()
-        box.label(text="General Settings", icon='PREFERENCES')
-        box.prop(self, 'scale')
-        box.prop(self, 'import_textures')
-        row = box.row()
+
+        content = _section(layout, "Content")
+        content.prop(self, "import_textures")
+        row = content.row()
         row.enabled = self.import_textures
-        row.prop(self, 'create_materials')
-        box.prop(self, 'normal_smooth')
-        box.prop(self, 'validate')
-        box.prop(self, 'flip_handedness')
-        
-        # Animation Settings
-        box = layout.box()
-        box.prop(self, 'import_animations', icon='ANIM')
+        row.prop(self, "create_materials")
+
+        geometry = _section(layout, "Geometry")
+        geometry.prop(self, "scale")
+        _draw_scale_note(geometry, "Import")
+        geometry.prop(self, "normal_smooth")
+
+        animation = _section(layout, "Animation")
+        animation.prop(self, "import_animations")
         if self.import_animations:
-            sub = box.box()
-            sub.prop(self, 'use_absolute_shape_keys')
-            sub.prop(self, 'use_kps_timing')
-        box.prop(self, 'import_sounds')
-        
-        # Bone & Smoothing Settings
-        box = layout.box()
-        box.label(text="Mesh & Bone Smoothing", icon='MOD_SMOOTH')
-        box.prop(self, "smooth_weights")
+            sub = animation.box()
+            sub.prop(self, "use_absolute_shape_keys")
+            sub.prop(self, "use_kps_timing")
+        animation.prop(self, "import_sounds")
+        if not self.import_animations:
+            animation.label(text="Sounds will be imported without linked Actions.", icon='INFO')
+
+        rig = _section(layout, "Rig / Deformation")
+        rig.prop(self, "smooth_weights")
+        rig.label(text="CAR stores owner IDs, not a bone hierarchy; smoothing affects generated deform groups only.")
         if self.smooth_weights:
-            sub = box.box()
+            sub = rig.box()
             sub.prop(self, "smooth_iterations")
             sub.prop(self, "smooth_factor")
             sub.prop(self, "smooth_joints_only")
-            
-        # Advanced
-        box = layout.box()
-        box.label(text="Advanced Axis Settings", icon='TRIA_DOWN')
-        box.prop(self, 'axis_forward')
-        box.prop(self, 'axis_up')
-        layout.separator()
+
+        compatibility = _section(layout, "Compatibility")
+        compatibility.prop(self, "validate")
+        compatibility.label(text="Structural checks always run; this option adds compatibility diagnostics.")
+
+        _draw_advanced_coordinate_conversion(layout, self)
 
     @common.timed('CARNIVORES_OT_import_car.execute', is_operator=True)
     def execute(self, context):
@@ -978,15 +1002,15 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
 class CARNIVORES_OT_export_3dn(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
     bl_idname = "carnivores.export_3dn"
     bl_label = "Export .3DN Model"
-    bl_description = "Export active mesh object as Carnivores .3dn model file"
+    bl_description = "Export an active mesh as a static .3dn model for Carnivores: Dinosaur Hunter mobile/HD titles"
     bl_options = {'PRESET'}
     
     filename_ext = ".3dn"
     filter_glob: bpy.props.StringProperty(default="*.3dn", options={'HIDDEN'}, maxlen=255)
     
     scale: bpy.props.FloatProperty(
-        name="Scale",
-        description="Scale factor to apply on export (applies to vertex coordinates)",
+        name="Export Scale",
+        description="Scale factor applied to exported coordinates. The standard Carnivores counterpart is Import Scale 0.01.",
         default=100.0,
         min=1.0,
         max=1000.0,
@@ -1025,8 +1049,8 @@ class CARNIVORES_OT_export_3dn(bpy.types.Operator, bpy_extras.io_utils.ExportHel
     )
     
     flip_handedness: bpy.props.BoolProperty(
-        name='Flip Handedness',
-        description='Negate X-axis to match game\'s left-handed coordinate system',
+        name='Use Carnivores Coordinate Conversion',
+        description='Apply the default Carnivores Blender-to-file coordinate conversion. Disable only for a deliberately custom coordinate workflow.',
         default=True
     )
 
@@ -1038,24 +1062,26 @@ class CARNIVORES_OT_export_3dn(bpy.types.Operator, bpy_extras.io_utils.ExportHel
 
     def draw(self, context):
         layout = self.layout
-        layout.label(text="Export Options")
-        layout.prop(self, "scale")
-        layout.prop(self, "model_name")
-        layout.prop(self, "has_sprite")
+
+        content = _section(layout, "Content")
+        content.prop(self, "model_name")
+        content.prop(self, "has_sprite")
         if self.has_sprite:
-            layout.prop(self, "sprite_name")
-        
-        layout.separator()
-        layout.label(text="UV Options")
-        row = layout.row()
-        row.prop(self, "flip_u")
-        row.prop(self, "flip_v")
-        layout.prop(self, 'flip_handedness')
-        layout.separator()
-        box = layout.box()
-        box.label(text="Axis Conversion")
-        box.prop(self, "axis_forward")
-        box.prop(self, "axis_up")
+            content.prop(self, "sprite_name")
+        uv = content.box()
+        uv.label(text="Texture Coordinates")
+        uv.prop(self, "flip_u")
+        uv.prop(self, "flip_v")
+
+        geometry = _section(layout, "Geometry")
+        geometry.prop(self, "scale")
+        _draw_scale_note(geometry, "Export")
+
+        compatibility = _section(layout, "Compatibility")
+        compatibility.label(text="Target: Carnivores: Dinosaur Hunter mobile/HD static-model format.")
+        compatibility.label(text=".3DN is static; animation and sound data are stored separately.")
+
+        _draw_advanced_coordinate_conversion(layout, self)
 
     @common.timed("CARNIVORES_OT_export_3dn.execute", is_operator=True)
     def execute(self, context):
@@ -1137,16 +1163,16 @@ class CARNIVORES_OT_export_vtl(bpy.types.Operator, bpy_extras.io_utils.ExportHel
     filter_glob: bpy.props.StringProperty(default="*.vtl", options={'HIDDEN'}, maxlen=255)
     
     scale: bpy.props.FloatProperty(
-        name="Scale",
-        description="Scale factor to apply on export (applies to vertex coordinates)",
+        name="Export Scale",
+        description="Scale factor applied to exported coordinates. The standard Carnivores counterpart is Import Scale 0.01.",
         default=100.0,
         min=1.0,
         max=1000.0,
     )
     
     flip_handedness: bpy.props.BoolProperty(
-        name='Flip Handedness',
-        description='Negate X-axis to match game\'s left-handed coordinate system',
+        name='Use Carnivores Coordinate Conversion',
+        description='Apply the default Carnivores Blender-to-file coordinate conversion. Disable only for a deliberately custom coordinate workflow.',
         default=True
     )
 
@@ -1170,14 +1196,16 @@ class CARNIVORES_OT_export_vtl(bpy.types.Operator, bpy_extras.io_utils.ExportHel
 
     def draw(self, context):
         layout = self.layout
-        layout.label(text="Export Options")
-        layout.prop(self, "scale")
-        layout.prop(self, 'flip_handedness')
-        layout.separator()
-        box = layout.box()
-        box.label(text="Axis Conversion")
-        box.prop(self, "axis_forward")
-        box.prop(self, "axis_up")
+
+        animation = _section(layout, "Animation")
+        animation.label(text="Exports active shape-key, object, or parent-armature animation data.")
+
+        geometry = _section(layout, "Geometry")
+        geometry.prop(self, "scale")
+        _draw_scale_note(geometry, "Export")
+
+        _draw_default_compatibility_note(layout)
+        _draw_advanced_coordinate_conversion(layout, self)
 
     @common.timed("CARNIVORES_OT_export_vtl.execute", is_operator=True)
     def execute(self, context):
@@ -1243,6 +1271,7 @@ class CARNIVORES_OT_export_vtl(bpy.types.Operator, bpy_extras.io_utils.ExportHel
 class CARNIVORES_OT_modal_message(bpy.types.Operator):
     bl_idname = "carnivores.modal_message"
     bl_label = "Carnivores Operation Report"
+    bl_description = "Show a concise operation result and provide access to the complete report."
 
     message: bpy.props.StringProperty(default="")
     report_text_name: bpy.props.StringProperty(

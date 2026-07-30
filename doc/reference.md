@@ -34,18 +34,20 @@ Canonical definition for `.3df`, `.car`, and `.3dn` face `flags` field:
 
 | Bit | Mask | Name | Description |
 |-----|------|------|-------------|
-| 0 | 0x0001 | `sfDoubleSide` | Face textured on both sides |
-| 1 | 0x0002 | `sfDarkBack` | Dark back side |
-| 2 | 0x0004 | `sfOpacity` | Transparent (alpha-blended) |
-| 3 | 0x0008 | `sfTransparent` | Non-solid (bullets pass through) |
-| 4 | 0x0010 | `sfMortal` | Marks target/hit zone |
-| 5 | 0x0020 | `sfPhong` | Phong-shaded |
-| 6 | 0x0040 | `sfEnvMap` | Environment-mapped |
-| 7 | 0x0080 | `sfNeedVC` | Purpose unknown (legacy) |
+| 0 | 0x0001 | `sfDoubleSide` | Render both sides; C2 does not add its normal back-face culling/light marker |
+| 1 | 0x0002 | `sfDarkBack` | Use the C2 back-face culling test |
+| 2 | 0x0004 | `sfOpacity` | Alpha-tested cutout; transparent texture pixels are discarded |
+| 3 | 0x0008 | `sfTransparent` | Alpha-blended/non-solid face; skipped by projectile trace tests |
+| 4 | 0x0010 | `sfMortal` | Character hits on this face can be marked mortal/lethal |
+| 5 | 0x0020 | Phong selection bit | Selects faces for the special Phong mapping pass when used |
+| 6 | 0x0040 | Environment-map selection bit | Selects faces for the special environment-map pass when used |
+| 7 | 0x0080 | `sfNeedVC` | Legacy vertex-color/light and culling marker; C2 adds it to non-double-sided faces |
 | 8–14 | — | Unused | Reserved, always 0 |
-| 15 | 0x8000 | `sfDark` | Dark front side |
+| 15 | 0x8000 | `sfDark` | Legacy software-renderer darkening flag |
 
 Face flags are stored as a face-domain `INT` attribute named `3df_flags` on Blender meshes. Use helpers in `utils/flags.py` to read/write them.
+
+C2's extended effect selectors are composite masks: `sfPhong = 0x0030` and `sfEnvMap = 0x0050`, so both overlap the `sfMortal` bit. The add-on exposes the individual `0x0020` and `0x0040` authoring bits without rewriting other face flags. Runtime behavior was checked against C2 MEE 1.11 `Constants.h`, `ModelLoader.cpp`, `GLUtils.cpp`, `GLModel.cpp`, `SoftModel.cpp`, and `Math.cpp`.
 
 ## Coordinate System Summary
 

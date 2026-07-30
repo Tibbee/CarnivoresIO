@@ -44,7 +44,8 @@ CarnivoresIO is a Blender add-on for handling `.3df`, `.car`, `.3dn` files, incl
 
 #### UI Integration
 - Panels: `VIEW3D_PT_3df_face_flags`, `VIEW3D_PT_carnivores_selection`, `VIEW3D_PT_carnivores_animation`
-- Import/Export: Integrated into `File > Import/Export` menus
+- Import/Export: Integrated into `File > Import/Export` menus with consistent Content, Geometry, Animation/Rig, Compatibility, and Advanced Coordinate Conversion sections
+- Operator tooltips: Face-flag descriptions follow C2 MEE surface-flag behavior; animation, sound, timing, rig, and selection operators describe their scope and side effects
 - Preferences: Debug mode toggle (enables verbose logs/`@timed` output)
 
 ---
