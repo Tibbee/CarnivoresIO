@@ -81,7 +81,7 @@ Export all selected mesh objects to separate `.3df` files in one operation.
 
 ### Validation
 
-Non-destructive structural validation always checks section sizes, signed counts, indices, finite coordinates, hierarchy cycles, and texture-row alignment. The optional **Compatibility Checks** import setting reports legacy AltEdit and current C2 MEE constraints, such as fixed animation/sound arrays, without imposing obsolete mesh limits. Validation preserves source owners, UVs, flags, and hierarchy data rather than silently repairing them.
+Non-destructive structural validation always checks section sizes, signed counts, indices, finite coordinates, hierarchy cycles, and texture-row alignment. The **Carnivores Model** sidebar panel adds format-aware preflight checks for Blender meshes, textures, face flags, animation timing, sounds, rig owners, names, modifiers, and C2 MEE compatibility. Export dialogs run the same checks by default and block only errors; warnings remain reviewable in the export report. Validation preserves source owners, UVs, flags, and hierarchy data rather than silently repairing them.
 
 ---
 
@@ -91,7 +91,7 @@ Tools are accessed through two locations in Blender:
 
 - **File > Import > Carnivores Engine (.3df, .car)** -- Import submenu
 - **File > Export > Carnivores Engine (.3df, .car, .3dn)** -- Export submenu
-- **Sidebar** (press `N` in the 3D Viewport) > **Carnivores** tab -- Panels for Animation, Face Flags, and Selection Tools
+- **Sidebar** (press `N` in the 3D Viewport) > **Carnivores** tab -- Panels for Model Health, Animation, Face Flags, and Selection Tools
 
 ---
 
@@ -167,8 +167,8 @@ The flag tooltips and runtime meanings are documented in [Face Flags](doc/refere
    - **Animated Model (.car)** -- exports the active mesh with its shape keys, armature, linked sounds, and KPS metadata. The model name field accepts a 32-character string; suffix with `msc: #` for engine-specific behavior.
    - **Dinosaur Hunter Mobile/HD (.3dn)** -- static models for mobile/HD Carnivores titles. Supports an optional sprite name.
    - **Animation (.vtl)** -- exports vertex animation data as a standalone file.
-3. Configure **Export Scale** (default 100.0 to compensate for the 0.01 import default), **Use Carnivores Coordinate Conversion**, and optional UV flipping.
-4. Click **Export**.
+3. Configure **Export Scale** (default 100.0 to compensate for the 0.01 import default), **Use Carnivores Coordinate Conversion**, and optional UV flipping. Leave **Preflight Validation** enabled to run non-destructive target checks before writing the file.
+4. Review any warnings in the operation report and click **Export**. Preflight errors prevent unsafe output until the model or settings are corrected.
 
 ---
 

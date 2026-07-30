@@ -1,8 +1,11 @@
-from . import io, flags, animation, reporting
+from . import io, flags, animation, reporting, validation
 
 classes = (
     reporting.CARNIVORES_OT_open_report,
     reporting.CARNIVORES_OT_copy_report,
+
+    validation.CARNIVORES_OT_validate_model,
+    validation.VIEW3D_PT_carnivores_model_health,
 
     io.CARNIVORES_OT_import_3df,
     io.CARNIVORES_OT_export_3df,

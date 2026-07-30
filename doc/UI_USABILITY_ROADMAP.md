@@ -2,7 +2,7 @@
 
 Implementation-oriented design and handoff document for improving the CarnivoresIO Blender extension UI. This document is intended to give another coding agent enough context, priorities, constraints, and acceptance criteria to implement the work incrementally.
 
-> **Status:** WP-01 (operator context/outcomes), WP-02 (dialog consistency), and WP-03 (result and warning reports) are implemented; remaining work packages remain proposals unless marked otherwise.
+> **Status:** WP-01 (operator context/outcomes), WP-02 (dialog consistency), WP-03 (result and warning reports), and WP-04 (model health/pre-export validation) are implemented; remaining work packages remain proposals unless marked otherwise.
 >
 > **Target:** Blender 4.2+ extension supporting `.3df`, `.car`, `.3dn`, and `.vtl` workflows.
 >
@@ -116,6 +116,8 @@ Implemented in `operators/flags.py` and `operators/animation.py`:
 - `VIEW3D_PT_carnivores_animation`
 
 The animation panel currently also contains global audio and rig reconstruction controls.
+
+The Model Health panel uses `utils/validation.py` for a compact summary and an explicit format-aware preflight action. Export dialogs reuse the same validator before writing files.
 
 ### Preferences
 
@@ -347,6 +349,8 @@ Suggested Text datablock names:
 ## WP-04: Model Health and pre-export validation
 
 **Priority:** Highest-value workflow improvement
+
+**Status:** Implemented in `utils/validation.py`, `operators/validation.py`, `operators/io.py`, and the structured reporting layer.
 
 ### Requirements
 
@@ -703,10 +707,10 @@ Onboarding may include a small help menu or links, but should not show intrusive
 
 ### Phase B — export confidence
 
-1. WP-04: non-destructive validation model
-2. Compact Model Health panel
-3. Export integration
-4. WP-05: post-import selection and summaries
+1. WP-04: non-destructive validation model — implemented
+2. Compact Model Health panel — implemented
+3. Export integration — implemented
+4. WP-05: post-import selection and summaries — next
 
 ### Phase C — editing workflows
 

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-SEVERITIES = ("ERROR", "WARNING", "INFO")
+SEVERITIES = ("ERROR", "WARNING", "INFO", "PASS")
 
 
 @dataclass(frozen=True)
@@ -69,6 +69,9 @@ class OperationReport:
     def warning(self, category: str, message: str, **kwargs) -> ReportEntry:
         return self.add("WARNING", category, message, **kwargs)
 
+    def passed(self, category: str, message: str, **kwargs) -> ReportEntry:
+        return self.add("PASS", category, message, **kwargs)
+
     def error(self, category: str, message: str, **kwargs) -> ReportEntry:
         return self.add("ERROR", category, message, **kwargs)
 
@@ -108,7 +111,8 @@ class OperationReport:
             f"Files: {self.attempted} attempted, {self.succeeded} succeeded, "
             f"{self.failed} failed\n"
             f"Diagnostics: {counts['ERROR']} errors, "
-            f"{counts['WARNING']} warnings, {counts['INFO']} info"
+            f"{counts['WARNING']} warnings, {counts['INFO']} info, "
+            f"{counts['PASS']} pass"
         )
 
     def popup_summary(self) -> str:
@@ -129,7 +133,8 @@ class OperationReport:
                 "Diagnostics: "
                 f"{counts['ERROR']} errors, "
                 f"{counts['WARNING']} warnings, "
-                f"{counts['INFO']} info"
+                f"{counts['INFO']} info, "
+                f"{counts['PASS']} pass"
             ),
             "",
         ]

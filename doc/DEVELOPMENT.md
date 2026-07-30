@@ -43,9 +43,10 @@ CarnivoresIO is a Blender add-on for handling `.3df`, `.car`, `.3dn` files, incl
 - **Performance**: NumPy vectorization, `@timed` decorator for logging, BMesh for Edit Mode operations.
 
 #### UI Integration
-- Panels: `VIEW3D_PT_3df_face_flags`, `VIEW3D_PT_carnivores_selection`, `VIEW3D_PT_carnivores_animation`
+- Panels: `VIEW3D_PT_carnivores_model_health`, `VIEW3D_PT_3df_face_flags`, `VIEW3D_PT_carnivores_selection`, `VIEW3D_PT_carnivores_animation`
 - Import/Export: Integrated into `File > Import/Export` menus with consistent Content, Geometry, Animation/Rig, Compatibility, and Advanced Coordinate Conversion sections
 - Operator tooltips: Face-flag descriptions follow C2 MEE surface-flag behavior; animation, sound, timing, rig, and selection operators describe their scope and side effects
+- Model validation: `utils/validation.py` provides reusable non-destructive Blender-side preflight checks; export operators consume the same results and write them to the structured validation/export reports
 - Preferences: Debug mode toggle (enables verbose logs/`@timed` output)
 
 ---
@@ -118,10 +119,10 @@ Combined from `dev_notes.md` and `future_changes.md`.
 - Custom overlay coloring faces by `3df_flags` (e.g., blue=water, red=death zones)
 - Toggle in viewport properties, legend, interactive feedback
 
-#### 1.2 Model Health Check & Pre-Export Validation
-- Check texture dimensions (power-of-two), mesh convexity, vertex limits
-- Detect N-gons/quads if engine only supports triangles
-- Generate user-friendly report with warnings/fixes
+#### 1.2 Model Health Check & Pre-Export Validation — Implemented
+- Format-aware non-destructive mesh, UV, texture, face-flag, animation, sound, rig, name, modifier, and coordinate checks
+- Compact Model Health panel and explicit `Validate Model` report
+- Export operators reuse the same checks; errors block output and warnings remain reviewable
 
 ### Phase2: Animation Workflow
 #### 2.1 Unified Carnivores Animation Panel
@@ -207,7 +208,7 @@ Milestones, acceptance criteria, tests, risks, and file touch points are maintai
 
 - **NumPy**: Chosen for performance on large arrays. Avoid Python loops.
 - **BMesh**: Used for Edit Mode operations to access selected faces efficiently.
-- **Validation Layers**: Non-destructive structural validation always runs. The import `validate` property enables optional legacy-tool and current-engine compatibility diagnostics.
+- **Validation Layers**: Non-destructive structural validation always runs for binary input. `utils/validation.py` provides format-aware Blender model preflight checks; export operators reuse those checks without mutating the source model.
 - **Hook vs. Armature**: Hooks default for simplicity; armatures supported for advanced rigging.
 - **Error Reporting**: Parser warnings remain in `ParserContext.warnings` and are recorded in structured operation reports. Import/export reports are written to stable Blender Text datablocks (`Carnivores_Import_Report` or `Carnivores_Export_Report`) and summarized in one popup with explicit `Open Report` and `Copy Report` actions.
 

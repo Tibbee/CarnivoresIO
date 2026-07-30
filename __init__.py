@@ -96,6 +96,23 @@ def register():
         description="Choose what to do with faces matched by the selected C2 face flags.",
         default='SELECT',
     )
+    from .utils.validation import FORMAT_ITEMS
+    bpy.types.Scene.carnivores_validation_format = bpy.props.EnumProperty(
+        name="Preflight Target Format",
+        description="Format-aware requirements used by the Carnivores Model health panel.",
+        items=FORMAT_ITEMS,
+        default='AUTO',
+    )
+    bpy.types.Scene.carnivores_validation_export_textures = bpy.props.BoolProperty(
+        name="Export Textures",
+        description="Include texture and active-UV requirements in model preflight checks.",
+        default=True,
+    )
+    bpy.types.Scene.carnivores_validation_check_audio = bpy.props.BoolProperty(
+        name="Check Audio Conversion",
+        description="Verify linked CAR sounds can be converted to 22050Hz mono PCM16.",
+        default=True,
+    )
     # Register flags
     from .core.constants import FACE_FLAG_OPTIONS
     for i, (bit, label, description) in enumerate(FACE_FLAG_OPTIONS):
@@ -259,6 +276,9 @@ def unregister():
     del bpy.types.Scene.cf_flag_section
     del bpy.types.Scene.cf_select_mode
     del bpy.types.Scene.cf_select_action
+    del bpy.types.Scene.carnivores_validation_format
+    del bpy.types.Scene.carnivores_validation_export_textures
+    del bpy.types.Scene.carnivores_validation_check_audio
     
     from .core.constants import FACE_FLAG_OPTIONS
     for i in range(len(FACE_FLAG_OPTIONS)):

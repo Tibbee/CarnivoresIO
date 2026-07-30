@@ -58,6 +58,19 @@ C2's extended effect selectors are composite masks: `sfPhong = 0x0030` and `sfEn
 
 Because the default mapping has determinant `-1`, face and UV corner order is reversed with it. Full matrix composition, engine-source evidence, winding handling, and reciprocal export logic are documented in [Formats: Coordinate & Axis Conversion](formats.md#coordinate--axis-conversion).
 
+## Blender Model Health and Preflight
+
+The **Carnivores Model** panel and export dialogs use the same non-destructive Blender-side validator in `utils/validation.py`. Select a target format (`.3df`, `.car`, `.3dn`, or `.vtl`) to check only relevant requirements:
+
+- Mesh geometry, finite coordinates, triangulation, UV availability, and unapplied visible modifiers
+- 256-pixel texture width, ARGB1555 row alignment, variable-height texture notes, and C2 MEE OpenGL compatibility
+- `3df_flags` domain/type/range and preserved unknown bits
+- CAR animation names, KPS, fixed animation/sound counts, linked sound conversion, and owner/rig mapping
+- Serialized model, sprite, bone, animation, and sound names
+- Signed 16-bit CAR/VTL animation coordinate range after the selected export transform
+
+Results use `PASS`, `INFO`, `WARNING`, and `ERROR`. Preflight errors block export by default; warnings permit export and are copied into the operation report. The validator reads the source mesh, materials, actions, sounds, and rig only; it does not apply modifiers, triangulate the source, resize textures, alter owners, or remove unknown flags.
+
 ## Validation Warnings vs. Errors
 
 Collected in `ParserContext.warnings` during parsing:

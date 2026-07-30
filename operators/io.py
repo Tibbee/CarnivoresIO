@@ -8,6 +8,7 @@ from ..utils import animation as anim_utils
 from ..utils import common
 from ..utils.logger import info, debug, warn, error
 from ..utils.reporting import OperationReport, write_report_text
+from ..utils.validation import validate_blender_model
 from ..utils.rig_reconstruction import (
     OWNER_MAPPING_PROPERTY,
     build_owner_mapping,
@@ -101,6 +102,20 @@ def _report_batch_summary(operator, operation, attempted, succeeded, failed, rep
         message += f" ({failed_names})"
     operator.report({'WARNING' if success_count else 'ERROR'}, message + ".")
     return success_count > 0
+
+
+def _append_preflight_report(report, validation_report, source, destination=""):
+    """Copy reusable validation diagnostics into an export operation report."""
+    for entry in validation_report.entries:
+        report.add(
+            entry.severity,
+            f"Preflight / {entry.category}",
+            entry.message,
+            source=source,
+            destination=destination,
+            suggested_action=entry.suggested_action,
+        )
+    return validation_report.counts()["ERROR"] == 0
 
 
 def _finalize_operation_report(operator, report):
@@ -409,6 +424,11 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         description='Apply the default Carnivores Blender-to-file coordinate conversion. Disable only for a deliberately custom coordinate workflow.',
         default=True
     )
+    preflight_validation: bpy.props.BoolProperty(
+        name="Preflight Validation",
+        description="Run non-destructive model checks before each .3DF export and block structurally unsafe files.",
+        default=True,
+    )
 
     @classmethod
     def poll(cls, context):
@@ -432,7 +452,9 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         geometry.prop(self, "use_multi_export")
         geometry.label(text="Exports the active object or each selected mesh, depending on the option above.")
 
-        _draw_default_compatibility_note(layout)
+        compatibility = _draw_default_compatibility_note(layout)
+        compatibility.prop(self, "preflight_validation")
+        compatibility.label(text="Warnings allow export; preflight errors block structurally unsafe output.")
         _draw_advanced_coordinate_conversion(layout, self)
 
     @common.timed("CARNIVORES_OT_export_3df.execute", is_operator=True)
@@ -476,6 +498,17 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
                 filename = obj_name if not base_name else f"{base_name}_{obj_name}"
                 filepath = os.path.join(base_dir, f"{filename}.3df")
                 try:
+                    if self.preflight_validation:
+                        validation = validate_blender_model(
+                            obj,
+                            "3DF",
+                            export_textures=self.export_textures,
+                            filepath=filepath,
+                            export_matrix=export_matrix_np,
+                        )
+                        if not _append_preflight_report(report, validation, obj.name, os.path.basename(filepath)):
+                            failed_files.append(obj.name)
+                            continue
                     export_3df(
                         filepath,
                         obj,
@@ -520,23 +553,41 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
             attempted_count = 1
             filepath = base_filepath if base_name else os.path.join(base_dir, f"{obj.name.replace('.', '_')}.3df")
             try:
-                export_3df(
-                    filepath,
-                    obj,
-                    export_matrix_np,
-                    export_textures=self.export_textures,
-                    flip_u=self.flip_u,
-                    flip_v=self.flip_v,
-                    flip_handedness=self.flip_handedness
-                )
-                destination = os.path.basename(filepath)
-                exported_files.append(destination)
-                report.info(
-                    "Export",
-                    "Exported successfully.",
-                    source=obj.name,
-                    destination=destination,
-                )
+                preflight_ok = True
+                if self.preflight_validation:
+                    validation = validate_blender_model(
+                        obj,
+                        "3DF",
+                        export_textures=self.export_textures,
+                        filepath=filepath,
+                        export_matrix=export_matrix_np,
+                    )
+                    preflight_ok = _append_preflight_report(
+                        report,
+                        validation,
+                        obj.name,
+                        os.path.basename(filepath),
+                    )
+                if preflight_ok:
+                    export_3df(
+                        filepath,
+                        obj,
+                        export_matrix_np,
+                        export_textures=self.export_textures,
+                        flip_u=self.flip_u,
+                        flip_v=self.flip_v,
+                        flip_handedness=self.flip_handedness
+                    )
+                    destination = os.path.basename(filepath)
+                    exported_files.append(destination)
+                    report.info(
+                        "Export",
+                        "Exported successfully.",
+                        source=obj.name,
+                        destination=destination,
+                    )
+                else:
+                    failed_files.append(obj.name)
             except Exception as exc:
                 message = f"Failed to export {obj.name} to {os.path.basename(filepath)}: {exc}"
                 error(f"[Export .3DF] {message}")
@@ -608,6 +659,11 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         description='Apply the default Carnivores Blender-to-file coordinate conversion. Disable only for a deliberately custom coordinate workflow.',
         default=True
     )
+    preflight_validation: bpy.props.BoolProperty(
+        name="Preflight Validation",
+        description="Run non-destructive model, animation, sound, and C2 MEE checks before CAR export.",
+        default=True,
+    )
 
     @classmethod
     def poll(cls, context):
@@ -631,7 +687,9 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
 
         compatibility = _section(layout, "Compatibility")
         compatibility.prop(self, "model_name")
+        compatibility.prop(self, "preflight_validation")
         compatibility.label(text="CAR internal names are limited to 32 characters; leave empty to use the filename.")
+        compatibility.label(text="Warnings allow export; preflight errors block structurally unsafe output.")
 
         _draw_advanced_coordinate_conversion(layout, self)
 
@@ -665,6 +723,21 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
             return {'CANCELLED'}
 
         try:
+            if self.preflight_validation:
+                validation = validate_blender_model(
+                    obj,
+                    "CAR",
+                    export_textures=self.export_textures,
+                    check_audio=True,
+                    filepath=self.filepath,
+                    model_name=self.model_name,
+                    export_matrix=export_matrix_np,
+                )
+                if not _append_preflight_report(report, validation, obj.name, os.path.basename(self.filepath)):
+                    report.set_outcome(1, 0, 1)
+                    self.report({'ERROR'}, "CAR preflight failed; no file was written.")
+                    _finalize_operation_report(self, report)
+                    return {'CANCELLED'}
             export_car(
                 self.filepath,
                 obj,
@@ -1053,6 +1126,11 @@ class CARNIVORES_OT_export_3dn(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         description='Apply the default Carnivores Blender-to-file coordinate conversion. Disable only for a deliberately custom coordinate workflow.',
         default=True
     )
+    preflight_validation: bpy.props.BoolProperty(
+        name="Preflight Validation",
+        description="Run non-destructive mesh, UV, rig, name, and C2 MEE checks before .3DN export.",
+        default=True,
+    )
 
     @classmethod
     def poll(cls, context):
@@ -1078,6 +1156,7 @@ class CARNIVORES_OT_export_3dn(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         _draw_scale_note(geometry, "Export")
 
         compatibility = _section(layout, "Compatibility")
+        compatibility.prop(self, "preflight_validation")
         compatibility.label(text="Target: Carnivores: Dinosaur Hunter mobile/HD static-model format.")
         compatibility.label(text=".3DN is static; animation and sound data are stored separately.")
 
@@ -1115,6 +1194,22 @@ class CARNIVORES_OT_export_3dn(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         model_name = self.model_name if self.model_name else os.path.splitext(os.path.basename(self.filepath))[0]
 
         try:
+            if self.preflight_validation:
+                validation = validate_blender_model(
+                    obj,
+                    "3DN",
+                    export_textures=False,
+                    filepath=self.filepath,
+                    model_name=model_name,
+                    has_sprite=self.has_sprite,
+                    sprite_name=self.sprite_name,
+                    export_matrix=export_matrix_np,
+                )
+                if not _append_preflight_report(report, validation, obj.name, os.path.basename(self.filepath)):
+                    report.set_outcome(1, 0, 1)
+                    self.report({'ERROR'}, ".3DN preflight failed; no file was written.")
+                    _finalize_operation_report(self, report)
+                    return {'CANCELLED'}
             export_3dn(
                 self.filepath,
                 obj,
@@ -1175,6 +1270,11 @@ class CARNIVORES_OT_export_vtl(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         description='Apply the default Carnivores Blender-to-file coordinate conversion. Disable only for a deliberately custom coordinate workflow.',
         default=True
     )
+    preflight_validation: bpy.props.BoolProperty(
+        name="Preflight Validation",
+        description="Run non-destructive animation, timing, coordinate, and C2 MEE checks before .VTL export.",
+        default=True,
+    )
 
     @classmethod
     def poll(cls, context):
@@ -1204,7 +1304,9 @@ class CARNIVORES_OT_export_vtl(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         geometry.prop(self, "scale")
         _draw_scale_note(geometry, "Export")
 
-        _draw_default_compatibility_note(layout)
+        compatibility = _draw_default_compatibility_note(layout)
+        compatibility.prop(self, "preflight_validation")
+        compatibility.label(text="Warnings allow export; preflight errors block structurally unsafe output.")
         _draw_advanced_coordinate_conversion(layout, self)
 
     @common.timed("CARNIVORES_OT_export_vtl.execute", is_operator=True)
@@ -1237,6 +1339,19 @@ class CARNIVORES_OT_export_vtl(bpy.types.Operator, bpy_extras.io_utils.ExportHel
             return {'CANCELLED'}
 
         try:
+            if self.preflight_validation:
+                validation = validate_blender_model(
+                    obj,
+                    "VTL",
+                    export_textures=False,
+                    check_audio=False,
+                    export_matrix=export_matrix_np,
+                )
+                if not _append_preflight_report(report, validation, obj.name, os.path.basename(self.filepath)):
+                    report.set_outcome(1, 0, 1)
+                    self.report({'ERROR'}, ".VTL preflight failed; no file was written.")
+                    _finalize_operation_report(self, report)
+                    return {'CANCELLED'}
             export_vtl(
                 self.filepath,
                 obj,
