@@ -125,7 +125,7 @@ def count_flag_hits(obj, attr_name="3df_flags"):
 
 @timed("count_matching_faces")
 def count_matching_faces(obj, mask, mode='ANY', attr_name="3df_flags"):
-    """Count faces matching a mask in the same scope used by the selector."""
+    """Count faces matching a mask in the same all-face scope used by the selector."""
     if not obj or obj.type != 'MESH' or not _valid_flag_attribute(obj.data, attr_name):
         return 0, 0
     mask = int(mask)
@@ -139,7 +139,10 @@ def count_matching_faces(obj, mask, mode='ANY', attr_name="3df_flags"):
         layer = bm.faces.layers.int.get(attr_name)
         if not layer:
             return 0, 0
-        values = np.asarray([face[layer] for face in bm.faces if face.select], dtype=np.int64)
+        # The selector searches every face in Edit Mode and then applies the
+        # selected action to matching faces.  The preview must use the same
+        # scope rather than only the faces currently selected in the viewport.
+        values = np.asarray([face[layer] for face in bm.faces], dtype=np.int64)
     else:
         values = np.empty(len(mesh.polygons), dtype=np.int32)
         mesh.attributes[attr_name].data.foreach_get("value", values)

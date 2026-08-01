@@ -23,6 +23,18 @@ def _active_mesh(context):
     return obj if obj and obj.type == 'MESH' else None
 
 
+_FLAG_MATCH_HELP = {
+    "ANY": "At least one selected flag (OR).",
+    "ALL": "Every selected flag (AND).",
+    "NONE": "No selected flags (NOT).",
+}
+_FLAG_ACTION_HELP = {
+    "SELECT": "Select only matching faces.",
+    "DESELECT": "Remove matching faces from the selection.",
+    "INVERT": "Invert matching faces in the selection.",
+}
+
+
 class CARNIVORES_OT_create_3df_flags(bpy.types.Operator):
     """Create a face-domain integer attribute named '3df_flags' (initialized to 0)"""
     bl_idname = "carnivores.create_3df_flags"
@@ -416,7 +428,7 @@ class CARNIVORES_OT_select_by_flags(bpy.types.Operator):
     """Select/Deselect/Invert faces on the active mesh by 3DF flag mask"""
     bl_idname = "carnivores.select_by_flags"
     bl_label = "Select Faces by 3DF Flags"
-    bl_description = "Find faces by the selected C2 surface flags, then select, deselect, or invert the matching faces."
+    bl_description = "Find matching faces across the whole mesh in Object or Edit Mode, then select, deselect, or invert them by the selected C2 surface flags."
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -500,17 +512,20 @@ class CARNIVORES_OT_select_by_flags(bpy.types.Operator):
                 self.report({'ERROR'}, f"Unknown mode: {mode}")
                 return {'CANCELLED'}
 
-            # Compute new selections
-            new_sel = sel_flags.copy()
+            # Compute new selections. SELECT is a filter operation: matching
+            # faces become the complete selection instead of being added to a
+            # possibly pre-existing/all-selected mesh selection.
             if action == 'SELECT':
-                new_sel[matches] = 1
-            elif action == 'DESELECT':
-                new_sel[matches] = 0
-            elif action == 'INVERT':
-                new_sel[matches] = 1 - new_sel[matches]
+                new_sel = matches.astype(np.int8)
             else:
-                self.report({'ERROR'}, f"Unknown action: {action}")
-                return {'CANCELLED'}
+                new_sel = sel_flags.copy()
+                if action == 'DESELECT':
+                    new_sel[matches] = 0
+                elif action == 'INVERT':
+                    new_sel[matches] = 1 - new_sel[matches]
+                else:
+                    self.report({'ERROR'}, f"Unknown action: {action}")
+                    return {'CANCELLED'}
 
             # Apply changes and fully deselect if needed
             for i, f in enumerate(bm.faces):
@@ -542,20 +557,62 @@ class CARNIVORES_OT_select_by_flags(bpy.types.Operator):
             mesh.polygons.foreach_get("select", sel_flags)
 
             if action == 'SELECT':
-                sel_flags[matches] = 1
-            elif action == 'DESELECT':
-                sel_flags[matches] = 0
-            elif action == 'INVERT':
-                sel_flags[matches] = 1 - sel_flags[matches]
+                new_sel = matches.astype(np.int8)
             else:
-                self.report({'ERROR'}, f"Unknown action: {action}")
-                return {'CANCELLED'}
+                new_sel = sel_flags.copy()
+                if action == 'DESELECT':
+                    new_sel[matches] = 0
+                elif action == 'INVERT':
+                    new_sel[matches] = 1 - new_sel[matches]
+                else:
+                    self.report({'ERROR'}, f"Unknown action: {action}")
+                    return {'CANCELLED'}
 
-            mesh.polygons.foreach_set("select", sel_flags)
+            mesh.polygons.foreach_set("select", new_sel)
             mesh.update()
 
+            entered_edit = False
+            mode_error = None
+            try:
+                result = bpy.ops.object.mode_set(mode='EDIT')
+                if 'FINISHED' not in result:
+                    raise RuntimeError(f"Mode switch returned {result}")
+
+                # Explicitly write the object-mode result into the live BMesh.
+                # Blender may otherwise initialize the Edit Mode mesh with all
+                # faces selected when the mode switch occurs.
+                bm = bmesh.from_edit_mesh(mesh)
+                bm.faces.ensure_lookup_table()
+                if len(bm.faces) != face_count:
+                    raise RuntimeError("Edit Mode face count differs from the object mesh")
+                for i, face in enumerate(bm.faces):
+                    face.select = bool(new_sel[i])
+                    if not face.select:
+                        for edge in face.edges:
+                            edge.select = False
+                        for vertex in face.verts:
+                            vertex.select = False
+                bmesh.update_edit_mesh(mesh, loop_triangles=False, destructive=False)
+                entered_edit = True
+            except (ReferenceError, RuntimeError, TypeError) as exc:
+                mode_error = str(exc)
+
         matched_count = int(np.count_nonzero(matches))
-        self.report({'INFO'}, f"{action.title()}ed {matched_count} faces (mask 0x{mask:04X}).")
+        if was_edit:
+            result_message = f"{action.title()}ed {matched_count} faces (mask 0x{mask:04X})."
+            self.report({'INFO'}, result_message)
+        elif entered_edit:
+            self.report(
+                {'INFO'},
+                f"{action.title()}ed {matched_count} faces and entered Edit Mode (mask 0x{mask:04X}).",
+            )
+        elif mode_error:
+            self.report(
+                {'WARNING'},
+                f"{action.title()}ed {matched_count} faces, but could not enter Edit Mode: {mode_error}",
+            )
+        else:
+            self.report({'INFO'}, f"{action.title()}ed {matched_count} faces (mask 0x{mask:04X}).")
         return {'FINISHED'}
 
 class CARNIVORES_OT_modify_3df_flag(bpy.types.Operator):
@@ -685,55 +742,71 @@ class VIEW3D_PT_carnivores_selection(bpy.types.Panel):
         scene = context.scene
 
         box = layout.box()
+        box.use_property_split = True
+        box.use_property_decorate = False
         box.label(text="Select Faces by 3DF Flags", icon='RESTRICT_SELECT_OFF')
 
-        # Collapsible flag selection
+        # Collapsible list of serialized flags used to build the temporary mask.
         col = box.column(align=True)
-        col.prop(scene, "cf_flag_section", text="Flag Selection", icon='TRIA_DOWN' if scene.cf_flag_section else 'TRIA_RIGHT')
+        col.prop(
+            scene,
+            "cf_flag_section",
+            text="Flags to Match",
+            icon='TRIA_DOWN' if scene.cf_flag_section else 'TRIA_RIGHT',
+        )
         if scene.cf_flag_section:
             flag_col = col.column(align=True)
             for i, (bit, label, _) in enumerate(FACE_FLAG_OPTIONS):
                 prop_name = f"cf_flag_{i}"
                 if hasattr(scene, prop_name):
-                    flag_col.prop(scene, prop_name, text=f"{label} (0x{bit:04X})",
-                                  toggle=True,
-                                  icon='CHECKBOX_HLT' if getattr(scene, prop_name) else 'CHECKBOX_DEHLT')
+                    flag_col.prop(
+                        scene,
+                        prop_name,
+                        text=f"{label} (0x{bit:04X})",
+                        toggle=True,
+                        icon='CHECKBOX_HLT' if getattr(scene, prop_name) else 'CHECKBOX_DEHLT',
+                    )
                 else:
                     row = flag_col.row()
                     row.enabled = False
                     row.label(text=f"{label} (0x{bit:04X})")
 
-            # Clear all flags button
-            col.operator("carnivores.clear_flag_selections", text="Clear All Flags", icon='X')
+            col.operator("carnivores.clear_flag_selections", text="Clear Filter", icon='X')
 
-        # Check if any flags are selected; show a compact mask and match preview.
-        mask = sum(int(bit) for i, (bit, _, _) in enumerate(FACE_FLAG_OPTIONS) if getattr(scene, f"cf_flag_{i}", False))
-        selected_labels = [label for i, (_, label, _) in enumerate(FACE_FLAG_OPTIONS) if getattr(scene, f"cf_flag_{i}", False)]
+        # Show the temporary mask independently of the collapsed flag list.
+        mask = sum(
+            int(bit)
+            for i, (bit, _, _) in enumerate(FACE_FLAG_OPTIONS)
+            if getattr(scene, f"cf_flag_{i}", False)
+        )
+        selected_labels = [
+            label
+            for i, (_, label, _) in enumerate(FACE_FLAG_OPTIONS)
+            if getattr(scene, f"cf_flag_{i}", False)
+        ]
         if mask == 0:
-            box.label(text="No flags selected (mask=0)", icon='ERROR')
+            box.label(text="Choose at least one flag to match.", icon='INFO')
         else:
             box.label(text=f"Mask 0x{mask:04X}: {', '.join(selected_labels)}", icon='FILTER')
 
-        # Mode and Action in a single row.
-        row = box.row(align=True)
-        row.prop(scene, "cf_select_mode", text="", icon='FILTER')
-        row.prop(scene, "cf_select_action", text="", icon='RESTRICT_SELECT_ON')
-        apply_row = row.row(align=True)
+        mode = getattr(scene, "cf_select_mode", "ANY")
+        controls = box.column(align=True)
+        controls.prop(scene, "cf_select_mode", text="Match Mode", icon='FILTER')
+        controls.label(text=_FLAG_MATCH_HELP.get(mode, "Choose how selected flags are combined."), icon='INFO')
+        action = getattr(scene, "cf_select_action", "SELECT")
+        controls.prop(scene, "cf_select_action", text="Action", icon='RESTRICT_SELECT_ON')
+        controls.label(text=_FLAG_ACTION_HELP.get(action, "Choose what to do with matching faces."), icon='INFO')
+        apply_row = controls.row(align=True)
         apply_row.enabled = mask != 0
-        apply_row.operator("carnivores.select_by_flags", text="Apply", icon='CHECKMARK')
+        apply_row.operator("carnivores.select_by_flags", text="Apply Selection", icon='CHECKMARK')
 
         if mask:
             matched, scoped = flag_utils.count_matching_faces(
                 context.active_object,
                 mask,
-                getattr(scene, "cf_select_mode", "ANY"),
+                mode,
             )
-            scope = "selected faces" if context.active_object and context.active_object.mode == 'EDIT' else "all faces"
-            box.label(text=f"Preview: {matched}/{scoped} matching in {scope}.", icon='VIEWZOOM')
-
-        layout.separator()
-        col = layout.column(align=True)
-        col.label(text="Match mode tooltips explain Any/All/None; selection scope follows Object/Edit Mode.", icon='INFO')
+            box.label(text=f"Preview: {matched}/{scoped} faces (all faces).", icon='VIEWZOOM')
 
 class CARNIVORES_OT_clear_flag_selections(bpy.types.Operator):
     """Clear all flag selections in the Selection Tools panel"""

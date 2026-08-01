@@ -158,7 +158,7 @@ Linked audio retains its authored timing. KPS changes, NLA strip scaling, and re
 2. If the mesh has no `3df_flags` attribute, click **Create '3df_flags'** in the **3DF Face Flags** panel.
 3. **Visualize flags:** In the Visualization box, use **Show**, **Refresh**, **Hide**, and **Remove Colors**. Show configures the invoking Solid viewport to use the generated `FlagColors` attribute; Hide restores the prior color display. Enable **Show Color Legend** when you need the named color mapping; it is collapsed by default.
 4. **Modify flags:** Enter Edit Mode, select faces, then use the Set / Clear / Toggle buttons next to each flag in the panel. The panel displays None/Mixed/All states and live counts (in Edit Mode, counts reflect only selected faces; in Object Mode, all faces).
-5. **Select by flags:** In the **Selection Tools** panel, check the flags to match, choose a mode (**Has Any** = OR, **Has All** = AND, **Has None** = NOT), an action (Select, Deselect, Invert), review the match preview, and click **Apply**.
+5. **Select by flags:** In the **Selection Tools** panel, check the flags to match, choose a mode (**Has Any** = OR, **Has All** = AND, **Has None** = NOT), and an action (**Select** = show only matches, Deselect, or Invert). Review the match preview and click **Apply Selection**. The filter searches all mesh faces in both Object and Edit Mode, then enters Edit Mode to show the result.
 6. Use **Clear Selected Faces** for a scoped edit or **Clear All Faces** for the confirmed whole-mesh operation.
 
 The flag tooltips and runtime meanings are documented in [Face Flags](doc/reference.md#face-flags-16-bit-bitfield), based on C2 MEE 1.11 renderer, loader, and hit-test behavior.

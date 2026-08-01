@@ -174,7 +174,7 @@ def register():
     )
     bpy.types.Scene.cf_select_action = bpy.props.EnumProperty(
         items=[
-            ('SELECT', "Select", "Select faces that match the flag mask."),
+            ('SELECT', "Select", "Select only faces that match the flag mask and deselect the rest."),
             ('DESELECT', "Deselect", "Deselect faces that match the flag mask."),
             ('INVERT', "Invert", "Invert selection only on faces that match the flag mask."),
         ],
