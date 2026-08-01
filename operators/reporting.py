@@ -6,11 +6,11 @@ from ..utils.reporting import get_report_text
 
 
 class CARNIVORES_OT_open_report(bpy.types.Operator):
-    """Open a generated Carnivores report in the current editor area."""
+    """Open a generated report without replacing a 3D viewport."""
 
     bl_idname = "carnivores.open_report"
     bl_label = "Open Report"
-    bl_description = "Open the complete Carnivores operation report in a Text Editor"
+    bl_description = "Open the complete Carnivores operation report without replacing the current viewport"
 
     text_name: bpy.props.StringProperty(name="Report")
 
@@ -28,13 +28,49 @@ class CARNIVORES_OT_open_report(bpy.types.Operator):
             return {'CANCELLED'}
 
         area = getattr(context, "area", None)
-        if area is None:
-            self.report({'ERROR'}, "No editor area is available to open the report.")
+        if area is not None and area.type == 'TEXT_EDITOR':
+            area.spaces.active.text = text
+            self.report({'INFO'}, f"Opened report '{text.name}'.")
+            return {'FINISHED'}
+
+        # Prefer a Text Editor that is already visible in the current screen.
+        screen = getattr(context, "screen", None)
+        if screen is not None:
+            text_area = next(
+                (candidate for candidate in screen.areas if candidate.type == 'TEXT_EDITOR'),
+                None,
+            )
+            if text_area is not None:
+                text_area.spaces.active.text = text
+                self.report({'INFO'}, f"Opened report '{text.name}'.")
+                return {'FINISHED'}
+
+        # Never replace a 3D View (especially a rendered one). Create a separate
+        # window containing the report when no Text Editor is available.
+        existing_windows = tuple(context.window_manager.windows)
+        try:
+            result = bpy.ops.wm.window_new()
+            if 'FINISHED' not in result:
+                raise RuntimeError("Blender could not create a report window")
+
+            new_window = next(
+                (
+                    window for window in context.window_manager.windows
+                    if window not in existing_windows
+                ),
+                None,
+            )
+            if new_window is None or not new_window.screen.areas:
+                raise RuntimeError("The new report window has no editor area")
+
+            report_area = new_window.screen.areas[0]
+            report_area.type = 'TEXT_EDITOR'
+            report_area.spaces.active.text = text
+        except Exception as exc:
+            self.report({'ERROR'}, f"Could not open report in a separate window: {exc}")
             return {'CANCELLED'}
 
-        area.type = 'TEXT_EDITOR'
-        area.spaces.active.text = text
-        self.report({'INFO'}, f"Opened report '{text.name}'.")
+        self.report({'INFO'}, f"Opened report '{text.name}' in a separate window.")
         return {'FINISHED'}
 
 
