@@ -91,7 +91,7 @@ Tools are accessed through two locations in Blender:
 
 - **File > Import > Carnivores Engine (.3df, .car)** -- Import submenu
 - **File > Export > Carnivores Engine (.3df, .car, .3dn)** -- Export submenu
-- **Sidebar** (press `N` in the 3D Viewport) > **Carnivores** tab -- Panels for Model Health, Animation, Face Flags, and Selection Tools
+- **Sidebar** (press `N` in the 3D Viewport) > **Carnivores** tab -- Panels for Model Health, Rig, Animation, Face Flags, and Selection Tools
 
 ---
 
@@ -104,7 +104,7 @@ Tools are accessed through two locations in Blender:
    - **Import Textures / Create Materials** -- loads the embedded ARGB1555 texture as a Blender image and assigns a material.
    - **Bone Import Type** -- None, Armature, or Hooks. Hooks (default) create vertex groups with Hook modifiers for each bone. Armature builds an Armature object with proper bone positions and parent-child relationships from the file's bone data.
    - **Smooth Weights** -- apply Laplacian smoothing to vertex weights (configurable iterations, factor, and joints-only mode).
-3. Click **Import**.
+3. Click **Import**. Imported primary meshes are selected automatically and the last imported mesh becomes active. Optional viewport framing is available in the **After Import** section and in the add-on preferences; framing is skipped safely when no compatible 3D View is available.
 
 ### Importing an Animated Model (.car)
 
@@ -115,18 +115,18 @@ Tools are accessed through two locations in Blender:
    - **Respect KPS Timing** -- align keyframes to sub-frame positions per the file's KPS; disable to snap to integer frames.
    - **Import Sounds** -- load embedded WAV data and link sounds to the corresponding Actions. If **Import Animations** is disabled, sounds are imported as unlinked sound datablocks.
    - **Smooth Weights** -- apply weight smoothing after vertex group creation.
-3. Click **Import**. Each model receives vertex groups (with synthetic names like `CarBone_0` mapping the file's raw ownership indices) and, if enabled, shape keys and NLA tracks.
+3. Click **Import**. Imported primary meshes are selected automatically and the last imported mesh becomes active. Optional viewport framing is available in the **After Import** section and in the add-on preferences. Each model receives vertex groups (with synthetic names like `CarBone_0` mapping the file's raw ownership indices) and, if enabled, shape keys and NLA tracks.
 
 ### Reconstructing a Skeleton (.car models)
 
 *.car files contain vertex ownership data (integer group indices) but no bone positions or hierarchy. Reconstruction builds an armature from the imported vertex groups:*
 
 1. Select the imported mesh.
-2. In the **Carnivores** sidebar tab, find the **Rigging Utilities** box in the **Carnivores Animation** panel.
-3. Click **Reconstruct Rig from Owners**.
-4. The addon computes centroids from the imported owner cache (falling back to vertex groups when needed), infers a bone hierarchy using a scored symmetry-aware MST algorithm, and builds an armature. Optional pre-reconstruct smoothing can be enabled in the Rigging Utilities box. The mesh is parented with an Armature modifier automatically.
+2. In the **Carnivores** sidebar tab, open the dedicated **Carnivores Rig** panel.
+3. Choose the reconstruction algorithm and optional root/weight settings, then click **Reconstruct Rig**.
+4. The addon computes centroids from the imported owner cache (falling back to vertex groups when needed), infers a bone hierarchy using a scored symmetry-aware MST algorithm, and builds an armature. Optional pre-reconstruct smoothing can be enabled in the **Carnivores Rig** panel. The mesh is parented with an Armature modifier automatically.
 
-To inspect the result, click **Log Rig Debug Info** to write bone positions, parenting, and vertex group statistics to a text datablock.
+To inspect the result, click **Generate Rig Report**, then **Open Report** to view bone positions, parenting, owner-cache, and vertex-group statistics.
 
 ### Working with KPS (Keys Per Second)
 
@@ -144,7 +144,7 @@ To inspect the result, click **Log Rig Debug Info** to write bone positions, par
 2. Click the folder icon next to the Sound field and choose a `.wav` file.
 3. The sound is linked to the Action. During `.car` export, it will be embedded in the file.
 4. To audition, use **Play Preview** to isolate and loop the animation with its audio, or enter NLA Tweak Mode to focus the strip.
-5. Toggle **Enable NLA Sound** to enable or disable focused preview audio.
+5. Toggle **Preview Audio** On/Off to enable or disable focused preview audio; disabling it stops managed playback immediately.
 
 Linked audio retains its authored timing. KPS changes, NLA strip scaling, and reverse playback do not time-stretch audio. As a best-effort safeguard, focused playback restarts the original clip at NLA repeat boundaries, but scaled strips are not guaranteed to remain synchronized. Prepare the clip for the animation's intended duration in an external audio editor. Planned export and timing-assistance tools are described in [Improvements — Audio Workflow](doc/IMPROVEMENTS.md#19-deferred-workflow-enhancements).
 
@@ -152,10 +152,10 @@ Linked audio retains its authored timing. KPS changes, NLA strip scaling, and re
 
 1. Select the mesh and open the **Carnivores** sidebar tab.
 2. If the mesh has no `3df_flags` attribute, click **Create '3df_flags'** in the **3DF Face Flags** panel.
-3. **Visualize flags:** Click **Visualize Flags (Colors)** to render each flag type as a distinct color on the mesh's `FlagColors` color attribute.
-4. **Modify flags:** Enter Edit Mode, select faces, then use the Set / Clear / Toggle buttons next to each flag in the panel. The panel displays live counts of how many faces carry each flag (in Edit Mode, counts reflect only selected faces; in Object Mode, all faces).
-5. **Select by flags:** In the **Selection Tools** panel, check the flags to match, choose a mode (**Has Any** = OR, **Has All** = AND, **Has None** = NOT), an action (Select, Deselect, Invert), and click **Apply**.
-6. **Clear All Flags** resets every flag bit on selected or all faces.
+3. **Visualize flags:** In the Visualization box, use **Show**, **Refresh**, **Hide**, and **Remove Colors**. Show configures the invoking Solid viewport to use the generated `FlagColors` attribute; Hide restores the prior color display.
+4. **Modify flags:** Enter Edit Mode, select faces, then use the Set / Clear / Toggle buttons next to each flag in the panel. The panel displays None/Mixed/All states and live counts (in Edit Mode, counts reflect only selected faces; in Object Mode, all faces).
+5. **Select by flags:** In the **Selection Tools** panel, check the flags to match, choose a mode (**Has Any** = OR, **Has All** = AND, **Has None** = NOT), an action (Select, Deselect, Invert), review the match preview, and click **Apply**.
+6. Use **Clear Selected Faces** for a scoped edit or **Clear All Faces** for the confirmed whole-mesh operation.
 
 The flag tooltips and runtime meanings are documented in [Face Flags](doc/reference.md#face-flags-16-bit-bitfield), based on C2 MEE 1.11 renderer, loader, and hit-test behavior.
 
@@ -172,11 +172,11 @@ The flag tooltips and runtime meanings are documented in [Face Flags](doc/refere
 
 ---
 
-## Debugging
+## Preferences and debugging
 
-1. Go to **Preferences > Extensions > CarnivoresIO** and enable **Debug Mode**.
-2. Open the System Console (`Window > Toggle System Console` on Windows).
-3. Import/export operations will print detailed parsing steps, NumPy timing data, and validation warnings.
+Open **Preferences > Extensions > CarnivoresIO** to configure import focus behavior, default import/export scale, coordinate conversion, default .3DF bone import type, and whether advanced dialog options are shown. Documentation and issue-tracker links are available there. These preferences initialize newly opened dialogs; scripted operators retain their own explicitly supplied properties.
+
+To debug, enable **Debug Mode** and open the System Console (`Window > Toggle System Console` on Windows). Import/export operations will print detailed parsing steps, NumPy timing data, and validation warnings.
 
 ---
 

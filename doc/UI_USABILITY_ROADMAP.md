@@ -2,7 +2,7 @@
 
 Implementation-oriented design and handoff document for improving the CarnivoresIO Blender extension UI. This document is intended to give another coding agent enough context, priorities, constraints, and acceptance criteria to implement the work incrementally.
 
-> **Status:** WP-01 (operator context/outcomes), WP-02 (dialog consistency), WP-03 (result and warning reports), and WP-04 (model health/pre-export validation) are implemented; remaining work packages remain proposals unless marked otherwise.
+> **Status:** WP-01 through WP-10 are implemented at the core workflow level, with accessibility/narrow-width review, screenshots, and deeper algorithm-specific follow-up remaining.
 >
 > **Target:** Blender 4.2+ extension supporting `.3df`, `.car`, `.3dn`, and `.vtl` workflows.
 >
@@ -440,6 +440,8 @@ Prefer reusable validation data over drawing checks directly in panels. UI code 
 
 **Priority:** Recommended
 
+**Status:** Implemented in `operators/io.py`, `__init__.py`, and the import documentation.
+
 ### Requirements
 
 After successful import:
@@ -463,6 +465,8 @@ After successful import:
 ## WP-06: Face flag editor and selection redesign
 
 **Priority:** Recommended
+
+**Status:** Implemented in `operators/flags.py`, `utils/flags.py`, and the operator registration.
 
 ### Requirements
 
@@ -511,9 +515,11 @@ Performance:
 
 **Priority:** Recommended after WP-06
 
-### Current issue
+**Status:** Implemented in `operators/flags.py` and `utils/flags.py`.
 
-`Visualize Flags (Colors)` creates/updates `FlagColors` but does not ensure the viewport displays that attribute, so the action may appear to do nothing.
+### Current issue (resolved)
+
+The visualization workflow now refreshes `FlagColors`, configures the invoking Solid viewport to use vertex colors when available, and provides Hide/Remove actions with a deterministic legend.
 
 ### Requirements
 
@@ -553,6 +559,8 @@ Descriptions should reflect runtime use, not merely names. Verify flag definitio
 
 **Priority:** Recommended; coordinate with `doc/IMPROVEMENTS.md`
 
+**Status:** Implemented in `operators/animation.py`, `__init__.py`, and the operator registration.
+
 ### 8.1 Remove duplicate audio toggles
 
 The panel currently displays the RNA Boolean and a second operator that toggles the same value. These paths differ because only the operator immediately stops managed audio.
@@ -566,9 +574,9 @@ Requirements:
 
 ### 8.2 Complete export-order controls
 
-The list is labeled `NLA Tracks (Export Order)` but has no reorder controls.
+The list is labeled `NLA Tracks (CAR Export Order)` and now exposes actual reorder controls.
 
-Add:
+Implemented controls include:
 
 - Export index
 - Move up/down
@@ -625,6 +633,8 @@ Detailed audio-export and timing-assistance requirements already exist in `doc/I
 
 **Priority:** Recommended; algorithm changes are out of scope
 
+**Status:** Implemented in `operators/animation.py`, `__init__.py`, and the user documentation.
+
 ### Requirements
 
 Move rig controls into their own panel.
@@ -672,6 +682,8 @@ Future proposal preview must follow `doc/RIG_RECONSTRUCTION_PLAN.md`, not a sepa
 
 **Priority:** Optional after core workflows stabilize
 
+**Status:** Core preference defaults, import focus controls, advanced-option visibility, help links, and an explicit Restore Defaults action implemented; intrusive onboarding remains intentionally omitted.
+
 Potential preferences:
 
 - Default import/export scale
@@ -710,28 +722,28 @@ Onboarding may include a small help menu or links, but should not show intrusive
 1. WP-04: non-destructive validation model — implemented
 2. Compact Model Health panel — implemented
 3. Export integration — implemented
-4. WP-05: post-import selection and summaries — next
+4. WP-05: post-import selection and summaries — implemented
 
 ### Phase C — editing workflows
 
-1. WP-06: merge face editing and selection
-2. WP-07: usable visualization
-3. Split panels according to the proposed information architecture
+1. WP-06: merge face editing and selection — implemented
+2. WP-07: usable visualization — implemented
+3. Split panels according to the proposed information architecture — implemented for rig controls
 
 ### Phase D — animation and rig UX
 
-1. WP-08.1: authoritative preview-audio toggle
-2. WP-08.2: export-order controls
-3. WP-08.3/8.4: timing and preview state
-4. WP-09: dedicated rig panel and root selector
-5. Implement deeper audio/rig items only through their dedicated roadmaps
+1. WP-08.1: authoritative preview-audio toggle — implemented
+2. WP-08.2: export-order controls — implemented
+3. WP-08.3/8.4: timing and preview state — implemented
+4. WP-09: dedicated rig panel and root selector — implemented
+5. Deeper audio/rig algorithm changes remain governed by their dedicated roadmaps
 
 ### Phase E — preferences and polish
 
-1. WP-10 preferences
-2. Documentation links and empty-state actions
-3. Accessibility and narrow-width review
-4. Final README screenshots and usage updates
+1. WP-10 preferences and help links — implemented
+2. Documentation links and empty-state actions — partially implemented
+3. Accessibility and narrow-width review — remaining
+4. Final README screenshots and usage updates — remaining
 
 ---
 

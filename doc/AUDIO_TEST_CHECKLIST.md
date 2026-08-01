@@ -40,7 +40,7 @@ Manual verification for audio improvements from commits `cc7d431` and `b78f49d`.
 | # | Test | Expected |
 |---|------|----------|
 | 4.1 | Disable and re-enable the addon 3 times in Preferences. Check console. | No "handler already present" or duplicate-registration messages. Handler count in `frame_change_post` is stable. |
-| 4.2 | Enable NLA Sound in the panel. Save the `.blend`. Close Blender. Reopen. | NLA Sound setting is preserved (enabled). |
+| 4.2 | Enable **Preview Audio** in the panel. Save the `.blend`. Close Blender. Reopen. | Preview Audio setting is preserved (enabled). |
 | 4.3 | Disable NLA Sound. Save. Close. Reopen. | NLA Sound setting is preserved (disabled). |
 | 4.4 | During playback, toggle NLA Sound off via the panel button. | All playing handles stop immediately. No audio residue. |
 | 4.5 | Disable the addon while a sound is playing. | Addon unregisters cleanly. No background audio after disable. |

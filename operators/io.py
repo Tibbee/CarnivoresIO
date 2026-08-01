@@ -38,6 +38,161 @@ def _active_mesh(context):
     return obj if obj and obj.type == 'MESH' else None
 
 
+def _get_addon_preferences():
+    # Blender's background extension-build process can tear down the Addon
+    # preferences registry while operators are being inspected.  Scripted and
+    # background operations should keep their explicit operator defaults.
+    if getattr(bpy.app, 'background', False):
+        return None
+    try:
+        addon = bpy.context.preferences.addons.get(__package__.split('.')[0])
+        return addon.preferences if addon else None
+    except (AttributeError, RuntimeError, TypeError):
+        return None
+
+
+def _apply_import_focus_preferences(operator):
+    """Initialize per-invocation focus and import defaults from preferences."""
+    preferences = _get_addon_preferences()
+    if preferences is not None:
+        operator.select_imported = bool(preferences.auto_select_imported)
+        operator.frame_imported = bool(preferences.auto_frame_imported)
+    _apply_operation_preferences(operator, 'IMPORT')
+
+
+def _apply_operation_preferences(operator, direction):
+    """Apply opt-in dialog defaults while preserving scripted operator defaults."""
+    preferences = _get_addon_preferences()
+    if preferences is None:
+        return
+    if hasattr(operator, 'scale'):
+        operator.scale = float(
+            preferences.default_import_scale if direction == 'IMPORT' else preferences.default_export_scale
+        )
+    if hasattr(operator, 'flip_handedness'):
+        operator.flip_handedness = bool(preferences.default_flip_handedness)
+    if direction == 'IMPORT' and hasattr(operator, 'bone_import_type'):
+        operator.bone_import_type = preferences.default_bone_import_type
+
+
+def _draw_advanced_coordinate_conversion(layout, operator):
+    preferences = _get_addon_preferences()
+    if preferences is not None and not preferences.show_advanced_options:
+        layout.label(text="Advanced coordinate options are hidden; enable them in Preferences.", icon='INFO')
+        return
+    box = _section(layout, "Advanced Coordinate Conversion")
+    box.label(text="Keep the defaults for normal Carnivores files.")
+    box.prop(operator, "flip_handedness")
+    box.prop(operator, "axis_forward")
+    box.prop(operator, "axis_up")
+
+
+def _post_import_focus(context, objects, *, select_imported=True, frame_imported=False):
+    """Select imported primary meshes and optionally frame them in this area.
+
+    Framing is deliberately limited to the invoking VIEW_3D area.  A file
+    import should never change an unrelated editor or fail because no viewport
+    is available (for example in background mode).
+    """
+    live_objects = []
+    for obj in objects:
+        try:
+            if obj and obj.name in bpy.data.objects and obj.type == 'MESH':
+                live_objects.append(obj)
+        except ReferenceError:
+            continue
+    if not live_objects:
+        return {"selected": 0, "framed": False, "message": "No imported mesh remained available for post-import focus."}
+
+    previous_selected = []
+    previous_active = None
+    temporary_selection = bool(frame_imported and not select_imported)
+    if temporary_selection:
+        previous_selected = list(getattr(context, "selected_objects", ()))
+        previous_active = getattr(context.view_layer.objects, "active", None)
+
+    if select_imported or temporary_selection:
+        try:
+            for selected in context.selected_objects:
+                selected.select_set(False)
+            for obj in live_objects:
+                obj.select_set(True)
+            context.view_layer.objects.active = live_objects[-1]
+        except (ReferenceError, RuntimeError) as exc:
+            if temporary_selection:
+                try:
+                    for obj in context.selected_objects:
+                        obj.select_set(False)
+                    for obj in previous_selected:
+                        if obj and obj.name in bpy.data.objects:
+                            obj.select_set(True)
+                    context.view_layer.objects.active = previous_active
+                except (ReferenceError, RuntimeError):
+                    pass
+            return {"selected": 0, "framed": False, "message": f"Could not select imported objects: {exc}"}
+
+    framed = False
+    frame_message = ""
+    if frame_imported:
+        area = getattr(context, "area", None)
+        region = None
+        if area and area.type == 'VIEW_3D':
+            region = next((item for item in area.regions if item.type == 'WINDOW'), None)
+        if region is None:
+            frame_message = "Viewport framing was skipped because the invoking area is not a compatible 3D View."
+        else:
+            try:
+                with context.temp_override(area=area, region=region):
+                    result = bpy.ops.view3d.view_selected(use_all_regions=False)
+                framed = 'FINISHED' in result
+                if not framed:
+                    frame_message = "Viewport framing was unavailable in the invoking 3D View."
+            except (RuntimeError, AttributeError) as exc:
+                frame_message = f"Viewport framing was skipped: {exc}"
+
+    if temporary_selection:
+        try:
+            for obj in context.selected_objects:
+                obj.select_set(False)
+            for obj in previous_selected:
+                if obj and obj.name in bpy.data.objects:
+                    obj.select_set(True)
+            context.view_layer.objects.active = previous_active if previous_active and previous_active.name in bpy.data.objects else None
+        except (ReferenceError, RuntimeError) as exc:
+            frame_message = f"Imported objects were framed, but the previous selection could not be restored: {exc}"
+
+    message = frame_message or ""
+    return {"selected": len(live_objects) if select_imported else 0, "framed": framed, "message": message}
+
+
+def _report_import_summary(report, collections, objects, animations=0, sounds=0, parsed_animations=None, parsed_sounds=None):
+    """Record stable, actionable content counts in an import report."""
+    collections = list(dict.fromkeys(str(name) for name in collections))
+    objects = list(dict.fromkeys(str(name) for name in objects))
+    collection_text = ", ".join(collections) if collections else "none"
+    object_text = ", ".join(objects) if objects else "none"
+    report.info(
+        "Import summary",
+        f"Created {len(collections)} collection(s): {collection_text}.",
+    )
+    report.info(
+        "Import summary",
+        f"Created {len(objects)} primary mesh object(s): {object_text}.",
+    )
+    if parsed_animations is None:
+        parsed_animations = animations
+    if parsed_sounds is None:
+        parsed_sounds = sounds
+    report.info(
+        "Import summary",
+        f"Animation data: {animations} created ({parsed_animations} parsed).",
+    )
+    report.info(
+        "Import summary",
+        f"Sounds: {sounds} imported ({parsed_sounds} parsed).",
+    )
+
+
 def _section(layout, title):
     """Create a consistently labelled import/export dialog section."""
     box = layout.box()
@@ -47,14 +202,6 @@ def _section(layout, title):
 
 def _draw_scale_note(layout, direction):
     layout.label(text=f"Standard: 0.01 import / 100.0 export ({direction.lower()}).")
-
-
-def _draw_advanced_coordinate_conversion(layout, operator):
-    box = _section(layout, "Advanced Coordinate Conversion")
-    box.label(text="Keep the defaults for normal Carnivores files.")
-    box.prop(operator, "flip_handedness")
-    box.prop(operator, "axis_forward")
-    box.prop(operator, "axis_up")
 
 
 def _draw_default_compatibility_note(layout, target="Carnivores runtime"):
@@ -177,6 +324,16 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         description="Whether to smooth out faces or leave them flat (faceted) at import",
         default=True
     )
+    select_imported: bpy.props.BoolProperty(
+        name="Select Imported Objects",
+        description="Select imported primary mesh objects and make the last one active after a successful import.",
+        default=True,
+    )
+    frame_imported: bpy.props.BoolProperty(
+        name="Frame Imported Objects",
+        description="Frame imported objects in the invoking 3D View when the import is run from a compatible viewport.",
+        default=False,
+    )
     bone_import_type: bpy.props.EnumProperty(
         name="Bone Import Type",
         description="Choose whether to import no deformation objects, lightweight hooks, or one editable armature",
@@ -222,6 +379,10 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         default=True
     )
     
+    def invoke(self, context, event):
+        _apply_import_focus_preferences(self)
+        return bpy_extras.io_utils.ImportHelper.invoke(self, context, event)
+
     def draw(self, context):
         layout = self.layout
 
@@ -249,6 +410,11 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         compatibility = _section(layout, "Compatibility")
         compatibility.prop(self, "validate")
         compatibility.label(text="Structural checks always run; this option adds compatibility diagnostics.")
+
+        post_import = _section(layout, "After Import")
+        post_import.prop(self, "select_imported")
+        post_import.prop(self, "frame_imported")
+        post_import.label(text="Framing is skipped safely outside a compatible 3D View.")
 
         _draw_advanced_coordinate_conversion(layout, self)
         
@@ -284,6 +450,8 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
             return {'CANCELLED'}
         imported_files = []
         failed_files = []
+        imported_objects = []
+        created_collections = []
 
         for filepath in valid_paths:
             coll = None
@@ -349,6 +517,9 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                             suggested_action="Review the complete report before export.",
                         )
                 imported_files.append(filename)
+                imported_objects.append(obj)
+                if coll:
+                    created_collections.append(coll.name)
                 report.info(
                     "Import",
                     "Imported successfully.",
@@ -380,6 +551,21 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
             failed_files,
             report=report,
         )
+        if imported_objects:
+            _report_import_summary(report, created_collections, [obj.name for obj in imported_objects])
+            focus = _post_import_focus(
+                context,
+                imported_objects,
+                select_imported=self.select_imported,
+                frame_imported=self.frame_imported,
+            )
+            if self.select_imported:
+                report.info("Post-import", f"Selected {focus['selected']} imported primary mesh object(s); the last imported mesh is active.")
+            if self.frame_imported:
+                if focus["framed"]:
+                    report.info("Post-import", "Framed imported objects in the invoking 3D View.")
+                elif focus["message"]:
+                    report.info("Post-import", focus["message"], suggested_action="Run the import from a 3D View if viewport framing is desired.")
         _finalize_operation_report(self, report)
 
         return {'FINISHED'} if completed else {'CANCELLED'}
@@ -435,6 +621,10 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         if _active_mesh(context):
             return True
         return _poll_message(cls, "Select an active mesh object to export as .3DF.")
+
+    def invoke(self, context, event):
+        _apply_operation_preferences(self, 'EXPORT')
+        return bpy_extras.io_utils.ExportHelper.invoke(self, context, event)
 
     def draw(self, context):
         layout = self.layout
@@ -671,6 +861,10 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
             return True
         return _poll_message(cls, "Select an active mesh object to export as .CAR.")
 
+    def invoke(self, context, event):
+        _apply_operation_preferences(self, 'EXPORT')
+        return bpy_extras.io_utils.ExportHelper.invoke(self, context, event)
+
     def draw(self, context):
         layout = self.layout
 
@@ -842,6 +1036,16 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         description='Import embedded sounds as sound datablocks. If animations are disabled, sounds are imported without linked Actions.',
         default=True
     )
+    select_imported: bpy.props.BoolProperty(
+        name="Select Imported Objects",
+        description="Select imported primary mesh objects and make the last one active after a successful import.",
+        default=True,
+    )
+    frame_imported: bpy.props.BoolProperty(
+        name="Frame Imported Objects",
+        description="Frame imported objects in the invoking 3D View when the import is run from a compatible viewport.",
+        default=False,
+    )
     smooth_weights: bpy.props.BoolProperty(
         name="Smooth Weights",
         description="Smooth generated deform groups. CAR stores owner IDs rather than a bone hierarchy, so this affects generated weights only.",
@@ -866,6 +1070,10 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         description="Only smooth areas where different bone influences meet (preserves limb rigidity)",
         default=True
     )
+
+    def invoke(self, context, event):
+        _apply_import_focus_preferences(self)
+        return bpy_extras.io_utils.ImportHelper.invoke(self, context, event)
 
     def draw(self, context):
         layout = self.layout
@@ -904,6 +1112,11 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         compatibility.prop(self, "validate")
         compatibility.label(text="Structural checks always run; this option adds compatibility diagnostics.")
 
+        post_import = _section(layout, "After Import")
+        post_import.prop(self, "select_imported")
+        post_import.prop(self, "frame_imported")
+        post_import.label(text="Framing is skipped safely outside a compatible 3D View.")
+
         _draw_advanced_coordinate_conversion(layout, self)
 
     @common.timed('CARNIVORES_OT_import_car.execute', is_operator=True)
@@ -929,6 +1142,12 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
 
         imported_files = []
         failed_files = []
+        imported_objects = []
+        created_collections = []
+        created_animation_count = 0
+        created_sound_count = 0
+        parsed_animation_count = 0
+        parsed_sound_count = 0
 
         for filepath in valid_paths:
             coll = None
@@ -992,6 +1211,9 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                 io_utils.create_uv_map(obj.data, uvs)
                 # Create shape keys
                 actions = []
+                imported_sounds = []
+                file_parsed_animation_count = len(animations)
+                file_parsed_sound_count = len(sounds)
                 if self.import_animations and animations:
                     anim_utils.create_shape_keys_from_car_animations(obj, animations, import_matrix_np, use_absolute=self.use_absolute_shape_keys)
                     # Automatically create fast actions + NLA strips
@@ -1037,6 +1259,13 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                             suggested_action="Review the complete report before export.",
                         )
                 imported_files.append(filename)
+                imported_objects.append(obj)
+                if coll:
+                    created_collections.append(coll.name)
+                created_animation_count += len(actions)
+                created_sound_count += len(imported_sounds)
+                parsed_animation_count += file_parsed_animation_count
+                parsed_sound_count += file_parsed_sound_count
                 report.info(
                     "Import",
                     "Imported successfully.",
@@ -1067,6 +1296,29 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
             failed_files,
             report=report,
         )
+        if imported_objects:
+            _report_import_summary(
+                report,
+                created_collections,
+                [obj.name for obj in imported_objects],
+                animations=created_animation_count,
+                sounds=created_sound_count,
+                parsed_animations=parsed_animation_count,
+                parsed_sounds=parsed_sound_count,
+            )
+            focus = _post_import_focus(
+                context,
+                imported_objects,
+                select_imported=self.select_imported,
+                frame_imported=self.frame_imported,
+            )
+            if self.select_imported:
+                report.info("Post-import", f"Selected {focus['selected']} imported primary mesh object(s); the last imported mesh is active.")
+            if self.frame_imported:
+                if focus["framed"]:
+                    report.info("Post-import", "Framed imported objects in the invoking 3D View.")
+                elif focus["message"]:
+                    report.info("Post-import", focus["message"], suggested_action="Run the import from a 3D View if viewport framing is desired.")
         _finalize_operation_report(self, report)
 
         return {'FINISHED'} if completed else {'CANCELLED'}
@@ -1137,6 +1389,10 @@ class CARNIVORES_OT_export_3dn(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         if _active_mesh(context):
             return True
         return _poll_message(cls, "Select an active mesh object to export as .3DN.")
+
+    def invoke(self, context, event):
+        _apply_operation_preferences(self, 'EXPORT')
+        return bpy_extras.io_utils.ExportHelper.invoke(self, context, event)
 
     def draw(self, context):
         layout = self.layout
@@ -1293,6 +1549,10 @@ class CARNIVORES_OT_export_vtl(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         if has_shape_key_animation or has_parent_animation or has_object_animation:
             return True
         return _poll_message(cls, "The active mesh has no shape-key, object, or parent-armature animation data.")
+
+    def invoke(self, context, event):
+        _apply_operation_preferences(self, 'EXPORT')
+        return bpy_extras.io_utils.ExportHelper.invoke(self, context, event)
 
     def draw(self, context):
         layout = self.layout

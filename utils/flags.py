@@ -4,6 +4,33 @@ import bmesh
 from ..core.constants import FACE_FLAG_OPTIONS
 from .common import timed
 
+
+# Applied in FACE_FLAG_OPTIONS order so overlapping flags always produce the
+# same averaged result.  The final entry uses the serialized 0x8000 Dark bit,
+# not a positional 0x0100 bit.
+FLAG_TINTS = (
+    (1, (1.0, 0.0, 1.0, 1.0)),      # Double Side: magenta
+    (2, (0.0, 1.0, 0.0, 1.0)),      # Dark Back: green
+    (4, (0.0, 0.0, 1.0, 1.0)),      # Opacity: blue
+    (8, (1.0, 1.0, 0.0, 1.0)),      # Transparent: yellow
+    (16, (1.0, 0.0, 0.0, 1.0)),     # Mortal: red
+    (32, (0.0, 1.0, 1.0, 1.0)),     # Phong: cyan
+    (64, (0.5, 0.5, 0.5, 1.0)),     # Env Map: gray
+    (128, (1.0, 0.5, 0.0, 1.0)),    # Need VC: orange
+    (32768, (0.0, 0.0, 0.0, 1.0)),  # Dark: black
+)
+
+
+def _valid_flag_attribute(mesh, attr_name="3df_flags"):
+    attr = mesh.attributes.get(attr_name) if mesh else None
+    return bool(
+        attr
+        and attr.domain == 'FACE'
+        and attr.data_type == 'INT'
+        and len(attr.data) == len(mesh.polygons)
+    )
+
+
 @timed("assign_face_flag")
 def assign_face_flag_int(mesh: bpy.types.Mesh, face_flags, attr_name="3df_flags"):
     # Create or get the attribute
@@ -34,9 +61,9 @@ def count_flag_hits(obj, attr_name="3df_flags"):
     if face_count == 0:
         return counts, 0
 
-    attr = mesh.attributes.get(attr_name)
-    if not attr:
+    if not _valid_flag_attribute(mesh, attr_name):
         return counts, 0
+    attr = mesh.attributes.get(attr_name)
 
     if obj.mode == 'EDIT':
         # Use BMesh for EDIT mode to ensure UI updates correctly
@@ -69,7 +96,39 @@ def count_flag_hits(obj, attr_name="3df_flags"):
 
         return counts, total
 
-@timed("get_selected_face_indices")    
+@timed("count_matching_faces")
+def count_matching_faces(obj, mask, mode='ANY', attr_name="3df_flags"):
+    """Count faces matching a mask in the same scope used by the selector."""
+    if not obj or obj.type != 'MESH' or not _valid_flag_attribute(obj.data, attr_name):
+        return 0, 0
+    mask = int(mask)
+    if mask == 0:
+        return 0, 0
+
+    mesh = obj.data
+    if obj.mode == 'EDIT':
+        bm = bmesh.from_edit_mesh(mesh)
+        bm.faces.ensure_lookup_table()
+        layer = bm.faces.layers.int.get(attr_name)
+        if not layer:
+            return 0, 0
+        values = np.asarray([face[layer] for face in bm.faces if face.select], dtype=np.int64)
+    else:
+        values = np.empty(len(mesh.polygons), dtype=np.int32)
+        mesh.attributes[attr_name].data.foreach_get("value", values)
+
+    if mode == 'ANY':
+        matches = (values & mask) != 0
+    elif mode == 'ALL':
+        matches = (values & mask) == mask
+    elif mode == 'NONE':
+        matches = (values & mask) == 0
+    else:
+        return 0, int(values.size)
+    return int(np.count_nonzero(matches)), int(values.size)
+
+
+@timed("get_selected_face_indices")
 def get_selected_face_indices(obj):
     """Return numpy array of selected face indices (int32). In OBJECT mode, return all faces if none selected."""
     mesh = obj.data
@@ -138,22 +197,7 @@ def get_flag_color(flags):
     # Base color: White
     color = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
 
-    # Define tint colors for each bit
-    # Format: (Bit Mask, Tint Color RGBA)
-    # Using the same color scheme as the reference implementation
-    tints = [
-        (1 << 0, [1.0, 0.0, 1.0, 1.0]),  # Double Side -> Magenta
-        (1 << 1, [0.0, 1.0, 0.0, 1.0]),  # Dark Back -> Green
-        (1 << 2, [0.0, 0.0, 1.0, 1.0]),  # Opacity -> Blue
-        (1 << 3, [1.0, 1.0, 0.0, 1.0]),  # Transparent -> Yellow
-        (1 << 4, [1.0, 0.0, 0.0, 1.0]),  # Mortal -> Red
-        (1 << 5, [0.0, 1.0, 1.0, 1.0]),  # Phong -> Cyan
-        (1 << 6, [0.5, 0.5, 0.5, 1.0]),  # Env Map -> Gray
-        (1 << 7, [1.0, 0.5, 0.0, 1.0]),  # Need VC -> Orange
-        (1 << 8, [0.0, 0.0, 0.0, 1.0]),  # Dark -> Black
-    ]
-
-    for mask, tint in tints:
+    for mask, tint in FLAG_TINTS:
         if flags & mask:
             # Simple averaging blend (matches reference)
             # (current + tint) / 2
@@ -199,17 +243,10 @@ def update_flag_colors(mesh):
     # Apply tints vectorially
     # Tints logic: color = (color + tint) / 2  => color * 0.5 + tint * 0.5
     
-    tints_map = [
-        (1 << 0, np.array([1.0, 0.0, 1.0, 1.0])), # Magenta
-        (1 << 1, np.array([0.0, 1.0, 0.0, 1.0])), # Green
-        (1 << 2, np.array([0.0, 0.0, 1.0, 1.0])), # Blue
-        (1 << 3, np.array([1.0, 1.0, 0.0, 1.0])), # Yellow
-        (1 << 4, np.array([1.0, 0.0, 0.0, 1.0])), # Red
-        (1 << 5, np.array([0.0, 1.0, 1.0, 1.0])), # Cyan
-        (1 << 6, np.array([0.5, 0.5, 0.5, 1.0])), # Gray
-        (1 << 7, np.array([1.0, 0.5, 0.0, 1.0])), # Orange
-        (1 << 8, np.array([0.0, 0.0, 0.0, 1.0])), # Black
-    ]
+    tints_map = tuple(
+        (mask, np.asarray(tint, dtype=np.float32))
+        for mask, tint in FLAG_TINTS
+    )
 
     for mask, tint in tints_map:
         # Find indices where this flag is set

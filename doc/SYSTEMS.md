@@ -80,13 +80,13 @@ The experimental `TOPOLOGY` algorithm builds a `RigProposal` from this analysis:
 9. Optional deform smoothing rebuilds one-hot vertex groups from the canonical owner cache before each run, preventing cumulative Topology smoothing; hierarchy analysis still uses unchanged canonical owners.
 10. Optional semantic naming renames generated bones and matching vertex groups together with `_L`/`_R` suffixes.
 
-`LEGACY` remains the default. Select **Topology (Experimental)** in Rigging Utilities for manual testing. Generated armatures record algorithm version, accepted raw-owner edges with reasons and confidence, roots, skipped groups, component policy, parent map, smoothing state, and semantic-naming state.
+`LEGACY` remains the default. Select **Topology (Experimental)** in the **Carnivores Rig** panel for manual testing. Generated armatures record algorithm version, accepted raw-owner edges with reasons and confidence, roots, skipped groups, component policy, parent map, smoothing state, and semantic-naming state.
 
 ---
 
 ### 3. Generated Weight Smoothing (Optional)
 
-The user may enable Laplacian deform-weight smoothing via Rigging Utilities. This propagates weights across mesh topology without modifying the owner attributes. Legacy uses the resulting groups for centroid inference for compatibility. Topology first analyzes canonical owner boundaries, then rebuilds one-hot groups from the cache and smooths only the generated deformation output.
+The user may enable Laplacian deform-weight smoothing via the **Carnivores Rig** panel. This propagates weights across mesh topology without modifying the owner attributes. Legacy uses the resulting groups for centroid inference for compatibility. Topology first analyzes canonical owner boundaries, then rebuilds one-hot groups from the cache and smooths only the generated deformation output.
 
 ```python
 def smooth_vertex_weights(obj, iterations=3, factor=0.5, joints_only=False):
@@ -279,15 +279,15 @@ After armature creation, diagnostic metadata is stored on the armature object as
 ### User Workflow
 
 1. Import `.car` file
-2. Open `Carnivores` tab in N-Panel → `Carnivores Animation`
-3. Optionally enable **Smooth Weights** in Rigging Utilities and tune the generated deform-weight parameters
-4. Optionally set a **Manual Root Override** (by index) for asymmetric creatures
-5. Ensure **Auto-detect Left/Right** is enabled for semantic naming
-6. Click **"Reconstruct Rig from Owners"**
+2. Open `Carnivores` tab in N-Panel → `Carnivores Rig`
+3. Optionally enable **Smooth Weights** and tune the generated deform-weight parameters
+4. Choose **Automatic** or a searchable owner root entry for asymmetric creatures
+5. Ensure **Semantic L/R Names** is enabled when semantic naming is desired
+6. Click **"Reconstruct Rig"**
    - Mesh auto-parented to new skeleton
    - Armature Modifier added
    - Vertex groups match bone names → immediately poseable
-7. Inspect results via **"Show Rig Debug Report"** (shows root, centroids, parent map, skipped groups)
+7. Inspect results via **"Generate Rig Report"** and **"Open Report"** (root, centroids, parent map, skipped groups)
 
 ### Implementation Files
 

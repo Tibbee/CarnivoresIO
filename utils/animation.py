@@ -536,8 +536,6 @@ def auto_create_shape_key_actions_from_car(obj, frame_step=1, parsed_animations=
             debug(f"Pushed {len(actions)} actions to NLA batch (using {num_tracks_used} tracks).")
     except Exception as e:
         warn(f"NLA batch push failed (non-fatal): {e}")
-        import traceback
-        traceback.print_exc()  # Log full stack for debug (remove if noisy) 
     
     # Single update at end (key for perf)
     bpy.context.view_layer.update()

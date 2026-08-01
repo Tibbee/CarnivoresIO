@@ -5,7 +5,7 @@ Use duplicate `.blend` files or disposable imports while the **Topology** algori
 ## Preparation
 
 1. Import a `.car` model with **Compatibility Checks** enabled.
-2. Select the imported mesh and open **Animation → Rigging Utilities**.
+2. Select the imported mesh and open the dedicated **Carnivores Rig** panel.
 3. Confirm **Reset to Imported Owners** restores `CarBone_<raw owner>` groups.
 4. Save the file before applying either reconstruction algorithm.
 
@@ -13,15 +13,15 @@ Use duplicate `.blend` files or disposable imports while the **Topology** algori
 
 1. Set **Reconstruction Algorithm** to **Topology (Experimental)**. For Legacy comparisons, leave **Filter Detached Centroid Clusters** disabled unless testing that compatibility option explicitly.
 2. Set **Disconnected Components** to **Multiple Roots**.
-3. Leave **Root Override Index** at `-1`.
-4. Run **Reconstruct Rig from Owners**.
+3. Choose **Automatic** in the searchable Root selector.
+4. Run **Reconstruct Rig**.
 5. Confirm:
    - an armature is created without errors;
    - owner `0`, when present, has a `CarBone_0` bone;
    - limb child heads are near visible owner-region boundaries;
    - detached geometry remains represented as an additional root;
    - no left limb is directly parented to its right-side counterpart when a torso boundary path exists.
-6. Run **Debug Rig Info** and record the algorithm version, anatomy classification, mirror pairs, accepted-edge reasons, roots, hierarchy, skipped groups, and mean edge confidence.
+6. Run **Generate Rig Report**, then **Open Report**, and record the algorithm version, anatomy classification, mirror pairs, accepted-edge reasons, roots, hierarchy, skipped groups, and mean edge confidence.
 
 ## `dilo2b` Reference Regression
 

@@ -19,6 +19,11 @@ def _volume_property_changed():
     """RNA property update callback — re-applies volume to live handles."""
     anim_ops.update_audio_volumes()
 
+
+def _nla_sound_enabled_changed(self, context):
+    """Stop managed preview handles as soon as the authoritative toggle is disabled."""
+    anim_ops.set_nla_sound_enabled(bool(getattr(self, "carnivores_nla_sound_enabled", True)))
+
 class CarnivoresPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
@@ -27,10 +32,86 @@ class CarnivoresPreferences(bpy.types.AddonPreferences):
         description="Enable verbose logging in the console",
         default=False,
     )
+    auto_select_imported: bpy.props.BoolProperty(
+        name="Select Imported Objects",
+        description="Select imported primary mesh objects and make the last imported mesh active after import.",
+        default=True,
+    )
+    auto_frame_imported: bpy.props.BoolProperty(
+        name="Frame Imported Objects",
+        description="Frame imported objects when the import is invoked from a compatible 3D View.",
+        default=False,
+    )
+    default_import_scale: bpy.props.FloatProperty(
+        name="Default Import Scale",
+        description="Default scale shown in import dialogs; existing operator and scripted defaults remain unchanged until a user changes this preference.",
+        default=0.01,
+        min=0.01,
+        max=100.0,
+    )
+    default_export_scale: bpy.props.FloatProperty(
+        name="Default Export Scale",
+        description="Default scale shown in export dialogs; existing operator and scripted defaults remain unchanged until a user changes this preference.",
+        default=100.0,
+        min=1.0,
+        max=1000.0,
+    )
+    default_flip_handedness: bpy.props.BoolProperty(
+        name="Default Coordinate Conversion",
+        description="Use the standard Carnivores file/Blender coordinate conversion in newly opened dialogs.",
+        default=True,
+    )
+    default_bone_import_type: bpy.props.EnumProperty(
+        name="Default 3DF Bone Import",
+        description="Default deformation representation for newly opened .3DF import dialogs.",
+        items=[
+            ('NONE', "None", "Import no deformation objects."),
+            ('ARMATURE', "Armature", "Create one editable armature."),
+            ('HOOKS', "Hooks", "Create lightweight hook controls."),
+        ],
+        default='HOOKS',
+    )
+    show_advanced_options: bpy.props.BoolProperty(
+        name="Show Advanced Options",
+        description="Show coordinate-axis controls in import and export dialogs.",
+        default=True,
+    )
+    documentation_url: bpy.props.StringProperty(
+        name="Documentation URL",
+        default="https://github.com/Tibbee/CarnivoresIO/blob/main/README.md",
+    )
+    issue_tracker_url: bpy.props.StringProperty(
+        name="Issue Tracker URL",
+        default="https://github.com/Tibbee/CarnivoresIO/issues",
+    )
 
     def draw(self, context):
         layout = self.layout
-        layout.prop(self, "debug_mode")
+        diagnostics = layout.box()
+        diagnostics.label(text="Diagnostics", icon='INFO')
+        diagnostics.prop(self, "debug_mode")
+        import_behavior = layout.box()
+        import_behavior.label(text="Import Behavior", icon='IMPORT')
+        import_behavior.prop(self, "auto_select_imported")
+        import_behavior.prop(self, "auto_frame_imported")
+        import_behavior.label(text="These defaults apply when opening an import dialog; scripted operators keep their own properties.")
+
+        defaults = layout.box()
+        defaults.label(text="Operation Defaults", icon='PREFERENCES')
+        defaults.prop(self, "default_import_scale")
+        defaults.prop(self, "default_export_scale")
+        defaults.prop(self, "default_flip_handedness")
+        defaults.prop(self, "default_bone_import_type")
+        defaults.prop(self, "show_advanced_options")
+
+        links = layout.box()
+        links.label(text="Help", icon='HELP')
+        row = links.row(align=True)
+        documentation = row.operator("wm.url_open", text="Documentation", icon='URL')
+        documentation.url = self.documentation_url
+        issues = row.operator("wm.url_open", text="Report Issue", icon='URL')
+        issues.url = self.issue_tracker_url
+        layout.operator("carnivores.restore_preferences", text="Restore Defaults", icon='FILE_REFRESH')
 
 class CARNIVORES_MT_import(bpy.types.Menu):
     bl_idname = "CARNIVORES_MT_import"
@@ -168,6 +249,13 @@ def register():
         default=-1,
         min=-1,
     )
+    bpy.types.Object.carnivores_reconstruct_root_choice = bpy.props.EnumProperty(
+        name="Reconstruction Root",
+        description="Choose Automatic or an owner index with its generated name and vertex count.",
+        items=anim_ops.reconstruction_root_items,
+        get=anim_ops.get_reconstruction_root_choice,
+        set=anim_ops.set_reconstruction_root_choice,
+    )
     bpy.types.Object.carnivores_reconstruct_semantic_naming = bpy.props.BoolProperty(
         name="Semantic L/R Suffixes",
         description="Automatically append _L or _R to generic bone names and vertex groups based on symmetry plane alignment",
@@ -223,8 +311,9 @@ def register():
     
     bpy.types.Scene.carnivores_nla_sound_enabled = bpy.props.BoolProperty(
         name="Enable NLA Sound",
-        description="Play linked sounds when scrubbing NLA strips",
-        default=True
+        description="Play linked sounds when scrubbing or previewing NLA strips; disabling stops managed playback immediately.",
+        default=True,
+        update=_nla_sound_enabled_changed,
     )
 
     bpy.types.Action.carnivores_sound_volume = bpy.props.FloatProperty(
@@ -288,6 +377,7 @@ def unregister():
     del bpy.types.Object.carnivores_active_nla_index
     del bpy.types.Object.carnivores_reconstruct_algorithm
     del bpy.types.Object.carnivores_reconstruct_component_policy
+    del bpy.types.Object.carnivores_reconstruct_root_choice
     del bpy.types.Object.carnivores_reconstruct_root_override
     del bpy.types.Object.carnivores_reconstruct_semantic_naming
     del bpy.types.Object.carnivores_reconstruct_legacy_filter_clusters

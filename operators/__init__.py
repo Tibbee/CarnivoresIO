@@ -1,6 +1,7 @@
-from . import io, flags, animation, reporting, validation
+from . import io, flags, animation, reporting, validation, preferences
 
 classes = (
+    preferences.CARNIVORES_OT_restore_preferences,
     reporting.CARNIVORES_OT_open_report,
     reporting.CARNIVORES_OT_copy_report,
 
@@ -21,12 +22,16 @@ classes = (
     flags.CARNIVORES_OT_modify_3df_flag,
     flags.CARNIVORES_OT_clear_flag_selections,
     flags.CARNIVORES_OT_visualize_flags,
+    flags.CARNIVORES_OT_clear_selected_3df_flags,
+    flags.CARNIVORES_OT_clear_all_3df_flags,
     flags.VIEW3D_PT_carnivores_selection,
     
     animation.CARNIVORES_OT_play_linked_sound,
     animation.CARNIVORES_OT_import_sound_for_action,
+    animation.CARNIVORES_OT_clear_action_sound,
     animation.CARNIVORES_OT_toggle_nla_sound_playback,
     animation.CARNIVORES_UL_animation_list,
+    animation.CARNIVORES_OT_move_nla_track,
     animation.CARNIVORES_OT_set_kps,
     animation.CARNIVORES_OT_reset_kps,
     animation.CARNIVORES_OT_play_track_preview,
@@ -34,5 +39,6 @@ classes = (
     animation.CARNIVORES_OT_reconstruct_armature,
     animation.CARNIVORES_OT_reset_to_imported_owners,
     animation.CARNIVORES_OT_debug_rig_info,
+    animation.VIEW3D_PT_carnivores_rig,
     animation.VIEW3D_PT_carnivores_animation,
 )

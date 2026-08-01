@@ -459,6 +459,12 @@ def update_audio_volumes():
     _audio_manager.update_volumes()
 
 
+def set_nla_sound_enabled(enabled):
+    """Apply the authoritative preview-audio toggle immediately."""
+    if not enabled:
+        _audio_manager.on_stop_all()
+
+
 # ---------------------------------------------------------------------------
 # Pure helpers (no mutable state)
 # ---------------------------------------------------------------------------
@@ -617,6 +623,8 @@ def playback_started_handler(scene):
 @bpy.app.handlers.persistent
 def playback_stopped_handler(scene):
     _audio_manager.on_playback_stop()
+    if _preview_restore_state:
+        _restore_preview_state(scene)
 
 @bpy.app.handlers.persistent
 def carnivores_nla_sound_handler(scene):
@@ -665,6 +673,36 @@ class CARNIVORES_OT_import_sound_for_action(bpy.types.Operator, bpy_extras.io_ut
 
         return {'FINISHED'}
 
+class CARNIVORES_OT_clear_action_sound(bpy.types.Operator):
+    """Clear the linked sound from an Action without deleting the Sound datablock."""
+    bl_idname = "carnivores.clear_action_sound"
+    bl_label = "Clear Sound Link"
+    bl_description = "Remove the selected Action's sound link; the Sound datablock itself is preserved."
+    bl_options = {'REGISTER', 'UNDO'}
+
+    action_name: bpy.props.StringProperty(
+        name="Action Name",
+        description="Animation Action whose sound link will be cleared.",
+    )
+
+    @classmethod
+    def poll(cls, context):
+        if not getattr(context, "active_object", None):
+            return _poll_message(cls, "Select an animated object before clearing a sound link.")
+        return True
+
+    def execute(self, context):
+        action = bpy.data.actions.get(self.action_name)
+        if not action:
+            self.report({'ERROR'}, f"Action '{self.action_name}' not found.")
+            return {'CANCELLED'}
+        action.carnivores_sound_ptr = None
+        if "carnivores_sound" in action:
+            del action["carnivores_sound"]
+        self.report({'INFO'}, f"Cleared sound link from '{action.name}'.")
+        return {'FINISHED'}
+
+
 class CARNIVORES_OT_toggle_nla_sound_playback(bpy.types.Operator):
     bl_idname = "carnivores.toggle_nla_sound_playback"
     bl_label = "Toggle NLA Sound Playback"
@@ -674,13 +712,8 @@ class CARNIVORES_OT_toggle_nla_sound_playback(bpy.types.Operator):
     def execute(self, context):
         scene = context.scene
         scene.carnivores_nla_sound_enabled = not scene.carnivores_nla_sound_enabled
-
-        if scene.carnivores_nla_sound_enabled:
-            self.report({'INFO'}, "NLA Sound Playback Enabled.")
-        else:
-            _audio_manager.on_stop_all()
-            self.report({'INFO'}, "NLA Sound Playback Disabled.")
-
+        state = "enabled" if scene.carnivores_nla_sound_enabled else "disabled"
+        self.report({'INFO'}, f"NLA preview audio {state}.")
         return {'FINISHED'}
 
 def get_kps_mode(self):
@@ -697,31 +730,161 @@ def set_kps_mode(self, value):
 # Property registration moved to __init__ generally, but can stay here if imported
 # We will register it in __init__ or ensure this file runs.
 
+def _set_if_writable(target, name, value):
+    try:
+        if hasattr(target, name):
+            setattr(target, name, value)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+
+
+def _reorder_nla_tracks(anim_data, source_index, target_index):
+    """Rebuild NLA tracks in a requested order on Blender versions without move()."""
+    tracks = list(anim_data.nla_tracks)
+    if not (0 <= source_index < len(tracks) and 0 <= target_index < len(tracks)):
+        return False
+    if source_index == target_index:
+        return True
+
+    snapshots = []
+    for track in tracks:
+        strips = []
+        for strip in track.strips:
+            action = strip.action
+            if action is None:
+                warn(f"Cannot reorder NLA track '{track.name}' because it contains a strip without an Action.")
+                return False
+            strip_state = {
+                "name": strip.name,
+                "action": action,
+            }
+            for prop_name in (
+                "frame_start", "frame_end", "action_frame_start", "action_frame_end",
+                "scale", "repeat", "blend_type", "extrapolation", "use_reverse",
+                "use_sync_length", "strip_time", "use_animated_time", "influence",
+                "mute", "select",
+            ):
+                try:
+                    if hasattr(strip, prop_name):
+                        strip_state[prop_name] = getattr(strip, prop_name)
+                except (ReferenceError, RuntimeError):
+                    pass
+            strips.append(strip_state)
+        snapshots.append({
+            "name": track.name,
+            "mute": track.mute,
+            "select": getattr(track, "select", True),
+            "lock": getattr(track, "lock", False),
+            "strips": strips,
+        })
+
+    reordered = list(snapshots)
+    moved = reordered.pop(source_index)
+    reordered.insert(target_index, moved)
+
+    def recreate(order):
+        for existing in list(anim_data.nla_tracks):
+            anim_data.nla_tracks.remove(existing)
+        for snapshot in order:
+            new_track = anim_data.nla_tracks.new()
+            new_track.name = snapshot["name"]
+            _set_if_writable(new_track, "mute", snapshot["mute"])
+            _set_if_writable(new_track, "select", snapshot["select"])
+            _set_if_writable(new_track, "lock", snapshot["lock"])
+            for strip_state in snapshot["strips"]:
+                new_strip = new_track.strips.new(
+                    strip_state["name"],
+                    int(round(strip_state.get("frame_start", 1.0))),
+                    strip_state["action"],
+                )
+                for prop_name, value in strip_state.items():
+                    if prop_name not in {"name", "action", "frame_start"}:
+                        _set_if_writable(new_strip, prop_name, value)
+
+    try:
+        recreate(reordered)
+    except (RuntimeError, ReferenceError, TypeError, ValueError) as exc:
+        error(f"NLA track reorder failed: {exc}; restoring the original order.")
+        try:
+            recreate(snapshots)
+        except (RuntimeError, ReferenceError, TypeError, ValueError) as restore_exc:
+            error(f"NLA track reorder rollback failed: {restore_exc}")
+        return False
+    return True
+
+
+class CARNIVORES_OT_move_nla_track(bpy.types.Operator):
+    """Move a track earlier or later in the actual CAR export order."""
+    bl_idname = "carnivores.move_nla_track"
+    bl_label = "Move NLA Track"
+    bl_description = "Move the selected NLA track earlier or later in CAR export order; all strips on the track move together."
+    bl_options = {'REGISTER', 'UNDO'}
+
+    direction: bpy.props.EnumProperty(
+        name="Direction",
+        description="Direction in the displayed export order (the top row exports first).",
+        items=[
+            ('UP', "Earlier", "Move this track earlier in CAR export order."),
+            ('DOWN', "Later", "Move this track later in CAR export order."),
+        ],
+        default='UP',
+    )
+
+    @classmethod
+    def poll(cls, context):
+        obj = getattr(context, "active_object", None)
+        anim_data = anim_utils.get_active_animation_data(obj) if obj else None
+        if not obj or not anim_data or len(anim_data.nla_tracks) < 2:
+            return _poll_message(cls, "Select an object with at least two NLA tracks to reorder export order.")
+        return True
+
+    def execute(self, context):
+        obj = context.active_object
+        anim_data = anim_utils.get_active_animation_data(obj)
+        index = int(getattr(obj, "carnivores_active_nla_index", 0))
+        # NLA stores bottom-to-top; CAR exports reversed, so data index +1 is
+        # earlier in the displayed/export order.
+        target = index + 1 if self.direction == 'UP' else index - 1
+        if target < 0 or target >= len(anim_data.nla_tracks):
+            self.report({'INFO'}, "The selected track is already at that export-order boundary.")
+            return {'CANCELLED'}
+        track_name = anim_data.nla_tracks[index].name
+        if not _reorder_nla_tracks(anim_data, index, target):
+            self.report({'ERROR'}, "Could not reorder the selected NLA track; see the system console for details.")
+            return {'CANCELLED'}
+        obj.carnivores_active_nla_index = target
+        position = len(anim_data.nla_tracks) - target
+        self.report({'INFO'}, f"Moved '{track_name}' to export position {position}.")
+        return {'FINISHED'}
+
+
 class CARNIVORES_UL_animation_list(bpy.types.UIList):
-    """UIList for displaying NLA tracks in the Carnivores Animation Panel"""
+    """UIList for displaying NLA tracks in the actual CAR export order."""
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         track = item
         if self.layout_type in {'DEFAULT', 'COMPACT'}:
             row = layout.row(align=True)
-            # Mute Toggle (Eye Icon logic reversed: Mute=True -> Eye Closed)
+            export_index = max(1, len(data.nla_tracks) - index)
+            row.label(text=f"{export_index:02d}")
             icon = 'HIDE_OFF' if not track.mute else 'HIDE_ON'
             row.prop(track, "mute", text="", icon=icon, emboss=False)
             row.prop(track, "name", text="", emboss=False)
-            
-            # Play Preview Button
+            if len(track.strips) > 1:
+                row.label(text=f"{len(track.strips)} strips", icon='NLA')
             if track.strips:
                 strip = track.strips[0]
                 if strip.action:
-                    # Check if this action is currently being previewed
-                    is_previewing = False
                     global _preview_restore_state
-                    if _preview_restore_state and _preview_restore_state.get('action_name') == strip.action.name:
-                        is_previewing = True
-                    
-                    icon = 'PAUSE' if is_previewing else 'PLAY'
-                    op = row.operator("carnivores.play_track_preview", text="", icon=icon)
+                    is_previewing = bool(
+                        _preview_restore_state
+                        and _preview_restore_state.get('action_name') == strip.action.name
+                    )
+                    op = row.operator(
+                        "carnivores.play_track_preview",
+                        text="Stop" if is_previewing else "Preview",
+                        icon='PAUSE' if is_previewing else 'PLAY',
+                    )
                     op.action_name = strip.action.name
-                    
         elif self.layout_type == 'GRID':
             layout.alignment = 'CENTER'
             layout.label(text="", icon='NLA')
@@ -805,6 +968,8 @@ def preview_loop_handler(scene):
     _preview_restore_state['last_frame'] = current
 
     if should_restart:
+        if not scene.carnivores_nla_sound_enabled:
+            return
         obj = _preview_restore_state.get('obj')
         action_name = _preview_restore_state.get('action_name')
         if obj and action_name:
@@ -831,6 +996,56 @@ def clear_aud_device_on_new_file(scene):
 
     debug("AUDIO: Audio system reset complete.")
 
+def _restore_preview_state(scene, context=None):
+    """Restore preview mutations from both operator and playback-stop paths."""
+    global _preview_restore_state
+    state = _preview_restore_state
+    if not state:
+        return False
+    # Clear first so animation_cancel callbacks cannot recursively restore it.
+    _preview_restore_state = None
+
+    obj = state.get('obj')
+    is_obj_valid = False
+    try:
+        is_obj_valid = bool(obj and obj.name)
+    except ReferenceError:
+        pass
+    if is_obj_valid and obj.animation_data:
+        for track_name, mute_state in state['track_mutes'].items():
+            track = obj.animation_data.nla_tracks.get(track_name)
+            if track:
+                track.mute = mute_state
+        if hasattr(obj, "carnivores_active_nla_index"):
+            obj.carnivores_active_nla_index = state.get("original_active_index", 0)
+
+    scene.frame_start = state['original_start']
+    scene.frame_end = state['original_end']
+    scene.frame_current = state['original_frame']
+    if hasattr(scene, 'frame_subframe'):
+        scene.frame_subframe = state.get('original_subframe', 0.0)
+    if hasattr(scene, 'use_preview_range'):
+        scene.use_preview_range = state.get('original_use_preview_range', scene.use_preview_range)
+        scene.frame_preview_start = state.get('original_preview_start', scene.frame_preview_start)
+        scene.frame_preview_end = state.get('original_preview_end', scene.frame_preview_end)
+    scene.carnivores_nla_sound_enabled = state['original_sound_enabled']
+
+    if preview_loop_handler in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.remove(preview_loop_handler)
+    try:
+        _audio_manager.remove_preview_source(obj, state.get('action_name'))
+    except (ReferenceError, RuntimeError):
+        pass
+
+    screen = getattr(context, 'screen', None) if context else None
+    if screen and screen.is_animation_playing:
+        try:
+            bpy.ops.screen.animation_cancel(restore_frame=False)
+        except RuntimeError as exc:
+            warn(f"Could not cancel Blender playback after preview: {exc}")
+    return True
+
+
 class CARNIVORES_OT_play_track_preview(bpy.types.Operator):
     """Solo this track and play it in a loop with sound. Stops when you pause playback."""
     bl_idname = "carnivores.play_track_preview"
@@ -852,44 +1067,12 @@ class CARNIVORES_OT_play_track_preview(bpy.types.Operator):
             return _poll_message(cls, "The active object has no animation data to preview.")
         return True
 
+    # Keep the public stop method on the shared restoration path used by the
+    # animation playback-stop handler.  This definition intentionally follows
+    # the legacy inline implementation above for compatibility with old files.
     def stop_preview(self, context):
-        global _preview_restore_state
-        if not _preview_restore_state:
-            return
-
-        # Restore State
-        obj = _preview_restore_state.get('obj')
-        
-        # Check if obj is still valid (Blender objects can be invalid if deleted)
-        is_obj_valid = False
-        try:
-            if obj and obj.name: # Accessing name is a safe way to check struct validity
-                is_obj_valid = True
-        except ReferenceError:
-            pass
-
-        if is_obj_valid and obj.animation_data:
-             for track_name, mute_state in _preview_restore_state['track_mutes'].items():
-                 track = obj.animation_data.nla_tracks.get(track_name)
-                 if track:
-                     track.mute = mute_state
-        
-        context.scene.frame_start = _preview_restore_state['original_start']
-        context.scene.frame_end = _preview_restore_state['original_end']
-        context.scene.frame_current = _preview_restore_state['original_frame']
-        
-        context.scene.carnivores_nla_sound_enabled = _preview_restore_state['original_sound_enabled']
-        
-        # Remove Loop Handler
-        if preview_loop_handler in bpy.app.handlers.frame_change_post:
-            bpy.app.handlers.frame_change_post.remove(preview_loop_handler)
-            
-        # Stop Playback
-        if context.screen.is_animation_playing:
-            bpy.ops.screen.animation_cancel(restore_frame=False)
-            
-        _preview_restore_state = None
-        self.report({'INFO'}, "Preview stopped.")
+        if _restore_preview_state(context.scene, context):
+            self.report({'INFO'}, "Preview stopped and scene/NLA state restored.")
 
     def execute(self, context):
         global _preview_restore_state
@@ -944,37 +1127,41 @@ class CARNIVORES_OT_play_track_preview(bpy.types.Operator):
             'obj': obj,
             'action_name': self.action_name,
             'original_frame': context.scene.frame_current,
+            'original_subframe': getattr(context.scene, 'frame_subframe', 0.0),
             'original_start': context.scene.frame_start,
             'original_end': context.scene.frame_end,
+            'original_use_preview_range': getattr(context.scene, 'use_preview_range', False),
+            'original_preview_start': getattr(context.scene, 'frame_preview_start', context.scene.frame_start),
+            'original_preview_end': getattr(context.scene, 'frame_preview_end', context.scene.frame_end),
+            'original_active_index': getattr(obj, 'carnivores_active_nla_index', 0),
+            'original_sound_enabled': context.scene.carnivores_nla_sound_enabled,
             'track_mutes': {t.name: t.mute for t in anim_data.nla_tracks},
             'preview_start': start_frame,
             'preview_end': int(math.ceil(end_frame)),
-            'last_frame': int(start_frame) # Initialize last_frame for the handler
+            'last_frame': int(start_frame),
         }
-        
-        # Apply Mutes (Solo)
-        for track in anim_data.nla_tracks:
-            track.mute = (track != target_track)
-            
-        # Set Range & Frame
-        context.scene.frame_start = int(start_frame)
-        context.scene.frame_end = int(math.ceil(end_frame))
-        
-        context.scene.frame_current = int(start_frame)
-        
-        # Add Loop Handler (insert at 0 to ensure it runs first)
-        if preview_loop_handler not in bpy.app.handlers.frame_change_post:
-            bpy.app.handlers.frame_change_post.insert(0, preview_loop_handler)
-            
-        # Ensure Audio is ON
-        _preview_restore_state['original_sound_enabled'] = context.scene.carnivores_nla_sound_enabled
-        context.scene.carnivores_nla_sound_enabled = True
-        
-        # Start Playback
-        if not context.screen.is_animation_playing:
-            bpy.ops.screen.animation_play()
-            
-        self.report({'INFO'}, f"Previewing '{action.name}' ({kps} KPS)")
+
+        try:
+            obj.carnivores_active_nla_index = list(anim_data.nla_tracks).index(target_track)
+            for track in anim_data.nla_tracks:
+                track.mute = (track != target_track)
+
+            context.scene.frame_start = int(start_frame)
+            context.scene.frame_end = int(math.ceil(end_frame))
+            context.scene.frame_current = int(start_frame)
+
+            if preview_loop_handler not in bpy.app.handlers.frame_change_post:
+                bpy.app.handlers.frame_change_post.insert(0, preview_loop_handler)
+
+            context.scene.carnivores_nla_sound_enabled = True
+            if not getattr(context.screen, "is_animation_playing", False):
+                bpy.ops.screen.animation_play()
+        except (RuntimeError, ReferenceError, TypeError) as exc:
+            self.stop_preview(context)
+            self.report({'ERROR'}, f"Could not start preview: {exc}")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Previewing '{action.name}' ({kps} KPS). Use Stop Preview to restore the scene.")
         return {'FINISHED'}
 
 class CARNIVORES_OT_resync_animation(bpy.types.Operator):
@@ -1125,10 +1312,10 @@ class CARNIVORES_OT_reconstruct_armature(bpy.types.Operator):
             return {'CANCELLED'}
 
 class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
-    """Log detailed skeletal information to a text datablock for debugging."""
+    """Write detailed skeletal diagnostics to a persistent text report."""
     bl_idname = "carnivores.debug_rig_info"
-    bl_label = "Log Rig Debug Info"
-    bl_description = "Write owner-cache, generated-bone, hierarchy, topology, and vertex-group diagnostics to Carnivores_Rig_Debug."
+    bl_label = "Generate Rig Report"
+    bl_description = "Write owner-cache, generated-bone, hierarchy, topology, and vertex-group diagnostics to Carnivores_Rig_Debug; use Open Report to inspect it."
     bl_options = {'REGISTER'}
 
     @classmethod
@@ -1370,6 +1557,122 @@ class CARNIVORES_OT_reset_to_imported_owners(bpy.types.Operator):
         self.report({'INFO'}, f"Reset {len(bone_names)} vertex groups from imported owners.")
         return {'FINISHED'}
 
+def reconstruction_root_items(obj, context):
+    """Return searchable root choices with generated names and vertex counts."""
+    items = [('AUTO', "Automatic", "Choose the root from the reconstruction algorithm.", 0)]
+    if not obj or obj.type != 'MESH' or not obj.data:
+        return items
+
+    from ..utils.animation import _build_reconstruction_bone_names, _get_reconstruction_group_count, _get_reconstruction_owner_source
+    import numpy as np
+
+    owner_indices = None
+    owner_attr = obj.data.attributes.get('carnivores_owner_index')
+    if owner_attr and owner_attr.domain == 'POINT' and owner_attr.data_type == 'INT' and len(owner_attr.data) == len(obj.data.vertices):
+        owner_indices = np.empty(len(obj.data.vertices), dtype=np.int32)
+        owner_attr.data.foreach_get('value', owner_indices)
+    group_count = _get_reconstruction_group_count(obj, owner_indices)
+    if group_count <= 0:
+        return items
+
+    owner_source = None
+    try:
+        owner_source = _get_reconstruction_owner_source(obj)
+    except (RuntimeError, ReferenceError):
+        pass
+    names = _build_reconstruction_bone_names(obj, group_count, owner_source=owner_source)
+    counts = [0] * group_count
+    if owner_indices is not None:
+        for value in owner_indices:
+            if 0 <= int(value) < group_count:
+                counts[int(value)] += 1
+    else:
+        for vertex in obj.data.vertices:
+            for group in vertex.groups:
+                if 0 <= group.group < group_count:
+                    counts[group.group] += 1
+
+    for index, name in enumerate(names):
+        items.append((
+            str(index),
+            f"{index}: {name} ({counts[index]} verts)",
+            f"Use owner {index}, generated name '{name}', with {counts[index]} owned vertices.",
+            index + 1,
+        ))
+    return items
+
+
+def get_reconstruction_root_choice(obj):
+    """Blender EnumProperty custom getters return the numeric enum value."""
+    override = int(getattr(obj, 'carnivores_reconstruct_root_override', -1))
+    return 0 if override < 0 else override + 1
+
+
+def set_reconstruction_root_choice(obj, value):
+    try:
+        numeric_value = int(value)
+        obj.carnivores_reconstruct_root_override = -1 if numeric_value <= 0 else numeric_value - 1
+    except (TypeError, ValueError):
+        obj.carnivores_reconstruct_root_override = -1
+
+
+class VIEW3D_PT_carnivores_rig(bpy.types.Panel):
+    """Dedicated owner reconstruction and rig diagnostics panel."""
+    bl_label = "Carnivores Rig"
+    bl_idname = "VIEW3D_PT_carnivores_rig"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Carnivores'
+
+    def draw(self, context):
+        layout = self.layout
+        obj = getattr(context, 'active_object', None)
+        if not obj or obj.type != 'MESH':
+            layout.label(text="Select a mesh with imported owner data.", icon='INFO')
+            return
+
+        cache = layout.box()
+        cache.label(text="Imported Owner Data", icon='GROUP_VERTEX')
+        owner_attr = obj.data.attributes.get('carnivores_owner_index')
+        source_attr = obj.data.attributes.get('carnivores_owner_source')
+        cache.label(text=f"Owner index cache: {'Present' if owner_attr else 'Missing'}")
+        cache.label(text=f"Original owner cache: {'Present' if source_attr else 'Missing'}")
+        cache.label(text=f"Vertex groups: {len(obj.vertex_groups)}")
+
+        reconstruction = layout.box()
+        reconstruction.label(text="Reconstruction", icon='ARMATURE_DATA')
+        reconstruction.prop(obj, 'carnivores_reconstruct_algorithm', text='Algorithm')
+        if obj.carnivores_reconstruct_algorithm == 'TOPOLOGY':
+            experimental = reconstruction.box()
+            experimental.label(text="Experimental topology mode", icon='ERROR')
+            experimental.label(text="Uses canonical owner boundaries for structure; generated weights do not redefine owners.")
+            experimental.prop(obj, 'carnivores_reconstruct_component_policy', text='Components')
+        else:
+            reconstruction.prop(obj, 'carnivores_reconstruct_legacy_filter_clusters', text='Filter Detached Clusters')
+
+        weights = reconstruction.box()
+        weights.label(text="Generated Deform Weights", icon='MOD_SMOOTH')
+        weights.prop(obj, 'carnivores_reconstruct_smooth_weights', text='Enable Smoothing')
+        if obj.carnivores_reconstruct_smooth_weights:
+            weights.prop(obj, 'carnivores_reconstruct_smooth_iterations', text='Iterations')
+            weights.prop(obj, 'carnivores_reconstruct_smooth_factor', text='Factor')
+            weights.prop(obj, 'carnivores_reconstruct_smooth_joints_only', text='Joints Only')
+        reconstruction.prop(obj, 'carnivores_reconstruct_semantic_naming', text='Semantic L/R Names')
+
+        root = reconstruction.box()
+        root.label(text="Root Selection", icon='BONE_DATA')
+        root.prop(obj, 'carnivores_reconstruct_root_choice', text='Root')
+        root.label(text="Automatic is recommended; the legacy integer override remains available to scripts.", icon='INFO')
+
+        actions = layout.column(align=True)
+        actions.operator(CARNIVORES_OT_reconstruct_armature.bl_idname, text='Reconstruct Rig', icon='BONE_DATA')
+        actions.operator(CARNIVORES_OT_reset_to_imported_owners.bl_idname, text='Reset to Imported Owners', icon='FILE_REFRESH')
+        row = actions.row(align=True)
+        row.operator(CARNIVORES_OT_debug_rig_info.bl_idname, text='Generate Rig Report', icon='TEXT')
+        report = row.operator('carnivores.open_report', text='Open Report', icon='FILE_FOLDER')
+        report.text_name = 'Carnivores_Rig_Debug'
+
+
 class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
     bl_label = "Carnivores Animation"
     bl_idname = "VIEW3D_PT_carnivores_animation"
@@ -1383,10 +1686,21 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
         obj = context.active_object
 
         # --- Global Sound Settings ---
-        row = layout.row()
-        row.prop(scene, "carnivores_nla_sound_enabled", text="Enable NLA Sound", toggle=True)
-        row.operator(CARNIVORES_OT_toggle_nla_sound_playback.bl_idname, text="", icon='PLAY_SOUND' if not scene.carnivores_nla_sound_enabled else 'PAUSE')
-        layout.prop(scene, "carnivores_nla_sound_volume", text="Preview Volume")
+        if _preview_restore_state and _preview_restore_state.get('obj') == obj:
+            preview_box = layout.box()
+            preview_box.label(text=f"Previewing: {_preview_restore_state.get('action_name', 'selected track')}", icon='PLAY')
+            stop = preview_box.operator("carnivores.play_track_preview", text="Stop Preview", icon='PAUSE')
+            stop.action_name = _preview_restore_state.get('action_name', '')
+        sound_box = layout.box()
+        sound_box.label(text="Preview Audio", icon='PLAY_SOUND')
+        sound_box.prop(
+            scene,
+            "carnivores_nla_sound_enabled",
+            text="On" if scene.carnivores_nla_sound_enabled else "Off",
+            toggle=True,
+        )
+        sound_box.prop(scene, "carnivores_nla_sound_volume", text="Volume")
+        sound_box.label(text="Disabling audio stops managed playback immediately.", icon='INFO')
         layout.separator()
 
         if not obj:
@@ -1402,34 +1716,8 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
 
         def draw_rigging_utilities():
             box = layout.box()
-            box.label(text="Rigging Utilities:", icon='ARMATURE_DATA')
-
-            if obj and obj.type == 'MESH':
-                box.prop(obj, "carnivores_reconstruct_algorithm")
-                if obj.carnivores_reconstruct_algorithm == 'TOPOLOGY':
-                    box.prop(obj, "carnivores_reconstruct_component_policy")
-                    box.label(text="Structure uses canonical owner boundaries", icon='MESH_DATA')
-                else:
-                    box.prop(obj, "carnivores_reconstruct_legacy_filter_clusters")
-
-                box.label(text="Generated Deform Weights:", icon='MOD_SMOOTH')
-                box.prop(obj, "carnivores_reconstruct_smooth_weights")
-                if obj.carnivores_reconstruct_smooth_weights:
-                    sub = box.column(align=True)
-                    sub.prop(obj, "carnivores_reconstruct_smooth_iterations")
-                    sub.prop(obj, "carnivores_reconstruct_smooth_factor")
-                    sub.prop(obj, "carnivores_reconstruct_smooth_joints_only")
-                box.prop(obj, "carnivores_reconstruct_semantic_naming")
-
-                # Expose manual root override index
-                box.separator()
-                box.prop(obj, "carnivores_reconstruct_root_override")
-                box.separator()
-
-            col = box.column(align=True)
-            col.operator(CARNIVORES_OT_reconstruct_armature.bl_idname, icon='BONE_DATA')
-            col.operator(CARNIVORES_OT_reset_to_imported_owners.bl_idname, icon='FILE_REFRESH')
-            col.operator(CARNIVORES_OT_debug_rig_info.bl_idname, icon='TEXT')
+            box.label(text="Rig controls moved to the Carnivores Rig panel.", icon='ARMATURE_DATA')
+            box.label(text="Animation and audio controls remain here.")
 
         if not anim_data:
             draw_rigging_utilities()
@@ -1445,14 +1733,21 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
             return
 
         # --- NLA Track List ---
-        layout.label(text="NLA Tracks (Export Order):")
-        row = layout.row()
+        order_box = layout.box()
+        order_box.label(text="NLA Tracks (CAR Export Order)", icon='NLA')
+        order_box.label(text="Top row exports first; tracks with multiple strips export each strip in order.")
+        row = order_box.row()
         row.template_list(
             "CARNIVORES_UL_animation_list", "", 
             anim_data, "nla_tracks", 
             obj, "carnivores_active_nla_index", 
             rows=5
         )
+        move_row = order_box.row(align=True)
+        earlier = move_row.operator("carnivores.move_nla_track", text="Earlier", icon='TRIA_UP')
+        earlier.direction = 'UP'
+        later = move_row.operator("carnivores.move_nla_track", text="Later", icon='TRIA_DOWN')
+        later.direction = 'DOWN'
 
         # --- Active Track Details ---
         idx = obj.carnivores_active_nla_index
@@ -1460,36 +1755,60 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
             active_track = anim_data.nla_tracks[idx]
             
             if active_track and active_track.strips:
-                # For simplicity, assume 1 strip per track for .car workflow, or take the first one
-                strip = active_track.strips[0] 
+                strip = active_track.strips[0]
                 action = strip.action
-                
+
                 if action:
                     box = layout.box()
-                    
-                    # Header / Strip Name
+                    box.label(text="Selected Track Details", icon='NLA')
                     row = box.row(align=True)
                     row.prop(strip, "name", text="", icon='NLA_PUSHDOWN')
-                    
-                    # Sound
+                    if len(active_track.strips) > 1:
+                        box.label(text=f"{len(active_track.strips)} strips will export in this track's strip order.", icon='INFO')
+
+                    # Sound assignment and source state.
                     row = box.row(align=True)
                     row.prop(action, "carnivores_sound_ptr", text="Sound")
-                    op = row.operator("carnivores.import_sound_for_action", text="", icon='FILE_FOLDER')
+                    op = row.operator("carnivores.import_sound_for_action", text="Import", icon='FILE_FOLDER')
                     op.action_name = action.name
+                    clear = row.operator("carnivores.clear_action_sound", text="Clear", icon='X')
+                    clear.action_name = action.name
+                    sound = anim_utils.resolve_action_sound(action)
+                    if sound:
+                        if sound.packed_file:
+                            source_state = "Packed"
+                        elif sound.filepath:
+                            source_state = "External"
+                        else:
+                            source_state = "Unavailable"
+                        box.label(text=f"Sound source: {source_state} ({sound.name})", icon='SPEAKER')
+                        if sound.duration > 0.0:
+                            box.label(text=f"Sound duration: {sound.duration:.3f}s")
+                    else:
+                        box.label(text="No linked sound", icon='INFO')
                     box.prop(action, "carnivores_sound_volume", text="Sound Volume")
-                    
-                    # KPS
-                    row = box.row(align=True)
-                    row.prop(action, "carnivores_kps_mode", text="") # Use the new EnumProperty
 
-                    # Check existence directly for UI state
+                    # KPS and timing summary.
+                    kps = float(action.get("carnivores_kps", scene.render.fps) or 0.0)
+                    action_start, action_end = anim_utils.get_action_frame_range(action)
+                    frame_count = max(1, action_end - action_start + 1)
+                    strip_span = max(0.0, float(strip.frame_end - strip.frame_start))
+                    frame_step = (scene.render.fps / kps) if kps > 0 else 0.0
+                    export_frame_count = max(1, int((strip_span / frame_step) + 0.5) + 1) if frame_step > 0 else 0
+                    animation_duration = ((export_frame_count - 1) / kps) if kps > 0 else 0.0
+                    row = box.row(align=True)
+                    row.prop(action, "carnivores_kps_mode", text="KPS")
                     if "carnivores_kps" in action:
-                        row.prop(action, '["carnivores_kps"]', text="KPS")
-                    else: # AUTO mode
-                        row.label(text=f"KPS: {scene.render.fps} (Scene FPS)")
-                    
-                    # Resync Button
-                    row = box.row()
+                        row.prop(action, '["carnivores_kps"]', text="Override")
+                    else:
+                        row.label(text=f"Scene FPS: {scene.render.fps}")
+                    box.label(text=f"Action: {action.name} | Frames: {frame_count} ({action_start}–{action_end})")
+                    box.label(text=f"CAR timing: {export_frame_count} samples, {animation_duration:.3f}s at {kps:g} KPS")
+                    if sound and sound.duration > 0.0:
+                        difference = animation_duration - sound.duration
+                        box.label(text=f"Animation − sound: {difference:+.3f}s", icon='TIME')
+
+                    row = box.row(align=True)
                     op = row.operator("carnivores.resync_animation", text="Re-Sync Timing", icon='FILE_REFRESH')
                     op.action_name = action.name
             elif active_track:

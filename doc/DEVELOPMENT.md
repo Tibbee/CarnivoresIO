@@ -115,9 +115,10 @@ def get_action_frame_range(action):
 Combined from `dev_notes.md` and `future_changes.md`.
 
 ### Phase1: Enhanced Visualization & Debugging
-#### 1.1 Face Flag Viewport Overlay
-- Custom overlay coloring faces by `3df_flags` (e.g., blue=water, red=death zones)
-- Toggle in viewport properties, legend, interactive feedback
+#### 1.1 Face Flag Viewport Overlay — Implemented
+- Generated `FlagColors` visualization with Show, Refresh, Hide, and Remove controls
+- Deterministic legend and overlap blending based on serialized `3df_flags`
+- Viewport color settings are restored when hiding the visualization
 
 #### 1.2 Model Health Check & Pre-Export Validation — Implemented
 - Format-aware non-destructive mesh, UV, texture, face-flag, animation, sound, rig, name, modifier, and coordinate checks
@@ -125,10 +126,10 @@ Combined from `dev_notes.md` and `future_changes.md`.
 - Export operators reuse the same checks; errors block output and warnings remain reviewable
 
 ### Phase2: Animation Workflow
-#### 2.1 Unified Carnivores Animation Panel
-- Refactor `VIEW3D_PT_carnivores_audio` → `VIEW3D_PT_carnivores_animation`
-- Global NLA sound toggle, NLA track list (export order), track reordering
-- Selected track details: action name, sound link, KPS override, play preview
+#### 2.1 Unified Carnivores Animation Panel — Implemented
+- Authoritative NLA preview-audio toggle with immediate playback stop
+- NLA track list with export indices, Earlier/Later reordering, and multi-strip indication
+- Selected track details include sound state, KPS, timing, duration difference, and explicit preview stop/restoration
 
 #### 2.2 Batch Action Renaming/Cleanup
 - Remove `.001`/`_Action` suffixes, convert spaces to underscores
