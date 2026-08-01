@@ -75,16 +75,77 @@ def _apply_operation_preferences(operator, direction):
         operator.bone_import_type = preferences.default_bone_import_type
 
 
+def _configure_operator_layout(layout):
+    """Use Blender's standard compact property presentation in file dialogs."""
+    layout.use_property_split = True
+    layout.use_property_decorate = False
+    return layout
+
+
+def _draw_operator_title(layout, title, icon='INFO'):
+    """Add a small orientation line without competing with the file browser title."""
+    row = layout.row()
+    row.label(text=title, icon=icon)
+    layout.separator(factor=0.35)
+
+
+def _operator_panel(
+    layout,
+    panel_id,
+    title,
+    *,
+    default_closed=False,
+    icon='NONE',
+    header_prop=None,
+):
+    """Draw a native collapsible options panel with a narrow-sidebar fallback.
+
+    ``UILayout.panel`` is intentionally used at the root of the operator
+    options layout: Blender only supports native panels when they have the
+    full width of their region.  The fallback keeps the add-on usable on
+    Blender versions without that API.
+    """
+    panel_method = getattr(layout, "panel", None)
+    if callable(panel_method):
+        header, body = panel_method(panel_id, default_closed=default_closed)
+        header.use_property_split = False
+        header.use_property_decorate = False
+        header.label(text=title, icon=icon)
+        if header_prop is not None:
+            data, property_name, property_text = header_prop
+            header.prop(data, property_name, text=property_text)
+        if body is not None:
+            body.use_property_split = True
+            body.use_property_decorate = False
+        return body
+
+    box = layout.box()
+    box.label(text=title, icon=icon)
+    if header_prop is not None:
+        data, property_name, property_text = header_prop
+        box.prop(data, property_name, text=property_text)
+    return box
+
+
 def _draw_advanced_coordinate_conversion(layout, operator):
     preferences = _get_addon_preferences()
     if preferences is not None and not preferences.show_advanced_options:
-        layout.label(text="Advanced coordinate options are hidden; enable them in Preferences.", icon='INFO')
+        layout.label(text="Coordinates hidden in Preferences.", icon='INFO')
         return
-    box = _section(layout, "Advanced Coordinate Conversion")
-    box.label(text="Keep the defaults for normal Carnivores files.")
-    box.prop(operator, "flip_handedness")
-    box.prop(operator, "axis_forward")
-    box.prop(operator, "axis_up")
+
+    panel_id = f"{operator.bl_idname.replace('.', '_')}_coordinates"
+    body = _operator_panel(
+        layout,
+        panel_id,
+        "Coordinates",
+        default_closed=True,
+        icon='WORLD',
+        header_prop=(operator, "flip_handedness", "Carnivores"),
+    )
+    if body:
+        body.label(text="Defaults target Carnivores files.", icon='INFO')
+        body.prop(operator, "axis_forward", text="Forward")
+        body.prop(operator, "axis_up", text="Up")
 
 
 def _post_import_focus(context, objects, *, select_imported=True, frame_imported=False):
@@ -193,21 +254,9 @@ def _report_import_summary(report, collections, objects, animations=0, sounds=0,
     )
 
 
-def _section(layout, title):
-    """Create a consistently labelled import/export dialog section."""
-    box = layout.box()
-    box.label(text=title)
-    return box
-
-
 def _draw_scale_note(layout, direction):
-    layout.label(text=f"Standard: 0.01 import / 100.0 export ({direction.lower()}).")
-
-
-def _draw_default_compatibility_note(layout, target="Carnivores runtime"):
-    box = _section(layout, "Compatibility")
-    box.label(text=f"Default settings target the {target} conventions.")
-    return box
+    standard = "0.01" if direction == "Import" else "100.0"
+    layout.label(text=f"Standard: {standard}", icon='INFO')
 
 
 def _remove_failed_import_collection(collection):
@@ -384,39 +433,70 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         return bpy_extras.io_utils.ImportHelper.invoke(self, context, event)
 
     def draw(self, context):
-        layout = self.layout
-
-        content = _section(layout, "Content")
-        content.prop(self, "import_textures")
-        row = content.row()
-        row.enabled = self.import_textures
-        row.prop(self, "create_materials")
-
-        geometry = _section(layout, "Geometry")
-        geometry.prop(self, "scale")
-        _draw_scale_note(geometry, "Import")
-        geometry.prop(self, "normal_smooth")
-
-        rig = _section(layout, "Rig / Deformation")
-        rig.prop(self, "bone_import_type")
-        rig.label(text="Hooks are lightweight controls; Armature creates one editable skeleton.")
-        if self.bone_import_type != 'NONE':
-            rig.prop(self, "smooth_weights")
-            if self.smooth_weights:
-                rig.prop(self, "smooth_iterations")
-                rig.prop(self, "smooth_factor")
-                rig.prop(self, "smooth_joints_only")
-
-        compatibility = _section(layout, "Compatibility")
-        compatibility.prop(self, "validate")
-        compatibility.label(text="Structural checks always run; this option adds compatibility diagnostics.")
-
-        post_import = _section(layout, "After Import")
-        post_import.prop(self, "select_imported")
-        post_import.prop(self, "frame_imported")
-        post_import.label(text="Framing is skipped safely outside a compatible 3D View.")
-
+        layout = _configure_operator_layout(self.layout)
+        _draw_operator_title(layout, ".3DF Import Options", icon='IMPORT')
         _draw_advanced_coordinate_conversion(layout, self)
+
+        content = _operator_panel(
+            layout,
+            "carnivores_import_3df_content",
+            "Content",
+            icon='MATERIAL',
+            header_prop=(self, "import_textures", "Textures"),
+        )
+        if content:
+            content.enabled = self.import_textures
+            content.prop(self, "create_materials", text="Materials")
+
+        geometry = _operator_panel(
+            layout,
+            "carnivores_import_3df_geometry",
+            "Geometry",
+            icon='MESH_DATA',
+        )
+        if geometry:
+            geometry.prop(self, "scale", text="Scale")
+            _draw_scale_note(geometry, "Import")
+            geometry.prop(self, "normal_smooth", text="Smooth Faces")
+
+        rig = _operator_panel(
+            layout,
+            "carnivores_import_3df_rig",
+            "Rig / Deformation",
+            default_closed=True,
+            icon='ARMATURE_DATA',
+            header_prop=(self, "bone_import_type", "Rig"),
+        )
+        if rig:
+            rig.label(text="Hooks are lightweight; Armature creates an editable skeleton.", icon='INFO')
+            if self.bone_import_type != 'NONE':
+                rig.prop(self, "smooth_weights", text="Smooth Weights")
+                if self.smooth_weights:
+                    rig.prop(self, "smooth_iterations", text="Iterations")
+                    rig.prop(self, "smooth_factor", text="Strength")
+                    rig.prop(self, "smooth_joints_only", text="Joints Only")
+
+        compatibility = _operator_panel(
+            layout,
+            "carnivores_import_3df_compatibility",
+            "Compatibility",
+            default_closed=True,
+            icon='CHECKMARK',
+            header_prop=(self, "validate", "Checks"),
+        )
+        if compatibility:
+            compatibility.label(text="Adds legacy and C2 diagnostics.", icon='INFO')
+
+        post_import = _operator_panel(
+            layout,
+            "carnivores_import_3df_after_import",
+            "After Import",
+            default_closed=True,
+            icon='IMPORT',
+        )
+        if post_import:
+            post_import.prop(self, "select_imported", text="Select Objects")
+            post_import.prop(self, "frame_imported", text="Frame Objects")
         
     @common.timed("CARNIVORES_OT_import_3df.execute", is_operator=True)
     def execute(self, context):
@@ -627,25 +707,45 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         return bpy_extras.io_utils.ExportHelper.invoke(self, context, event)
 
     def draw(self, context):
-        layout = self.layout
-
-        content = _section(layout, "Content")
-        content.prop(self, "export_textures")
-        row = content.row()
-        row.enabled = self.export_textures
-        row.prop(self, "flip_u")
-        row.prop(self, "flip_v")
-
-        geometry = _section(layout, "Geometry")
-        geometry.prop(self, "scale")
-        _draw_scale_note(geometry, "Export")
-        geometry.prop(self, "use_multi_export")
-        geometry.label(text="Exports the active object or each selected mesh, depending on the option above.")
-
-        compatibility = _draw_default_compatibility_note(layout)
-        compatibility.prop(self, "preflight_validation")
-        compatibility.label(text="Warnings allow export; preflight errors block structurally unsafe output.")
+        layout = _configure_operator_layout(self.layout)
+        _draw_operator_title(layout, ".3DF Export Options", icon='EXPORT')
         _draw_advanced_coordinate_conversion(layout, self)
+
+        content = _operator_panel(
+            layout,
+            "carnivores_export_3df_content",
+            "Content",
+            icon='MATERIAL',
+            header_prop=(self, "export_textures", "Textures"),
+        )
+        if content:
+            content.enabled = self.export_textures
+            row = content.row(align=True)
+            row.prop(self, "flip_u", text="Flip U")
+            row.prop(self, "flip_v", text="Flip V")
+
+        geometry = _operator_panel(
+            layout,
+            "carnivores_export_3df_geometry",
+            "Geometry",
+            icon='MESH_DATA',
+            header_prop=(self, "use_multi_export", "Multiple"),
+        )
+        if geometry:
+            geometry.prop(self, "scale", text="Scale")
+            _draw_scale_note(geometry, "Export")
+            geometry.label(text="Active object or each selected mesh.", icon='INFO')
+
+        compatibility = _operator_panel(
+            layout,
+            "carnivores_export_3df_compatibility",
+            "Compatibility",
+            default_closed=True,
+            icon='CHECKMARK',
+            header_prop=(self, "preflight_validation", "Checks"),
+        )
+        if compatibility:
+            compatibility.label(text="Warnings allow export; errors block unsafe output.", icon='INFO')
 
     @common.timed("CARNIVORES_OT_export_3df.execute", is_operator=True)
     def execute(self, context):
@@ -866,26 +966,45 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         return bpy_extras.io_utils.ExportHelper.invoke(self, context, event)
 
     def draw(self, context):
-        layout = self.layout
-
-        content = _section(layout, "Content")
-        content.prop(self, "export_textures")
-        row = content.row()
-        row.enabled = self.export_textures
-        row.prop(self, "flip_u")
-        row.prop(self, "flip_v")
-
-        geometry = _section(layout, "Geometry")
-        geometry.prop(self, "scale")
-        _draw_scale_note(geometry, "Export")
-
-        compatibility = _section(layout, "Compatibility")
-        compatibility.prop(self, "model_name")
-        compatibility.prop(self, "preflight_validation")
-        compatibility.label(text="CAR internal names are limited to 32 characters; leave empty to use the filename.")
-        compatibility.label(text="Warnings allow export; preflight errors block structurally unsafe output.")
-
+        layout = _configure_operator_layout(self.layout)
+        _draw_operator_title(layout, ".CAR Export Options", icon='EXPORT')
         _draw_advanced_coordinate_conversion(layout, self)
+
+        content = _operator_panel(
+            layout,
+            "carnivores_export_car_content",
+            "Content",
+            icon='MATERIAL',
+            header_prop=(self, "export_textures", "Textures"),
+        )
+        if content:
+            content.enabled = self.export_textures
+            row = content.row(align=True)
+            row.prop(self, "flip_u", text="Flip U")
+            row.prop(self, "flip_v", text="Flip V")
+
+        geometry = _operator_panel(
+            layout,
+            "carnivores_export_car_geometry",
+            "Geometry",
+            icon='MESH_DATA',
+        )
+        if geometry:
+            geometry.prop(self, "scale", text="Scale")
+            _draw_scale_note(geometry, "Export")
+
+        compatibility = _operator_panel(
+            layout,
+            "carnivores_export_car_compatibility",
+            "Compatibility",
+            default_closed=True,
+            icon='CHECKMARK',
+            header_prop=(self, "preflight_validation", "Checks"),
+        )
+        if compatibility:
+            compatibility.prop(self, "model_name", text="Model Name")
+            compatibility.label(text="CAR names are limited to 32 characters.", icon='INFO')
+            compatibility.label(text="Warnings allow export; errors block unsafe output.", icon='INFO')
 
     @common.timed("CARNIVORES_OT_export_car.execute", is_operator=True)
     def execute(self, context):
@@ -1076,48 +1195,83 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         return bpy_extras.io_utils.ImportHelper.invoke(self, context, event)
 
     def draw(self, context):
-        layout = self.layout
-
-        content = _section(layout, "Content")
-        content.prop(self, "import_textures")
-        row = content.row()
-        row.enabled = self.import_textures
-        row.prop(self, "create_materials")
-
-        geometry = _section(layout, "Geometry")
-        geometry.prop(self, "scale")
-        _draw_scale_note(geometry, "Import")
-        geometry.prop(self, "normal_smooth")
-
-        animation = _section(layout, "Animation")
-        animation.prop(self, "import_animations")
-        if self.import_animations:
-            sub = animation.box()
-            sub.prop(self, "use_absolute_shape_keys")
-            sub.prop(self, "use_kps_timing")
-        animation.prop(self, "import_sounds")
-        if not self.import_animations:
-            animation.label(text="Sounds will be imported without linked Actions.", icon='INFO')
-
-        rig = _section(layout, "Rig / Deformation")
-        rig.prop(self, "smooth_weights")
-        rig.label(text="CAR stores owner IDs, not a bone hierarchy; smoothing affects generated deform groups only.")
-        if self.smooth_weights:
-            sub = rig.box()
-            sub.prop(self, "smooth_iterations")
-            sub.prop(self, "smooth_factor")
-            sub.prop(self, "smooth_joints_only")
-
-        compatibility = _section(layout, "Compatibility")
-        compatibility.prop(self, "validate")
-        compatibility.label(text="Structural checks always run; this option adds compatibility diagnostics.")
-
-        post_import = _section(layout, "After Import")
-        post_import.prop(self, "select_imported")
-        post_import.prop(self, "frame_imported")
-        post_import.label(text="Framing is skipped safely outside a compatible 3D View.")
-
+        layout = _configure_operator_layout(self.layout)
+        _draw_operator_title(layout, ".CAR Import Options", icon='IMPORT')
         _draw_advanced_coordinate_conversion(layout, self)
+
+        content = _operator_panel(
+            layout,
+            "carnivores_import_car_content",
+            "Content",
+            icon='MATERIAL',
+            header_prop=(self, "import_textures", "Textures"),
+        )
+        if content:
+            content.enabled = self.import_textures
+            content.prop(self, "create_materials", text="Materials")
+
+        geometry = _operator_panel(
+            layout,
+            "carnivores_import_car_geometry",
+            "Geometry",
+            icon='MESH_DATA',
+        )
+        if geometry:
+            geometry.prop(self, "scale", text="Scale")
+            _draw_scale_note(geometry, "Import")
+            geometry.prop(self, "normal_smooth", text="Smooth Faces")
+
+        animation = _operator_panel(
+            layout,
+            "carnivores_import_car_animation",
+            "Animation",
+            icon='ANIM_DATA',
+            header_prop=(self, "import_animations", "Animations"),
+        )
+        if animation:
+            if self.import_animations:
+                animation.prop(self, "use_absolute_shape_keys", text="Absolute Keys")
+                animation.prop(self, "use_kps_timing", text="Respect KPS")
+            animation.prop(self, "import_sounds", text="Sounds")
+            if not self.import_animations:
+                animation.label(text="Sounds import without linked Actions.", icon='INFO')
+
+        rig = _operator_panel(
+            layout,
+            "carnivores_import_car_deformation",
+            "Deformation",
+            default_closed=True,
+            icon='ARMATURE_DATA',
+            header_prop=(self, "smooth_weights", "Smooth Weights"),
+        )
+        if rig:
+            rig.label(text="CAR stores owner IDs; smoothing affects generated weights.", icon='INFO')
+            if self.smooth_weights:
+                rig.prop(self, "smooth_iterations", text="Iterations")
+                rig.prop(self, "smooth_factor", text="Strength")
+                rig.prop(self, "smooth_joints_only", text="Joints Only")
+
+        compatibility = _operator_panel(
+            layout,
+            "carnivores_import_car_compatibility",
+            "Compatibility",
+            default_closed=True,
+            icon='CHECKMARK',
+            header_prop=(self, "validate", "Checks"),
+        )
+        if compatibility:
+            compatibility.label(text="Adds legacy and C2 diagnostics.", icon='INFO')
+
+        post_import = _operator_panel(
+            layout,
+            "carnivores_import_car_after_import",
+            "After Import",
+            default_closed=True,
+            icon='IMPORT',
+        )
+        if post_import:
+            post_import.prop(self, "select_imported", text="Select Objects")
+            post_import.prop(self, "frame_imported", text="Frame Objects")
 
     @common.timed('CARNIVORES_OT_import_car.execute', is_operator=True)
     def execute(self, context):
@@ -1395,28 +1549,46 @@ class CARNIVORES_OT_export_3dn(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         return bpy_extras.io_utils.ExportHelper.invoke(self, context, event)
 
     def draw(self, context):
-        layout = self.layout
-
-        content = _section(layout, "Content")
-        content.prop(self, "model_name")
-        content.prop(self, "has_sprite")
-        if self.has_sprite:
-            content.prop(self, "sprite_name")
-        uv = content.box()
-        uv.label(text="Texture Coordinates")
-        uv.prop(self, "flip_u")
-        uv.prop(self, "flip_v")
-
-        geometry = _section(layout, "Geometry")
-        geometry.prop(self, "scale")
-        _draw_scale_note(geometry, "Export")
-
-        compatibility = _section(layout, "Compatibility")
-        compatibility.prop(self, "preflight_validation")
-        compatibility.label(text="Target: Carnivores: Dinosaur Hunter mobile/HD static-model format.")
-        compatibility.label(text=".3DN is static; animation and sound data are stored separately.")
-
+        layout = _configure_operator_layout(self.layout)
+        _draw_operator_title(layout, ".3DN Export Options", icon='EXPORT')
         _draw_advanced_coordinate_conversion(layout, self)
+
+        content = _operator_panel(
+            layout,
+            "carnivores_export_3dn_content",
+            "Content",
+            icon='MATERIAL',
+            header_prop=(self, "has_sprite", "Sprite"),
+        )
+        if content:
+            content.prop(self, "model_name", text="Model Name")
+            if self.has_sprite:
+                content.prop(self, "sprite_name", text="Sprite Name")
+            content.label(text="Texture Coordinates", icon='INFO')
+            row = content.row(align=True)
+            row.prop(self, "flip_u", text="Flip U")
+            row.prop(self, "flip_v", text="Flip V")
+
+        geometry = _operator_panel(
+            layout,
+            "carnivores_export_3dn_geometry",
+            "Geometry",
+            icon='MESH_DATA',
+        )
+        if geometry:
+            geometry.prop(self, "scale", text="Scale")
+            _draw_scale_note(geometry, "Export")
+
+        compatibility = _operator_panel(
+            layout,
+            "carnivores_export_3dn_compatibility",
+            "Compatibility",
+            default_closed=True,
+            icon='CHECKMARK',
+            header_prop=(self, "preflight_validation", "Checks"),
+        )
+        if compatibility:
+            compatibility.label(text="Static mobile/HD model format; animation is separate.", icon='INFO')
 
     @common.timed("CARNIVORES_OT_export_3dn.execute", is_operator=True)
     def execute(self, context):
@@ -1555,19 +1727,39 @@ class CARNIVORES_OT_export_vtl(bpy.types.Operator, bpy_extras.io_utils.ExportHel
         return bpy_extras.io_utils.ExportHelper.invoke(self, context, event)
 
     def draw(self, context):
-        layout = self.layout
-
-        animation = _section(layout, "Animation")
-        animation.label(text="Exports active shape-key, object, or parent-armature animation data.")
-
-        geometry = _section(layout, "Geometry")
-        geometry.prop(self, "scale")
-        _draw_scale_note(geometry, "Export")
-
-        compatibility = _draw_default_compatibility_note(layout)
-        compatibility.prop(self, "preflight_validation")
-        compatibility.label(text="Warnings allow export; preflight errors block structurally unsafe output.")
+        layout = _configure_operator_layout(self.layout)
+        _draw_operator_title(layout, ".VTL Export Options", icon='EXPORT')
         _draw_advanced_coordinate_conversion(layout, self)
+
+        animation = _operator_panel(
+            layout,
+            "carnivores_export_vtl_animation",
+            "Animation",
+            icon='ANIM_DATA',
+        )
+        if animation:
+            animation.label(text="Shape keys, object, or armature animation.", icon='INFO')
+
+        geometry = _operator_panel(
+            layout,
+            "carnivores_export_vtl_geometry",
+            "Geometry",
+            icon='MESH_DATA',
+        )
+        if geometry:
+            geometry.prop(self, "scale", text="Scale")
+            _draw_scale_note(geometry, "Export")
+
+        compatibility = _operator_panel(
+            layout,
+            "carnivores_export_vtl_compatibility",
+            "Compatibility",
+            default_closed=True,
+            icon='CHECKMARK',
+            header_prop=(self, "preflight_validation", "Checks"),
+        )
+        if compatibility:
+            compatibility.label(text="Warnings allow export; errors block unsafe output.", icon='INFO')
 
     @common.timed("CARNIVORES_OT_export_vtl.execute", is_operator=True)
     def execute(self, context):
