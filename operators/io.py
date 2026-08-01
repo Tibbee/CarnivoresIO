@@ -6,6 +6,7 @@ import numpy as np
 from ..utils import io as io_utils
 from ..utils import animation as anim_utils
 from ..utils import common
+from ..utils.addon import get_addon_preferences
 from ..utils.logger import info, debug, warn, error
 from ..utils.reporting import OperationReport, write_report_text
 from ..utils.validation import validate_blender_model
@@ -44,11 +45,7 @@ def _get_addon_preferences():
     # background operations should keep their explicit operator defaults.
     if getattr(bpy.app, 'background', False):
         return None
-    try:
-        addon = bpy.context.preferences.addons.get(__package__.split('.')[0])
-        return addon.preferences if addon else None
-    except (AttributeError, RuntimeError, TypeError):
-        return None
+    return get_addon_preferences(__package__)
 
 
 def _apply_import_focus_preferences(operator):

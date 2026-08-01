@@ -2,6 +2,8 @@
 
 import bpy
 
+from ..utils.addon import get_addon_preferences
+
 
 class CARNIVORES_OT_restore_preferences(bpy.types.Operator):
     """Restore CarnivoresIO add-on preferences without changing scene data."""
@@ -13,17 +15,13 @@ class CARNIVORES_OT_restore_preferences(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        try:
-            return bool(bpy.context.preferences.addons.get(__package__.split('.')[0]))
-        except (AttributeError, RuntimeError, TypeError):
-            return False
+        return get_addon_preferences(__package__) is not None
 
     def invoke(self, context, event):
         return context.window_manager.invoke_confirm(self, event)
 
     def execute(self, context):
-        addon = bpy.context.preferences.addons.get(__package__.split('.')[0])
-        preferences = addon.preferences if addon else None
+        preferences = get_addon_preferences(__package__)
         if preferences is None:
             self.report({'ERROR'}, "CarnivoresIO preferences are unavailable in this context.")
             return {'CANCELLED'}

@@ -1,16 +1,13 @@
-import bpy
+from .addon import get_addon_preferences
+
 
 def get_debug_mode():
-    """
-    Retrieves the debug mode setting from addon preferences.
-    """
+    """Retrieve the debug mode setting from add-on preferences."""
     try:
-        # Extract the base package name (e.g., 'CarnivoresIO')
-        addon_name = __package__.split('.')[0]
-        prefs = bpy.context.preferences.addons[addon_name].preferences
-        return prefs.debug_mode
+        prefs = get_addon_preferences(__package__)
+        return bool(prefs.debug_mode) if prefs is not None else True
     except Exception:
-        # Fallback to True if preferences are not yet available or registered
+        # Fallback to True if preferences are not yet available or registered.
         return True
 
 def log(message, level='INFO'):

@@ -10,6 +10,7 @@ from contextlib import contextmanager
 
 import bpy
 
+from .addon import get_addon_preferences
 from .logger import info, warn
 
 
@@ -19,8 +20,7 @@ _current_session = contextvars.ContextVar("carnivores_performance_session", defa
 
 def performance_enabled():
     try:
-        addon_name = __package__.split('.')[0]
-        prefs = bpy.context.preferences.addons[addon_name].preferences
+        prefs = get_addon_preferences(__package__)
         return bool(getattr(prefs, "performance_mode", False))
     except Exception:
         return False
