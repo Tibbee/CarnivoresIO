@@ -49,7 +49,7 @@ All binary I/O uses NumPy for performance. Textures use the ARGB1555 format at a
 
 ### Skeleton Reconstruction
 
-A Prim's MST algorithm infers a bone hierarchy from the spatial centroids of vertex groups. The operator calculates a weighted center for each vertex group, then connects them via a symmetry-aware minimum spanning tree that penalizes connections crossing the X=0 midline. A bone named "floor" (case-insensitive) is automatically selected as the root. The resulting armature is parented to the mesh with an Armature modifier in a single step.
+Legacy and experimental topology-first algorithms infer a bone hierarchy from imported CAR owner data or vertex groups. The reconstruction workflow calculates owner-region centroids, uses symmetry-aware hierarchy scoring, and supports Automatic or searchable owner-root selection with a compatible integer override for scripts. Names such as `floor`, `root`, `pelvis`, and `spine` are considered during automatic root scoring, but explicit overrides always take precedence. The resulting armature is parented to the mesh with an Armature modifier in a single step.
 
 ### Animation Pipeline
 
@@ -62,26 +62,30 @@ A Prim's MST algorithm infers a bone hierarchy from the spatial centroids of ver
 ### NLA Sound System
 
 - Each Action can carry a linked sound for synchronized audio preview and CAR export.
+- Sounds can be imported, replaced, inspected as Packed/External/Unavailable, or cleared from an Action.
 - Managed audio plays only for an explicitly focused animation: **Play Preview** in the extension UI or Blender's NLA Tweak Mode.
+- The authoritative **Preview Audio** On/Off control stops managed playback immediately when disabled.
 - Normal unfocused NLA playback does not trigger linked sounds, preventing ambiguous track selection and offset cascades.
-- **Play Preview** loops a single Action with its audio for iterative timing work.
+- **Play Preview** loops a single Action with its audio for iterative timing work and restores scene/NLA state when stopped.
+- The animation panel exposes CAR export order controls, selected-track timing/KPS summaries, duration differences, and multi-strip/empty-track information.
 - Self-healing audio device management recovers from driver failures.
 - Embedded sounds from `.car` files are imported and auto-associated with the correct animations via cross-reference tables.
 
 ### Face Flags
 
 - Engine face property bits (Double Side, Phong, Transparent, Mortal, etc.) are stored as the integer face-domain attribute `3df_flags` on the mesh.
-- Flag visualization renders flags as color attributes in the viewport.
-- Bulk modification: set, clear, or toggle individual flags across selectable faces.
+- Flag visualization renders flags as the viewport-only `FlagColors` color attribute (not engine flag data), with Show/Refresh/Hide/Remove controls and an optional named-color legend collapsed by default.
+- Bulk modification: set, clear, or toggle individual flags across selectable faces in Object or Edit Mode without leaving Edit Mode.
 - Smart selection: find faces by Any, All, or None flag pattern using bitmask logic, then select, deselect, or invert.
+- Clear Selected Faces and confirmed Clear All Faces operations make destructive scope explicit.
 
 ### Multi-Export
 
 Export all selected mesh objects to separate `.3df` files in one operation.
 
-### Validation
+### Validation and Reports
 
-Non-destructive structural validation always checks section sizes, signed counts, indices, finite coordinates, hierarchy cycles, and texture-row alignment. The **Carnivores Model** sidebar panel adds format-aware preflight checks for Blender meshes, textures, face flags, animation timing, sounds, rig owners, names, modifiers, and C2 MEE compatibility. Export dialogs run the same checks by default and block only errors; warnings remain reviewable in the export report. Validation preserves source owners, UVs, flags, and hierarchy data rather than silently repairing them.
+Non-destructive structural validation always checks section sizes, signed counts, indices, finite coordinates, hierarchy cycles, and texture-row alignment. The **Carnivores Model** sidebar panel adds format-aware preflight checks for Blender meshes, textures, face flags, animation timing, sounds, rig owners, names, modifiers, and C2 MEE compatibility. The **Validate Model** operator and import/export operations preserve structured diagnostics in Blender Text datablocks and provide **Open Report** and **Copy Report** actions where the UI context supports them. Export dialogs run the same checks by default and block only errors; warnings remain reviewable in the export report. Validation preserves source owners, UVs, flags, and hierarchy data rather than silently repairing them.
 
 ---
 
@@ -101,10 +105,10 @@ Tools are accessed through two locations in Blender:
 2. Select one or more `.3df` files and configure:
    - **Import Scale** -- import scale factor (default 0.01). Use **Export Scale** 100.0 for the standard round trip.
    - **Use Carnivores Coordinate Conversion** -- enable the default file-to-Blender conversion and its matching face/UV corner reversal (enabled by default). The complete mapping is `(x, y, z)` → `(x, z, y)`, not a visible X negation.
-   - **Import Textures / Create Materials** -- loads the embedded ARGB1555 texture as a Blender image and assigns a material.
+   - **Import Textures / Create Materials** -- loads the embedded ARGB1555 texture as a Blender image and assigns a material when material creation is enabled.
    - **Bone Import Type** -- None, Armature, or Hooks. Hooks (default) create vertex groups with Hook modifiers for each bone. Armature builds an Armature object with proper bone positions and parent-child relationships from the file's bone data.
    - **Smooth Weights** -- apply Laplacian smoothing to vertex weights (configurable iterations, factor, and joints-only mode).
-3. Click **Import**. Imported primary meshes are selected automatically and the last imported mesh becomes active. Optional viewport framing is available in the **After Import** section and in the add-on preferences; framing is skipped safely when no compatible 3D View is available.
+3. Click **Import**. Imported primary meshes are selected automatically and the last imported mesh becomes active. The operation summary reports created objects, collections, animation/sound data, and warnings. Optional viewport framing is available in the **After Import** section and in the add-on preferences; framing is skipped safely when no compatible 3D View is available.
 
 ### Importing an Animated Model (.car)
 
@@ -115,18 +119,18 @@ Tools are accessed through two locations in Blender:
    - **Respect KPS Timing** -- align keyframes to sub-frame positions per the file's KPS; disable to snap to integer frames.
    - **Import Sounds** -- load embedded WAV data and link sounds to the corresponding Actions. If **Import Animations** is disabled, sounds are imported as unlinked sound datablocks.
    - **Smooth Weights** -- apply weight smoothing after vertex group creation.
-3. Click **Import**. Imported primary meshes are selected automatically and the last imported mesh becomes active. Optional viewport framing is available in the **After Import** section and in the add-on preferences. Each model receives vertex groups (with synthetic names like `CarBone_0` mapping the file's raw ownership indices) and, if enabled, shape keys and NLA tracks.
+3. Click **Import**. Imported primary meshes are selected automatically and the last imported mesh becomes active. The operation summary reports created objects, collections, animations, sounds, and warnings. Optional viewport framing is available in the **After Import** section and in the add-on preferences. Each model receives vertex groups (with synthetic names like `CarBone_0` mapping the file's raw ownership indices) and, if enabled, shape keys and NLA tracks.
 
 ### Reconstructing a Skeleton (.car models)
 
-*.car files contain vertex ownership data (integer group indices) but no bone positions or hierarchy. Reconstruction builds an armature from the imported vertex groups:*
+`.car` files contain vertex ownership data (integer group indices) but no bone positions or hierarchy. Reconstruction builds an armature from the imported vertex groups:
 
 1. Select the imported mesh.
 2. In the **Carnivores** sidebar tab, open the dedicated **Carnivores Rig** panel.
 3. Choose the reconstruction algorithm and optional root/weight settings, then click **Reconstruct Rig**.
 4. The addon computes centroids from the imported owner cache (falling back to vertex groups when needed), infers a bone hierarchy using a scored symmetry-aware MST algorithm, and builds an armature. Optional pre-reconstruct smoothing can be enabled in the **Carnivores Rig** panel. The mesh is parented with an Armature modifier automatically.
 
-To inspect the result, click **Generate Rig Report**, then **Open Report** to view bone positions, parenting, owner-cache, and vertex-group statistics.
+To inspect the result, click **Generate Rig Report**, then **Open Report** to view bone positions, parenting, owner-cache, topology, root, and vertex-group statistics. **Reset to Imported Owners** explicitly rebuilds canonical `CarBone_<index>` groups from the cached owner data.
 
 ### Working with KPS (Keys Per Second)
 
@@ -141,7 +145,7 @@ To inspect the result, click **Generate Rig Report**, then **Open Report** to vi
 ### Adding Sound to an Animation
 
 1. Select a track in the **Carnivores Animation** panel.
-2. Click the folder icon next to the Sound field and choose a `.wav` file.
+2. Click **Import** next to the Sound field and choose a `.wav` file.
 3. The sound is linked to the Action. During `.car` export, it will be embedded in the file.
 4. To audition, use **Play Preview** to isolate and loop the animation with its audio, or enter NLA Tweak Mode to focus the strip.
 5. Toggle **Preview Audio** On/Off to enable or disable focused preview audio; disabling it stops managed playback immediately.
@@ -152,7 +156,7 @@ Linked audio retains its authored timing. KPS changes, NLA strip scaling, and re
 
 1. Select the mesh and open the **Carnivores** sidebar tab.
 2. If the mesh has no `3df_flags` attribute, click **Create '3df_flags'** in the **3DF Face Flags** panel.
-3. **Visualize flags:** In the Visualization box, use **Show**, **Refresh**, **Hide**, and **Remove Colors**. Show configures the invoking Solid viewport to use the generated `FlagColors` attribute; Hide restores the prior color display.
+3. **Visualize flags:** In the Visualization box, use **Show**, **Refresh**, **Hide**, and **Remove Colors**. Show configures the invoking Solid viewport to use the generated `FlagColors` attribute; Hide restores the prior color display. Enable **Show Color Legend** when you need the named color mapping; it is collapsed by default.
 4. **Modify flags:** Enter Edit Mode, select faces, then use the Set / Clear / Toggle buttons next to each flag in the panel. The panel displays None/Mixed/All states and live counts (in Edit Mode, counts reflect only selected faces; in Object Mode, all faces).
 5. **Select by flags:** In the **Selection Tools** panel, check the flags to match, choose a mode (**Has Any** = OR, **Has All** = AND, **Has None** = NOT), an action (Select, Deselect, Invert), review the match preview, and click **Apply**.
 6. Use **Clear Selected Faces** for a scoped edit or **Clear All Faces** for the confirmed whole-mesh operation.
@@ -174,7 +178,7 @@ The flag tooltips and runtime meanings are documented in [Face Flags](doc/refere
 
 ## Preferences and debugging
 
-Open **Preferences > Extensions > CarnivoresIO** to configure import focus behavior, default import/export scale, coordinate conversion, default .3DF bone import type, and whether advanced dialog options are shown. Documentation and issue-tracker links are available there. These preferences initialize newly opened dialogs; scripted operators retain their own explicitly supplied properties.
+Open **Preferences > Extensions > CarnivoresIO** to configure import selection/framing, default import/export scale, coordinate conversion, default .3DF bone import type, advanced dialog visibility, and Debug Mode. Documentation and issue-tracker links are available there, along with **Restore Defaults**. These preferences initialize newly opened dialogs; scripted operators retain their own explicitly supplied properties.
 
 To debug, enable **Debug Mode** and open the System Console (`Window > Toggle System Console` on Windows). Import/export operations will print detailed parsing steps, NumPy timing data, and validation warnings.
 

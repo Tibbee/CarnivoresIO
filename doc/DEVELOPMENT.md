@@ -117,7 +117,7 @@ Combined from `dev_notes.md` and `future_changes.md`.
 ### Phase1: Enhanced Visualization & Debugging
 #### 1.1 Face Flag Viewport Overlay — Implemented
 - Generated `FlagColors` visualization with Show, Refresh, Hide, and Remove controls
-- Deterministic legend and overlap blending based on serialized `3df_flags`
+- Optional, collapsed-by-default color-name legend and deterministic overlap blending based on serialized `3df_flags`
 - Viewport color settings are restored when hiding the visualization
 
 #### 1.2 Model Health Check & Pre-Export Validation — Implemented
@@ -170,8 +170,9 @@ Milestones, acceptance criteria, tests, risks, and file touch points are maintai
 - Improves maintainability, reduces merge conflicts
 
 ### Phase4: Additional Improvements
-#### 4.1 Direct Edit Mode Flag Editing
-- Modify `bulk_modify_flag` to use BMesh layers directly, avoid mode switches
+#### 4.1 Direct Edit Mode Flag Editing — Implemented
+- Modify and clear face flags through live BMesh layers without switching to Object Mode
+- Keep Edit Mode counts, selection scope, and generated FlagColors visualization synchronized
 
 #### 4.2 Texture Enhancements
 - Auto-resize textures to 256px width on export
@@ -197,11 +198,10 @@ Milestones, acceptance criteria, tests, risks, and file touch points are maintai
 
 ## Known Issues
 
-1. **Edit Mode Switching**: Flag operators switch to Object Mode temporarily, disrupting workflow. Workaround: restore Edit Mode in `finally` blocks.
-2. **Texture Limitations**: Must be 256px wide (enforced on export and structurally validated on import). Current C2 MEE OpenGL loading expects exactly 256px height; its software loader supports variable-height rows.
-3. **Bone Name Handling**: Non-ASCII/long names cleaned/truncated → possible conflicts. Duplicate names warned but not resolved.
-4. **Compatibility Limits**: Legacy AltEdit may reject models above 1024 vertices/faces. The addon and current C2 MEE model arrays have no fixed 2048 mesh limit; current-engine fixed arrays are documented separately.
-5. **UV Flipping**: UVs flipped on import to match Blender space. Export supports optional U/V flip, may confuse new users.
+1. **Texture Limitations**: Must be 256px wide (enforced on export and structurally validated on import). Current C2 MEE OpenGL loading expects exactly 256px height; its software loader supports variable-height rows.
+2. **Bone Name Handling**: Non-ASCII/long names cleaned/truncated → possible conflicts. Duplicate names warned but not resolved.
+3. **Compatibility Limits**: Legacy AltEdit may reject models above 1024 vertices/faces. The addon and current C2 MEE model arrays have no fixed 2048 mesh limit; current-engine fixed arrays are documented separately.
+4. **UV Flipping**: UVs flipped on import to match Blender space. Export supports optional U/V flip, may confuse new users.
 
 ---
 

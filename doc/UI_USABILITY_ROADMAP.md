@@ -529,7 +529,7 @@ Provide an explicit workflow:
 - Refresh visualization
 - Hide visualization
 - Optional removal of generated visualization data
-- Visible legend
+- Toggleable legend using color names rather than RGB values
 - Defined priority/blending rule for faces with multiple flags
 
 Preferred direction:
@@ -549,6 +549,7 @@ Descriptions should reflect runtime use, not merely names. Verify flag definitio
 ### Acceptance criteria
 
 - Clicking Show produces visible feedback or a precise instruction explaining the remaining manual step.
+- The legend is collapsed by default and can be shown on demand.
 - A user can return to the previous display state.
 - Multiple-flag color behavior is deterministic and documented.
 - Visualization data is never serialized as a substitute for `3df_flags`.

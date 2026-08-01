@@ -183,13 +183,22 @@ class VIEW3D_PT_3df_face_flags(bpy.types.Panel):
         operator.display_action = 'REMOVE'
         visualization.label(text="Generated FlagColors never replaces serialized 3df_flags.")
         visualization.label(text="Overlapping flags blend in listed flag order for deterministic colors.")
-        legend = visualization.column(align=True)
-        legend.label(text="Legend (viewport colors):")
-        tint_by_bit = dict(flag_utils.FLAG_TINTS)
-        for bit, label, _ in FACE_FLAG_OPTIONS:
-            tint = tint_by_bit.get(bit, (1.0, 1.0, 1.0, 1.0))
-            rgb = ", ".join(str(int(round(channel * 255.0))) for channel in tint[:3])
-            legend.label(text=f"{label} 0x{bit:04X}: RGB {rgb}")
+        legend_row = visualization.row(align=True)
+        legend_row.prop(
+            context.scene,
+            "cf_show_flag_legend",
+            text="Show Color Legend",
+            toggle=True,
+            icon='INFO',
+        )
+        if context.scene.cf_show_flag_legend:
+            legend = visualization.box().column(align=True)
+            legend.label(text="Legend (viewport colors):")
+            color_name_by_bit = dict(flag_utils.FLAG_COLOR_NAMES)
+            legend.label(text="No flags: White")
+            for bit, label, _ in FACE_FLAG_OPTIONS:
+                color_name = color_name_by_bit.get(bit, "Unknown")
+                legend.label(text=f"{label} 0x{bit:04X}: {color_name}")
         layout.separator()
         
         counts, total = flag_utils.count_flag_hits(obj)
@@ -302,7 +311,9 @@ class CARNIVORES_OT_visualize_flags(bpy.types.Operator):
 def _clear_flag_values(obj, selected_only=False):
     mesh = obj.data
     attr = mesh.attributes.get('3df_flags')
-    if not attr or attr.domain != 'FACE' or attr.data_type != 'INT' or len(attr.data) != len(mesh.polygons):
+    if not attr or attr.domain != 'FACE' or attr.data_type != 'INT':
+        raise RuntimeError("Mesh needs a valid FACE-domain INT '3df_flags' attribute.")
+    if obj.mode != 'EDIT' and len(attr.data) != len(mesh.polygons):
         raise RuntimeError("Mesh needs a valid FACE-domain INT '3df_flags' attribute.")
 
     selected_indices = None
@@ -311,30 +322,32 @@ def _clear_flag_values(obj, selected_only=False):
         if selected_indices.size == 0:
             return 0, 0
 
-    previous_mode = obj.mode
-    was_edit = previous_mode == 'EDIT'
-    if was_edit:
-        bpy.ops.object.mode_set(mode='OBJECT')
-        context_view_layer = bpy.context.view_layer
-        context_view_layer.update()
-        attr = mesh.attributes.get('3df_flags')
+    if obj.mode == 'EDIT':
+        bm = bmesh.from_edit_mesh(mesh)
+        bm.faces.ensure_lookup_table()
+        layer = bm.faces.layers.int.get('3df_flags')
+        if layer is None:
+            raise RuntimeError("'3df_flags' layer is unavailable in the active Edit Mode mesh.")
 
-    try:
-        values = np.empty(len(mesh.polygons), dtype=np.int32)
-        attr.data.foreach_get('value', values)
-        before = values.copy() if selected_indices is None else values[selected_indices].copy()
-        if selected_indices is None:
-            values[:] = 0
-        else:
-            values[selected_indices] = 0
-        attr.data.foreach_set('value', values)
-        mesh.update()
+        faces = [face for face in bm.faces if selected_indices is None or face.select]
+        before = np.fromiter((face[layer] for face in faces), dtype=np.int32, count=len(faces))
+        for face in faces:
+            face[layer] = 0
+        bmesh.update_edit_mesh(mesh, loop_triangles=False, destructive=False)
         changed = int(np.count_nonzero(before))
-        return changed, int(len(mesh.polygons) if selected_indices is None else selected_indices.size)
-    finally:
-        if was_edit:
-            bpy.ops.object.mode_set(mode='EDIT')
-            bpy.context.view_layer.update()
+        return changed, len(faces)
+
+    values = np.empty(len(mesh.polygons), dtype=np.int32)
+    attr.data.foreach_get('value', values)
+    before = values.copy() if selected_indices is None else values[selected_indices].copy()
+    if selected_indices is None:
+        values[:] = 0
+    else:
+        values[selected_indices] = 0
+    attr.data.foreach_set('value', values)
+    mesh.update()
+    changed = int(np.count_nonzero(before))
+    return changed, int(len(mesh.polygons) if selected_indices is None else selected_indices.size)
 
 
 class CARNIVORES_OT_clear_selected_3df_flags(bpy.types.Operator):
@@ -598,68 +611,67 @@ class CARNIVORES_OT_modify_3df_flag(bpy.types.Operator):
             self.report({'INFO'}, 'Mesh has no faces to modify.')
             return {'CANCELLED'}
         
-        prev_mode = obj.mode
-        was_edit = prev_mode == 'EDIT'
+        if obj.mode == 'EDIT':
+            # Edit Mode owns the authoritative BMesh state.  Editing the RNA
+            # attribute after switching to Object Mode can lose the current
+            # face selection on Blender versions where the edit mesh has not
+            # flushed polygon selection yet, so update the BMesh layer directly.
+            bm = bmesh.from_edit_mesh(mesh)
+            bm.faces.ensure_lookup_table()
+            layer = bm.faces.layers.int.get('3df_flags')
+            if layer is None:
+                self.report({'ERROR'}, "'3df_flags' layer is unavailable in the active Edit Mode mesh.")
+                return {'CANCELLED'}
 
-        # Face-domain attribute data is synchronized to the Mesh in Object
-        # Mode. For Edit Mode, preserve the selected-face scope while using the
-        # same reliable Mesh attribute path as the other flag operations.
-        if self.action == 'CLEAR_ALL' and was_edit:
-            bpy.ops.object.mode_set(mode='OBJECT')
-            context.view_layer.update()
-            try:
-                # Refresh the RNA attribute wrapper after leaving Edit Mode;
-                # the pre-edit wrapper may still report zero data elements.
-                attr = mesh.attributes.get('3df_flags')
-                selected_indices = flag_utils.get_selected_face_indices(obj)
-                vals = np.empty(face_count, dtype=np.int32)
-                attr.data.foreach_get('value', vals)
-                before_selected = vals[selected_indices].copy()
-                vals[selected_indices] = 0
-                attr.data.foreach_set('value', vals)
-                mesh.update()
-                flag_utils.update_flag_colors(mesh)
-                changed = int(np.count_nonzero(before_selected != 0))
-                self.report({'INFO'}, f"Cleared flags on {changed} selected faces.")
-                return {'FINISHED'}
-            finally:
-                bpy.ops.object.mode_set(mode='EDIT')
-                context.view_layer.update()
-
-        if was_edit:
-            bpy.ops.object.mode_set(mode='OBJECT')
-            context.view_layer.update()
-            # Refresh the RNA attribute wrapper after leaving Edit Mode.
-            attr = mesh.attributes.get('3df_flags')
-
-        try:
-            if self.action == 'CLEAR_ALL':
-                vals = np.zeros(face_count, dtype=np.int32)
-                attr.data.foreach_set('value', vals)
-                mesh.update()
-                self.report({'INFO'}, f"Cleared all flags on {face_count} faces.")
-
-                # Auto-Update Colors
-                flag_utils.update_flag_colors(mesh)
-                return {'FINISHED'}
-
-            selected_indices = flag_utils.get_selected_face_indices(obj)
-            if selected_indices.size == 0:
+            selected_faces = [face for face in bm.faces if face.select]
+            if not selected_faces:
                 self.report({'WARNING'}, 'No faces selected.')
                 return {'CANCELLED'}
-            changed = flag_utils.bulk_modify_flag(mesh, selected_indices, self.flag_bit, self.action.lower())
-            mesh.update()
 
-            # Auto-Update Colors
+            changed = 0
+            for face in selected_faces:
+                before = int(face[layer])
+                if self.action in {'CLEAR', 'CLEAR_ALL'}:
+                    after = before & ~int(self.flag_bit) if self.action == 'CLEAR' else 0
+                elif self.action == 'SET':
+                    after = before | int(self.flag_bit)
+                elif self.action == 'TOGGLE':
+                    after = before ^ int(self.flag_bit)
+                else:
+                    self.report({'ERROR'}, f"Unknown action: {self.action}")
+                    return {'CANCELLED'}
+                if after != before:
+                    face[layer] = after
+                    changed += 1
+
+            bmesh.update_edit_mesh(mesh, loop_triangles=False, destructive=False)
             flag_utils.update_flag_colors(mesh)
-
-            action_name = {'SET': 'Set', 'CLEAR': 'Cleared', 'TOGGLE': 'Toggled'}[self.action]
-            self.report({'INFO'}, f"{action_name} flag 0x{self.flag_bit:04X} on {changed} faces.")
+            if self.action == 'CLEAR_ALL':
+                self.report({'INFO'}, f"Cleared flags on {changed} selected faces.")
+            else:
+                action_name = {'SET': 'Set', 'CLEAR': 'Cleared', 'TOGGLE': 'Toggled'}[self.action]
+                self.report({'INFO'}, f"{action_name} flag 0x{self.flag_bit:04X} on {changed} faces.")
             return {'FINISHED'}
-        finally:
-            if was_edit:
-                bpy.ops.object.mode_set(mode='EDIT')
-                context.view_layer.update()
+
+        if self.action == 'CLEAR_ALL':
+            vals = np.zeros(face_count, dtype=np.int32)
+            attr.data.foreach_set('value', vals)
+            mesh.update()
+            flag_utils.update_flag_colors(mesh)
+            self.report({'INFO'}, f"Cleared all flags on {face_count} faces.")
+            return {'FINISHED'}
+
+        selected_indices = flag_utils.get_selected_face_indices(obj)
+        if selected_indices.size == 0:
+            self.report({'WARNING'}, 'No faces selected.')
+            return {'CANCELLED'}
+        changed = flag_utils.bulk_modify_flag(mesh, selected_indices, self.flag_bit, self.action.lower())
+        mesh.update()
+        flag_utils.update_flag_colors(mesh)
+
+        action_name = {'SET': 'Set', 'CLEAR': 'Cleared', 'TOGGLE': 'Toggled'}[self.action]
+        self.report({'INFO'}, f"{action_name} flag 0x{self.flag_bit:04X} on {changed} faces.")
+        return {'FINISHED'}
 
 class VIEW3D_PT_carnivores_selection(bpy.types.Panel):
     bl_label = "Selection Tools"

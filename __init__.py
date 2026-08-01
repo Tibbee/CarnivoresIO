@@ -157,6 +157,11 @@ def register():
         description="Show the C2 face flags used by the Select Faces by 3DF Flags tool.",
         default=False,
     )
+    bpy.types.Scene.cf_show_flag_legend = bpy.props.BoolProperty(
+        name="Show Color Legend",
+        description="Show the generated face-flag color names in the 3DF Face Flags panel.",
+        default=False,
+    )
     bpy.types.Scene.cf_select_mode = bpy.props.EnumProperty(
         items=[
             ('ANY', "Has Any", "Match faces with at least one selected flag (OR)."),
@@ -363,6 +368,7 @@ def unregister():
         
     # Unregister Properties
     del bpy.types.Scene.cf_flag_section
+    del bpy.types.Scene.cf_show_flag_legend
     del bpy.types.Scene.cf_select_mode
     del bpy.types.Scene.cf_select_action
     del bpy.types.Scene.carnivores_validation_format

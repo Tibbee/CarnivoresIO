@@ -20,15 +20,42 @@ FLAG_TINTS = (
     (32768, (0.0, 0.0, 0.0, 1.0)),  # Dark: black
 )
 
+# Human-readable names for the viewport legend. Keep these aligned with
+# FLAG_TINTS so the legend describes the same deterministic colors generated
+# by get_flag_color() and update_flag_colors().
+FLAG_COLOR_NAMES = (
+    (1, "Magenta"),
+    (2, "Green"),
+    (4, "Blue"),
+    (8, "Yellow"),
+    (16, "Red"),
+    (32, "Cyan"),
+    (64, "Gray"),
+    (128, "Orange"),
+    (32768, "Black"),
+)
+
 
 def _valid_flag_attribute(mesh, attr_name="3df_flags"):
     attr = mesh.attributes.get(attr_name) if mesh else None
-    return bool(
-        attr
-        and attr.domain == 'FACE'
-        and attr.data_type == 'INT'
-        and len(attr.data) == len(mesh.polygons)
-    )
+    if not attr or attr.domain != 'FACE' or attr.data_type != 'INT':
+        return False
+    if len(attr.data) == len(mesh.polygons):
+        return True
+
+    # In Edit Mode Blender exposes the live attribute through BMesh while the
+    # Mesh RNA attribute array can temporarily have zero elements.
+    edit_obj = getattr(bpy.context, "edit_object", None)
+    if edit_obj is None or edit_obj.type != 'MESH' or edit_obj.data != mesh:
+        return False
+    try:
+        bm = bmesh.from_edit_mesh(mesh)
+        return (
+            len(bm.faces) == len(mesh.polygons)
+            and bm.faces.layers.int.get(attr_name) is not None
+        )
+    except (ReferenceError, RuntimeError, TypeError):
+        return False
 
 
 @timed("assign_face_flag")
@@ -217,6 +244,36 @@ def update_flag_colors(mesh):
     # Ensure 3df_flags exists
     attr_flags = mesh.attributes.get("3df_flags")
     if not attr_flags or attr_flags.domain != 'FACE' or attr_flags.data_type != 'INT':
+        return
+
+    edit_obj = getattr(bpy.context, "edit_object", None)
+    if edit_obj is not None and edit_obj.type == 'MESH' and edit_obj.data == mesh:
+        # Mesh attribute arrays are not populated while their owner is in Edit
+        # Mode. Read and write the live BMesh layers instead so flag editing can
+        # refresh visualization without leaving Edit Mode.
+        bm = bmesh.from_edit_mesh(mesh)
+        bm.faces.ensure_lookup_table()
+        flag_layer = bm.faces.layers.int.get("3df_flags")
+        if flag_layer is None:
+            return
+
+        color_attr = mesh.attributes.get("FlagColors")
+        if color_attr is None or color_attr.data_type == 'BYTE_COLOR':
+            color_layer = bm.loops.layers.color.get("FlagColors")
+            if color_layer is None:
+                color_layer = bm.loops.layers.color.new("FlagColors")
+        elif color_attr.data_type == 'FLOAT_COLOR':
+            color_layer = bm.loops.layers.float_color.get("FlagColors")
+            if color_layer is None:
+                color_layer = bm.loops.layers.float_color.new("FlagColors")
+        else:
+            return
+
+        for face in bm.faces:
+            color = tuple(float(channel) for channel in get_flag_color(int(face[flag_layer])))
+            for loop in face.loops:
+                loop[color_layer] = color
+        bmesh.update_edit_mesh(mesh, loop_triangles=False, destructive=False)
         return
 
     # Get flags as numpy array
