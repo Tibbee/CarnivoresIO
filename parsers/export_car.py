@@ -12,9 +12,10 @@ from .. import utils
 from .export_3df import gather_mesh_data
 from ..utils.logger import info, debug, warn, error
 from ..utils.animation import resolve_action_sound, sound_datablock_to_factory
+from ..utils.performance import current_session
 
 # Helper for sound conversion
-def convert_sound_to_22khz_mono(sound_datablock):
+def _convert_sound_to_22khz_mono(sound_datablock):
     """
     Converts a Blender Sound datablock to raw 16-bit signed, 22050Hz, Mono PCM data.
     Returns (bytes_data, length_in_bytes) or (None, 0) on failure.
@@ -80,6 +81,23 @@ def convert_sound_to_22khz_mono(sound_datablock):
         error(f"Error converting sound {sound_datablock.name}: {e}")
         return None, 0
 
+
+@utils.timed('export_car.sound_conversion')
+def convert_sound_to_22khz_mono(sound_datablock, conversion_cache=None):
+    """Convert a sound once per operation when a conversion cache is supplied."""
+    if conversion_cache is None or not sound_datablock:
+        return _convert_sound_to_22khz_mono(sound_datablock)
+
+    try:
+        cache_key = int(sound_datablock.as_pointer())
+    except Exception:
+        cache_key = id(sound_datablock)
+    if cache_key not in conversion_cache:
+        conversion_cache[cache_key] = _convert_sound_to_22khz_mono(sound_datablock)
+    return conversion_cache[cache_key]
+
+
+@utils.timed('export_car.animations')
 def gather_car_animations(obj, export_matrix, vertex_count):
     """
     Collects animation data by baking the object's deformation.
@@ -144,8 +162,6 @@ def gather_car_animations(obj, export_matrix, vertex_count):
     # --- Define Bake Helper ---
     def bake_range(name, start, end, kps, sound_ptr):
         debug(f"Baking '{name}' ({start}-{end}) KPS:{kps}")
-        frames_data = []
-        
         # Calculate time step (Blender Frames per Game Frame)
         # e.g. 60 FPS / 20 KPS = 3.0 step
         scene_fps = scene.render.fps
@@ -157,9 +173,11 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         num_samples = int(((end - start) / frame_step) + 0.5) + 1
         
         debug(f"         Step: {frame_step:.4f}, Samples: {num_samples}")
+        frames_data = np.empty((num_samples, vertex_count, 3), dtype=np.int16)
 
         start_time = time.perf_counter()
-        # Shared matrix across frames
+        # Shared dependency graph and matrix across frames.
+        depsgraph = context.evaluated_depsgraph_get()
         full_matrix_cache = None
 
         for i in range(num_samples):
@@ -169,7 +187,6 @@ def gather_car_animations(obj, export_matrix, vertex_count):
             scene.frame_set(int(current_frame), subframe=(current_frame % 1.0))
             
             # Evaluate mesh (Deformed by Armature/Action/NLA)
-            depsgraph = context.evaluated_depsgraph_get()
             eval_obj = obj.evaluated_get(depsgraph)
             
             # Use to_mesh() to get the deformed geometry with modifiers applied
@@ -179,7 +196,6 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                 count = len(mesh.vertices)
                 if count != vertex_count:
                     error(f"Frame {current_frame:.2f} of '{name}' has {count} vertices, expected {vertex_count} (Base). Skipping animation.")
-                    eval_obj.to_mesh_clear()
                     return None # Signal error
                 
                 # Bulk get coords
@@ -198,18 +214,28 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                 transformed_co = utils.apply_import_matrix(verts_co, full_matrix_cache)
                 
                 # Quantize to fixed point 16.0
-                quantized = np.clip(np.round(transformed_co * 16.0), -32768, 32767).astype(np.int16)
-                frames_data.append(quantized)
+                frames_data[i] = np.clip(
+                    np.round(transformed_co * 16.0), -32768, 32767
+                ).astype(np.int16)
             
             finally:
                 eval_obj.to_mesh_clear()
         
-        debug(f"[Timing] bake_range '{name}' took {time.perf_counter() - start_time:.6f} seconds")
-        
+        elapsed = time.perf_counter() - start_time
+        debug(f"[Timing] bake_range '{name}' took {elapsed:.6f} seconds")
+        benchmark = current_session()
+        if benchmark:
+            benchmark.record_duration(
+                "evaluated_mesh_bake",
+                elapsed,
+                animation=name,
+                samples=num_samples,
+                vertices=vertex_count,
+            )
+
         # Static Check
-        if len(frames_data) > 1:
-            if all(np.array_equal(f, frames_data[0]) for f in frames_data[1:]):
-                 warn(f"Animation '{name}' appears to be static.")
+        if len(frames_data) > 1 and np.all(frames_data[1:] == frames_data[0]):
+            warn(f"Animation '{name}' appears to be static.")
 
         return frames_data
 
@@ -264,7 +290,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         frame_step = scene_fps / kps
         num_samples = int(((end - start) / frame_step) + 0.5) + 1
         
-        frames_data = []
+        frames_data = np.empty((num_samples, vertex_count, 3), dtype=np.int16)
 
         # Prepare Absolute frames lookup if needed
         abs_frame_values = None
@@ -309,10 +335,21 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                     interp = co_left + (co_right - co_left) * factor
             
             # Quantize
-            quantized = np.clip(np.round(interp * 16.0), -32768, 32767).astype(np.int16)
-            frames_data.append(quantized)
+            frames_data[i] = np.clip(
+                np.round(interp * 16.0), -32768, 32767
+            ).astype(np.int16)
 
-        debug(f"[Timing] bake_range_fast '{name}' sampling took {time.perf_counter() - start_sampling:.6f} seconds")
+        elapsed = time.perf_counter() - start_sampling
+        debug(f"[Timing] bake_range_fast '{name}' sampling took {elapsed:.6f} seconds")
+        benchmark = current_session()
+        if benchmark:
+            benchmark.record_duration(
+                "shape_key_bake",
+                elapsed,
+                animation=name,
+                samples=num_samples,
+                vertices=vertex_count,
+            )
         return frames_data
 
     # --- PREPARATIONS FOR BAKE ---
@@ -397,7 +434,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                     else:
                         frames = bake_range(clean_name, start, end, kps, snd_ptr)
                     
-                    if frames:
+                    if frames is not None and len(frames):
                         animations.append({
                             'name': clean_name,
                             'kps': kps,
@@ -425,7 +462,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
             else:
                 frames = bake_range(clean_name, start, end, kps, snd_ptr)
                 
-            if frames:
+            if frames is not None and len(frames):
                 animations.append({
                     'name': clean_name,
                     'kps': kps,
@@ -472,11 +509,15 @@ def gather_car_animations(obj, export_matrix, vertex_count):
 
     return animations
 
-def export_car(filepath, obj, export_matrix, export_textures=False, 
-               flip_u=False, flip_v=False, flip_handedness=True, 
-               model_name_override=""):
+@utils.timed('export_car.serialize')
+def export_car(filepath, obj, export_matrix, export_textures=False,
+               flip_u=False, flip_v=False, flip_handedness=True,
+               model_name_override="", sound_conversion_cache=None):
     
     debug(f"--- Starting .car export to: {filepath} ---")
+    session = current_session()
+    if session:
+        session.add_metadata(format="CAR", filepath=os.path.basename(filepath))
     # 1. Gather Base Mesh Data
     start_mesh = time.perf_counter()
     (vertex_count, face_count, bone_count, texture_size, 
@@ -489,6 +530,11 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
     start_anim = time.perf_counter()
     anims = gather_car_animations(obj, export_matrix, vertex_count)
     debug(f"[Timing] gather_car_animations took {time.perf_counter() - start_anim:.6f} seconds")
+    if session:
+        session.add_metadata(
+            animations=len(anims),
+            animation_frames=sum(len(anim['frames']) for anim in anims),
+        )
     if len(anims) > 64:
         warn(
             f"Exporting {len(anims)} animations. Current C2 MEE supports 64 and the fixed "
@@ -510,7 +556,9 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
         if snd:
             if snd.name not in sounds_map:
                 # Convert and add
-                data_bytes, length = convert_sound_to_22khz_mono(snd)
+                data_bytes, length = convert_sound_to_22khz_mono(
+                    snd, conversion_cache=sound_conversion_cache
+                )
                 if data_bytes:
                     idx = len(sound_list)
                     sounds_map[snd.name] = idx
@@ -567,10 +615,8 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
             f.write(struct.pack('<I', anim['kps']))
             # Frames Count 4
             f.write(struct.pack('<I', len(anim['frames'])))
-            # Frames Data
-            for frame_data in anim['frames']:
-                # frame_data is int16 array (N, 3)
-                frame_data.tofile(f)
+            # Frames Data is kept contiguous so each animation needs one write.
+            np.asarray(anim['frames'], dtype='<i2').tofile(f)
                 
         # Sounds
         for snd in sound_list:
@@ -584,4 +630,12 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
         # Cross Ref
         cross_ref.tofile(f)
         
+    write_elapsed = time.perf_counter() - start_write
+    if session:
+        session.record_duration(
+            "file_write",
+            write_elapsed,
+            animations=len(anims),
+            sounds=len(sound_list),
+        )
     info(f"Finished .car export: {filepath}")

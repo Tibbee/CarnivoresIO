@@ -4,9 +4,11 @@ from .. import utils
 from ..core.core import HEADER_DTYPE, FACE_DTYPE, VERTEX_DTYPE, BONE_DTYPE
 from ..core.constants import TEXTURE_WIDTH
 from ..utils.logger import info, debug, warn, error
+from ..utils.performance import current_session
 
 import bpy_extras.io_utils
 
+@utils.timed('export.mesh_gather')
 def gather_mesh_data(obj, export_matrix, export_textures=False, flip_u=False, flip_v=False, flip_handedness=True):
     """
     Gathers mesh data (vertices, faces, bones, texture) from a Blender object.
@@ -21,10 +23,19 @@ def gather_mesh_data(obj, export_matrix, export_textures=False, flip_u=False, fl
     try:
         vertex_count = len(tmp_mesh.vertices)
         face_count = len(tmp_mesh.polygons)
+        session = current_session()
+        if session:
+            session.add_metadata(
+                vertices=vertex_count,
+                faces=face_count,
+                export_textures=bool(export_textures),
+            )
 
         # Bones + owners
         bone_names, bone_positions, bone_parents, vertex_owners = utils.collect_bones_and_owners(obj, export_matrix)
         bone_count = len(bone_names)
+        if session:
+            session.add_metadata(bones=bone_count)
         if bone_count > np.iinfo(np.int16).max + 1:
             raise ValueError("Bone count exceeds the signed 16-bit owner/parent index range.")
 
@@ -130,6 +141,7 @@ def gather_mesh_data(obj, export_matrix, export_textures=False, flip_u=False, fl
             
     return vertex_count, face_count, bone_count, texture_size, faces_arr, verts_arr, bones_arr, texture_raw
 
+@utils.timed('export_3df.serialize')
 def export_3df(filepath, obj, export_matrix, export_textures=False, flip_u=False, flip_v=False, flip_handedness=True):
     
     (vertex_count, face_count, bone_count, texture_size, 

@@ -30,6 +30,7 @@ class CARNIVORES_OT_restore_preferences(bpy.types.Operator):
 
         defaults = {
             "debug_mode": False,
+            "performance_mode": False,
             "auto_select_imported": True,
             "auto_frame_imported": False,
             "default_import_scale": 0.01,

@@ -552,11 +552,17 @@ def get_action_frame_range(action):
     if not all_fcurves:
         return (1, 1)
 
-    frames = [kp.co[0] for fc in all_fcurves for kp in fc.keyframe_points]
-    if not frames:
+    minimum = None
+    maximum = None
+    for fcurve in all_fcurves:
+        for keyframe in fcurve.keyframe_points:
+            frame = keyframe.co[0]
+            minimum = frame if minimum is None else min(minimum, frame)
+            maximum = frame if maximum is None else max(maximum, frame)
+    if minimum is None:
         return (1, 1)
-        
-    return (int(min(frames)), int(max(frames)))
+
+    return (int(minimum), int(maximum))
 
 def import_car_sounds(self, sounds, model_name, context):
     imported_sounds = []

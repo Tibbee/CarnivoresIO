@@ -272,8 +272,13 @@ def update_flag_colors(mesh):
         else:
             return
 
+        colors_by_flag = {}
         for face in bm.faces:
-            color = tuple(float(channel) for channel in get_flag_color(int(face[flag_layer])))
+            flag_value = int(face[flag_layer])
+            color = colors_by_flag.get(flag_value)
+            if color is None:
+                color = tuple(float(channel) for channel in get_flag_color(flag_value))
+                colors_by_flag[flag_value] = color
             for loop in face.loops:
                 loop[color_layer] = color
         bmesh.update_edit_mesh(mesh, loop_triangles=False, destructive=False)

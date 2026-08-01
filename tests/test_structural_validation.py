@@ -78,6 +78,51 @@ class StructuralValidationTests(unittest.TestCase):
         np.testing.assert_array_equal(owner_source, [-1, 0, 4])
         np.testing.assert_array_equal(bone_names, ["CarBone_0", "CarBone_4"])
 
+    def test_car_can_skip_animation_and_sound_payload_allocations(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture_path = str(Path(temp_dir) / "optional-payloads.car")
+            header = np.zeros(1, dtype=CAR_HEADER_DTYPE)
+            header["model_name"] = b"optional msc: #"
+            header["vertex_count"] = 3
+            header["face_count"] = 1
+            header["ani_count"] = 1
+            header["sfx_count"] = 1
+
+            faces = np.zeros(1, dtype=FACE_DTYPE)
+            faces["v"][0] = [0, 1, 2]
+            vertices = np.zeros(3, dtype=VERTEX_DTYPE)
+            animation_positions = np.arange(9, dtype="<i2")
+            sound_samples = np.array([100, -100, 200, -200], dtype="<i2")
+            cross_ref = np.full(64, -1, dtype="<i4")
+            cross_ref[0] = 0
+
+            with open(fixture_path, "wb") as fixture:
+                header.tofile(fixture)
+                faces.tofile(fixture)
+                vertices.tofile(fixture)
+                fixture.write(b"Walk".ljust(32, b"\0"))
+                np.array([15, 1], dtype="<i4").tofile(fixture)
+                animation_positions.tofile(fixture)
+                fixture.write(b"Step".ljust(32, b"\0"))
+                np.array([sound_samples.nbytes], dtype="<i4").tofile(fixture)
+                sound_samples.tofile(fixture)
+                cross_ref.tofile(fixture)
+
+            parsed = parse_car(
+                fixture_path,
+                validate=False,
+                parse_texture=False,
+                flip_handedness=False,
+                import_sounds=False,
+                parse_animations=False,
+            )
+
+        animations, sounds, parsed_cross_ref = parsed[10], parsed[11], parsed[12]
+        self.assertEqual(len(animations), 1)
+        self.assertIsNone(animations[0]["positions"])
+        self.assertEqual(sounds, [])
+        self.assertEqual(int(parsed_cross_ref[0]), 0)
+
     def test_car_export_preserves_zero_based_owner_zero(self):
         mesh = bpy.data.meshes.new("ValidationOwnerMesh")
         mesh.from_pydata([(0, 0, 0), (1, 0, 0), (0, 1, 0)], [], [(0, 1, 2)])

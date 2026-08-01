@@ -1035,6 +1035,7 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
             _finalize_operation_report(self, report)
             return {'CANCELLED'}
 
+        artifact_cache = {}
         try:
             if self.preflight_validation:
                 validation = validate_blender_model(
@@ -1045,6 +1046,7 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
                     filepath=self.filepath,
                     model_name=self.model_name,
                     export_matrix=export_matrix_np,
+                    artifact_cache=artifact_cache,
                 )
                 if not _append_preflight_report(report, validation, obj.name, os.path.basename(self.filepath)):
                     report.set_outcome(1, 0, 1)
@@ -1059,7 +1061,8 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
                 flip_u=self.flip_u,
                 flip_v=self.flip_v,
                 flip_handedness=self.flip_handedness,
-                model_name_override=self.model_name
+                model_name_override=self.model_name,
+                sound_conversion_cache=artifact_cache.setdefault("sound_conversion", {}),
             )
             destination = os.path.basename(self.filepath)
             report.set_outcome(1, 1, 0)
@@ -1314,7 +1317,8 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                     validate=self.validate,
                     parse_texture=self.import_textures,
                     flip_handedness=self.flip_handedness,
-                    import_sounds=self.import_sounds
+                    import_sounds=self.import_sounds,
+                    parse_animations=self.import_animations,
                 )
                 
                 owner_mapping = build_owner_mapping(owner_source)
@@ -1391,7 +1395,10 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                         )
                 if self.import_sounds and sounds:
                     imported_sounds = anim_utils.import_car_sounds(self, sounds, model_name, context)
-                    anim_utils.associate_sounds_with_animations(self, obj, animations, cross_ref, imported_sounds, actions)
+                    if actions:
+                        anim_utils.associate_sounds_with_animations(
+                            self, obj, animations, cross_ref, imported_sounds, actions
+                        )
                 if self.import_textures and texture is not None:
                     image = io_utils.create_image_texture(texture, texture_height, model_name)
                     if self.create_materials:

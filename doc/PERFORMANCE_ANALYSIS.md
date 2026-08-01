@@ -2,6 +2,8 @@
 
 > A top-down breakdown of every function, operator, and subsystem, categorized by how often it runs and its computational cost.
 
+> **Measurement status:** Timing values below are historical estimates, not a controlled benchmark baseline. Enable **Performance Instrumentation** in the add-on preferences to capture structured wall-clock stages for the current asset. The latest operation is written as JSON to the `Carnivores_Performance_Report` Blender Text datablock, including Blender/platform metadata and available model counts.
+
 ---
 
 ## 1. Execution-Frequency Categories

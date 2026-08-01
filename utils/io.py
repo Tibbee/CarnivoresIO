@@ -40,14 +40,10 @@ def create_mesh_object(mesh_name, verticesTransformedPos, faces, object_name, sm
     return bpy.data.objects.new(object_name, mesh)
     
 def apply_import_matrix(vertices, import_matrix):
-    # Add homogeneous coordinate
-    homogenous = np.column_stack((vertices, np.ones(len(vertices))))
-    
-    # Batch transformation
-    transformed = homogenous @ import_matrix.T
-    
-    # Return only XYZ components
-    return transformed[:, :3]
+    """Apply an affine 4x4 transform without allocating homogeneous Nx4 arrays."""
+    vertices = np.asarray(vertices)
+    matrix = np.asarray(import_matrix)
+    return vertices @ matrix[:3, :3].T + matrix[:3, 3]
     
 @timed("generate_names")        
 def generate_names(filepath):
@@ -66,20 +62,29 @@ def create_import_collection(object_name, parent_collection=None):
 @timed("create_vertex_groups_from_bones")
 def create_vertex_groups_from_bones(obj, bone_names, vertex_owners):
     vertex_groups_by_index = {}
-    
+    owners = np.asarray(vertex_owners).reshape(-1)
+    valid_vertices = np.flatnonzero((owners >= 0) & (owners < len(bone_names)))
+
+    # Sort once rather than scanning every vertex separately for every bone.
+    vertices_by_owner = {}
+    if valid_vertices.size:
+        order = np.argsort(owners[valid_vertices], kind='stable')
+        sorted_vertices = valid_vertices[order]
+        sorted_owners = owners[sorted_vertices]
+        boundaries = np.flatnonzero(np.diff(sorted_owners)) + 1
+        for indices in np.split(sorted_vertices, boundaries):
+            vertices_by_owner[int(owners[indices[0]])] = indices
+
     for bone_index, bone_name in enumerate(bone_names):
         if not bone_name:
             continue  # Skip empty names
 
-        # Create vertex group named exactly after the bone
         vg = obj.vertex_groups.new(name=bone_name)
         vertex_groups_by_index[bone_index] = vg
-        
-        # Find vertices owned by this bone
-        vertex_indices = np.where(vertex_owners == bone_index)[0]
-        if vertex_indices.size > 0:
+        vertex_indices = vertices_by_owner.get(bone_index)
+        if vertex_indices is not None:
             vg.add(vertex_indices.tolist(), 1.0, 'REPLACE')
-        
+
     return vertex_groups_by_index
 
 @timed("smooth_vertex_weights")
@@ -405,9 +410,8 @@ def create_image_texture(texture, texture_height, object_name):
         width=TEXTURE_WIDTH,
         height=texture_height
     )
-    image.pixels = texture
+    image.pixels.foreach_set(np.asarray(texture, dtype=np.float32).ravel())
     image.pack()
-    image.reload()
     
     return image
     
@@ -544,19 +548,33 @@ def setup_custom_world_shader():
 
 @timed("triangulated_mesh_copy")    
 def triangulated_mesh_copy(mesh):
-    # Quick check: Skip triangulation if already all tris (faster for pre-tri meshes)
-    all_tris = all(p.loop_total == 3 for p in mesh.polygons)
-    if all_tris:
-        return mesh.copy()
+    # Exporters only read the result, so an already-triangular source needs no
+    # full mesh copy at all.
+    loop_totals = np.empty(len(mesh.polygons), dtype=np.int32)
+    if loop_totals.size:
+        mesh.polygons.foreach_get("loop_total", loop_totals)
+    if np.all(loop_totals == 3):
+        return mesh
 
-    tmp = mesh.copy()
     bm = bmesh.new()
-    bm.from_mesh(tmp)
-    if bm.faces:
-        bmesh.ops.triangulate(bm, faces=bm.faces[:], quad_method='BEAUTY', ngon_method='BEAUTY')
-    bm.to_mesh(tmp)
-    bm.free()
-    return tmp
+    try:
+        bm.from_mesh(mesh)
+        if bm.faces:
+            bmesh.ops.triangulate(
+                bm,
+                faces=bm.faces[:],
+                quad_method='BEAUTY',
+                ngon_method='BEAUTY',
+            )
+        tmp = bpy.data.meshes.new(f"{mesh.name}_triangulated")
+        try:
+            bm.to_mesh(tmp)
+        except Exception:
+            bpy.data.meshes.remove(tmp)
+            raise
+        return tmp
+    finally:
+        bm.free()
 
 @timed("find_texture_image")
 def find_texture_image(mesh_obj):
@@ -577,9 +595,10 @@ def image_to_argb1555(image):
     if width != TEXTURE_WIDTH:
         raise ValueError(f"Texture width {width} must be {TEXTURE_WIDTH} pixels.")
     
-    # Get pixels and validate length
-    pixels = np.array(image.pixels[:], dtype=np.float32)
+    # Bulk-read pixels without first materializing a Python sequence.
     expected_len = width * height * 4
+    pixels = np.empty(expected_len, dtype=np.float32)
+    image.pixels.foreach_get(pixels)
     if pixels.size != expected_len:
         raise ValueError(f"Image pixel data length {pixels.size} does not match expected {expected_len} (width={width}, height={height}).")
     
@@ -631,29 +650,28 @@ def collect_bones_and_owners(obj, export_matrix):
             # Transform all bone positions at once into the final export space (Scale/Axis)
             bone_positions = apply_import_matrix(bone_pos_array, export_matrix).tolist()
 
-            # 2. Assign Vertex Owners (Dominant Weight + Fuzzy Matching)
+            # 2. Resolve each vertex-group name once, then assign dominant owners.
+            group_target_indices = {}
+            for vertex_group in obj.vertex_groups:
+                vg_name = vertex_group.name
+                target_idx = bone_index_map.get(vg_name, -1)
+                if target_idx == -1:
+                    vg_clean = vg_name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', vg_name) else vg_name
+                    candidates = clean_name_map.get(vg_clean)
+                    if candidates:
+                        target_idx = candidates[0]
+                group_target_indices[vertex_group.index] = target_idx
+
             unmatched_vertices = []
             for v in obj.data.vertices:
                 winning_bone_idx = -1
                 highest_weight = -1.0
-                
+
                 for g in v.groups:
-                    vg_name = obj.vertex_groups[g.group].name
-                    
-                    # Exact Match
-                    target_idx = -1
-                    if vg_name in bone_index_map:
-                        target_idx = bone_index_map[vg_name]
-                    else:
-                        # Fuzzy Match (handles cases where groups or bones have different suffixes)
-                        vg_clean = vg_name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', vg_name) else vg_name
-                        if vg_clean in clean_name_map:
-                            target_idx = clean_name_map[vg_clean][0]
-                    
-                    if target_idx != -1:
-                        if g.weight > highest_weight:
-                            highest_weight = g.weight
-                            winning_bone_idx = target_idx
+                    target_idx = group_target_indices.get(g.group, -1)
+                    if target_idx != -1 and g.weight > highest_weight:
+                        highest_weight = g.weight
+                        winning_bone_idx = target_idx
                 
                 if winning_bone_idx != -1:
                     vertex_owners[v.index] = winning_bone_idx
@@ -712,15 +730,18 @@ def collect_bones_and_owners(obj, export_matrix):
                     if p_name in bone_index_map:
                         bone_parents[i] = bone_index_map[p_name]
 
+            group_target_indices = {
+                vertex_group.index: bone_index_map.get(vertex_group.name, -1)
+                for vertex_group in obj.vertex_groups
+            }
             for v in obj.data.vertices:
                 winning_idx = 0
                 max_w = -1.0
                 for g in v.groups:
-                    vg_name = obj.vertex_groups[g.group].name
-                    if vg_name in bone_index_map:
-                        if g.weight > max_w:
-                            max_w = g.weight
-                            winning_idx = bone_index_map[vg_name]
+                    target_idx = group_target_indices.get(g.group, -1)
+                    if target_idx != -1 and g.weight > max_w:
+                        max_w = g.weight
+                        winning_idx = target_idx
                 vertex_owners[v.index] = winning_idx
 
             final_names = [n.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', n) else n for n in bone_names]

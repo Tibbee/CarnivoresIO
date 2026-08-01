@@ -8,6 +8,7 @@ import re
 from .. import utils
 from ..utils.logger import info, debug, warn, error
 
+@utils.timed('export_vtl.animations')
 def gather_vtl_animation(obj, export_matrix, vertex_count):
     """
     Collects a single animation data by baking the object's deformation.
@@ -140,20 +141,21 @@ def gather_vtl_animation(obj, export_matrix, vertex_count):
         linear_matrix = full_matrix[:3, :3]
         trans_delta = (flat_delta @ linear_matrix.T).reshape(num_keys - 1, vertex_count, 3)
 
+    @utils.timed('export_vtl.evaluated_mesh_bake')
     def bake_range(start, end, kps):
-        frames_data = []
         scene_fps = scene.render.fps
         if kps <= 0: kps = 1
         frame_step = scene_fps / kps
         num_samples = int(((end - start) / frame_step) + 0.5) + 1
-        
+        frames_data = np.empty((num_samples, vertex_count, 3), dtype=np.int16)
+
         full_matrix_cache = None
+        depsgraph = context.evaluated_depsgraph_get()
 
         for i in range(num_samples):
             current_frame = start + (i * frame_step)
             scene.frame_set(int(current_frame), subframe=(current_frame % 1.0))
             
-            depsgraph = context.evaluated_depsgraph_get()
             eval_obj = obj.evaluated_get(depsgraph)
             mesh = eval_obj.to_mesh()
             
@@ -173,13 +175,15 @@ def gather_vtl_animation(obj, export_matrix, vertex_count):
                         full_matrix_cache = export_matrix @ np.array(mesh_to_arm)
 
                 transformed_co = utils.apply_import_matrix(verts_co, full_matrix_cache)
-                quantized = np.clip(np.round(transformed_co * 16.0), -32768, 32767).astype(np.int16)
-                frames_data.append(quantized)
+                frames_data[i] = np.clip(
+                    np.round(transformed_co * 16.0), -32768, 32767
+                ).astype(np.int16)
             finally:
                 eval_obj.to_mesh_clear()
         
         return frames_data
 
+    @utils.timed('export_vtl.shape_key_bake')
     def bake_range_fast(start, end, kps, anim_source_data):
         fcurve_map = {}
         eval_time_fc = None
@@ -218,7 +222,7 @@ def gather_vtl_animation(obj, export_matrix, vertex_count):
         frame_step = scene_fps / kps
         num_samples = int(((end - start) / frame_step) + 0.5) + 1
         
-        frames_data = []
+        frames_data = np.empty((num_samples, vertex_count, 3), dtype=np.int16)
 
         abs_frame_values = None
         if not use_relative:
@@ -250,8 +254,9 @@ def gather_vtl_animation(obj, export_matrix, vertex_count):
                     co_right = trans_basis + trans_delta[idx_right - 1]
                     interp = co_left + (co_right - co_left) * factor
             
-            quantized = np.clip(np.round(interp * 16.0), -32768, 32767).astype(np.int16)
-            frames_data.append(quantized)
+            frames_data[i] = np.clip(
+                np.round(interp * 16.0), -32768, 32767
+            ).astype(np.int16)
 
         return frames_data
 
@@ -309,6 +314,7 @@ def gather_vtl_animation(obj, export_matrix, vertex_count):
     }
 
 
+@utils.timed('export_vtl.serialize')
 def export_vtl(filepath, obj, export_matrix):
     debug(f"--- Starting .vtl export to: {filepath} ---")
     
@@ -344,9 +350,7 @@ def export_vtl(filepath, obj, export_matrix):
         # 0x08 uint32 FramesCount
         f.write(struct.pack('<I', frames_count))
         
-        # Frames Data
-        for frame_data in frames:
-            # frame_data is int16 array (V, 3)
-            frame_data.tofile(f)
+        # Frames Data is contiguous, so serialize it with one write.
+        np.asarray(frames, dtype='<i2').tofile(f)
             
     info(f"Finished .vtl export: {filepath} (Vertices: {vertex_count}, Frames: {frames_count}) in {time.perf_counter() - start_time:.4f}s")

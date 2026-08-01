@@ -6,12 +6,13 @@ from ..utils import timed
 from ..core.core import HEADER_DTYPE, FACE_DTYPE, VERTEX_DTYPE, BONE_DTYPE
 from ..core.constants import TEXTURE_WIDTH
 from ..utils.logger import debug, warn, info, error
+from ..utils.performance import current_session
 
 class ParserContext:
     def __init__(self):
         self.warnings = []
 
-#@utils.timed('parse_3df_header')
+@timed('parse_3df.header')
 def parse_3df_header(file):
     parsed = np.fromfile(file, dtype=HEADER_DTYPE, count=1)
     if parsed.size != 1:
@@ -24,7 +25,7 @@ def parse_3df_header(file):
     texture_height = header['texture_size'] // (TEXTURE_WIDTH * 2) 
     return header, texture_height
 
-#@timed('parse_3df_faces')
+@timed('parse_3df.faces')
 def parse_3df_faces(file, face_count, texture_height, flip_handedness=True):
     
     faces = np.fromfile(file, dtype=FACE_DTYPE, count=face_count)
@@ -38,14 +39,14 @@ def parse_3df_faces(file, face_count, texture_height, flip_handedness=True):
     
     return faces, uvs
 
-#@utils.timed('parse_3df_vertices')
+@timed('parse_3df.vertices')
 def parse_3df_vertices(file, vertex_count):
     
     vertices = np.fromfile(file, dtype=VERTEX_DTYPE, count=vertex_count)
         
     return vertices
 
-#@utils.timed('parse_3df_bones')
+@timed('parse_3df.bones')
 def parse_3df_bones(file, bone_count):
     bones = np.fromfile(file, dtype=BONE_DTYPE, count=bone_count)
     
@@ -63,7 +64,7 @@ def parse_3df_bones(file, bone_count):
     
     return bones, bone_names
     
-#@utils.timed('parse_3df_texture')     
+@timed('parse_3df.texture')
 def parse_3df_texture(file, texture_size, texture_height):
     
     expected_length = texture_size // 2
@@ -130,6 +131,17 @@ def parse_3df(filepath, validate=True, parse_texture=True, flip_handedness=True)
 
     with open(filepath, 'rb') as file:
         header, texture_height = parse_3df_header(file)
+        session = current_session()
+        if session:
+            session.add_metadata(
+                format="3DF",
+                file_size=os.path.getsize(filepath),
+                vertices=int(header['vertex_count']),
+                faces=int(header['face_count']),
+                bones=int(header['bone_count']),
+                texture_height=int(texture_height),
+                parse_texture=bool(parse_texture),
+            )
 
         # Structural validation is always active. The user-facing option only
         # enables additional engine/tool compatibility diagnostics.

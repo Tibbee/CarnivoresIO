@@ -139,11 +139,14 @@ class AudioManager:
         if not scene.carnivores_nla_sound_enabled:
             return
 
-        device = self.get_device()
-        if not device:
+        self._migrate_legacy()
+
+        # Managed audio is intentionally limited to extension preview and NLA
+        # tweak mode. Avoid scanning every scene object during normal playback.
+        if not _preview_restore_state and not scene.is_nla_tweakmode:
+            self._clear_playback_state()
             return
 
-        self._migrate_legacy()
         self._mark_completed_handles()
         self._prune_deleted_objects(scene)
 
@@ -162,6 +165,13 @@ class AudioManager:
                     snd_info['handle'].stop()
                 except Exception as e:
                     warn(f"AUDIO: Error stopping stale sound: {e}")
+
+        if not desired:
+            return
+
+        device = self.get_device()
+        if not device:
+            return
 
         # Start or restart needed sources
         for src_key, (obj, action, snd, strip, cycle, offset) in desired.items():

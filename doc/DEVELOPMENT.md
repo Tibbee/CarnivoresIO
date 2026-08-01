@@ -217,7 +217,7 @@ Milestones, acceptance criteria, tests, risks, and file touch points are maintai
 
 ## Debugging Tips
 
-- **Enable Timing**: Use `@timed` decorator output in console for bottlenecks.
+- **Enable Timing**: Enable **Performance Instrumentation** in add-on preferences for nested operation stages and JSON output in the `Carnivores_Performance_Report` Text datablock. Debug Mode additionally shows individual `@timed` console lines.
 - **Check Warnings**: Review `ParserContext.warnings` during import.
 - **Inspect Attributes**: Verify `3df_flags` in Blender Data API/Outliner.
 - **Console Output**: Look for `[Export]`/`[Warning]` prefixes for bone/texture issues.

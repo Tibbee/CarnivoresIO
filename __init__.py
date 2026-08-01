@@ -32,6 +32,11 @@ class CarnivoresPreferences(bpy.types.AddonPreferences):
         description="Enable verbose logging in the console",
         default=False,
     )
+    performance_mode: bpy.props.BoolProperty(
+        name="Performance Instrumentation",
+        description="Collect structured import/export stage timings in Carnivores_Performance_Report",
+        default=False,
+    )
     auto_select_imported: bpy.props.BoolProperty(
         name="Select Imported Objects",
         description="Select imported primary mesh objects and make the last imported mesh active after import.",
@@ -90,6 +95,7 @@ class CarnivoresPreferences(bpy.types.AddonPreferences):
         diagnostics = layout.box()
         diagnostics.label(text="Diagnostics", icon='INFO')
         diagnostics.prop(self, "debug_mode")
+        diagnostics.prop(self, "performance_mode")
         import_behavior = layout.box()
         import_behavior.label(text="Import Behavior", icon='IMPORT')
         import_behavior.prop(self, "auto_select_imported")

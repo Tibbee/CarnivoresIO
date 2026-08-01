@@ -7,12 +7,14 @@ operators.
 """
 
 import os
+from collections import Counter
 
 import bmesh
 import bpy
 import numpy as np
 
 from ..core.constants import FACE_FLAG_OPTIONS, TEXTURE_WIDTH
+from .common import timed
 from .reporting import OperationReport
 
 
@@ -217,7 +219,7 @@ def _check_mesh(report, obj, lightweight=False):
                 "Geometry",
                 f"{non_triangles} polygon(s) are not triangles; the exporter will triangulate a temporary copy.",
             )
-        if not lightweight:
+        if not lightweight and non_triangles:
             bm = bmesh.new()
             try:
                 bm.from_mesh(mesh)
@@ -519,7 +521,8 @@ def _check_skeleton(report, obj, target):
             continue
         if len(cleaned.encode('ascii')) > SERIALIZED_BONE_BYTES:
             _add(report, "ERROR", "Rig / owners", f"Bone #{index} name exceeds {SERIALIZED_BONE_BYTES} bytes after cleanup.")
-    duplicate_names = sorted({name for name in cleaned_names if name and cleaned_names.count(name) > 1})
+    name_counts = Counter(name for name in cleaned_names if name)
+    duplicate_names = sorted(name for name, count in name_counts.items() if count > 1)
     if duplicate_names:
         _add(
             report,
@@ -580,7 +583,7 @@ def _frame_range(action):
             return 1, 1
 
 
-def _check_animations(report, obj, target, check_audio=True):
+def _check_animations(report, obj, target, check_audio=True, audio_cache=None):
     if target == "VTL":
         vtl_record = _vtl_animation_record(obj)
         records = [vtl_record] if vtl_record else []
@@ -675,7 +678,9 @@ def _check_animations(report, obj, target, check_audio=True):
         if sounds and check_audio:
             from ..parsers.export_car import convert_sound_to_22khz_mono
             for sound in sounds.values():
-                payload, length = convert_sound_to_22khz_mono(sound)
+                payload, length = convert_sound_to_22khz_mono(
+                    sound, conversion_cache=audio_cache
+                )
                 if not payload or length <= 0:
                     _add(
                         report,
@@ -728,6 +733,7 @@ def _check_quantization(report, coordinates, target, export_matrix, has_animatio
         _add(report, "PASS", "Coordinates", "Base coordinates fit the signed 16-bit CAR/VTL animation range.")
 
 
+@timed('validation.preflight')
 def validate_blender_model(
     obj,
     target_format="AUTO",
@@ -740,6 +746,7 @@ def validate_blender_model(
     has_sprite=False,
     sprite_name="",
     export_matrix=None,
+    artifact_cache=None,
 ):
     """Return an :class:`OperationReport` for a Blender model preflight."""
     target = resolve_target_format(obj, target_format)
@@ -764,7 +771,16 @@ def validate_blender_model(
         _check_uvs(report, obj, target, export_textures, lightweight=lightweight)
     animation_records = _animation_records(obj) if target == "CAR" else []
     if target in {"CAR", "VTL"}:
-        _check_animations(report, obj, target, check_audio=check_audio and not lightweight)
+        audio_cache = None
+        if artifact_cache is not None:
+            audio_cache = artifact_cache.setdefault("sound_conversion", {})
+        _check_animations(
+            report,
+            obj,
+            target,
+            check_audio=check_audio and not lightweight,
+            audio_cache=audio_cache,
+        )
     if target in {"CAR", "3DN"}:
         _check_names_and_format(report, obj, target, filepath, model_name, has_sprite, sprite_name)
     _check_quantization(report, coordinates, target, export_matrix, has_animation=bool(animation_records))
@@ -797,16 +813,10 @@ def model_health_summary(obj, target_format="AUTO"):
 
     uv = "Ready" if mesh.uv_layers.active else "Missing"
     animation = "Present" if _animation_records(obj) else "None"
-    lightweight_report = validate_blender_model(
-        obj,
-        target_format=target_format,
-        export_textures=False,
-        check_audio=False,
-        lightweight=True,
-    )
-    status = lightweight_report.status
+    # Panel draw methods run on every UI redraw. Full validation is deliberately
+    # reserved for the explicit Validate Model operator and export preflight.
     return {
-        "status": status,
+        "status": "RUN VALIDATION",
         "vertices": len(mesh.vertices),
         "faces": len(mesh.polygons),
         "flags": flags,

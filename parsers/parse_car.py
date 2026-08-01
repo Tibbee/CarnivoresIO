@@ -5,11 +5,13 @@ from ..utils import timed, handle_car_owners
 from ..core.core import FACE_DTYPE, VERTEX_DTYPE, CAR_HEADER_DTYPE  # Reuse dtypes
 from ..core.constants import TEXTURE_WIDTH
 from ..utils.logger import debug, warn, info, error
+from ..utils.performance import current_session
 
 class ParserContext:
     def __init__(self):
         self.warnings = []
 
+@timed('parse_car.header')
 def parse_car_header(file):
     parsed = np.fromfile(file, dtype=CAR_HEADER_DTYPE, count=1)
     if parsed.size != 1:
@@ -36,7 +38,8 @@ def parse_car_texture(file, texture_size, texture_height):
     from .parse_3df import parse_3df_texture  # Import to reuse
     return parse_3df_texture(file, texture_size, texture_height)
 
-def parse_car_animations(file, header, context, compatibility=True):
+@timed('parse_car.animations')
+def parse_car_animations(file, header, context, compatibility=True, parse_positions=True):
     animations = []
     vcount = header['vertex_count']
     used_names = {}  # Map base_name -> count
@@ -89,17 +92,23 @@ def parse_car_animations(file, header, context, compatibility=True):
                     f"Animation '{ani_name}' data does not leave enough bytes for the remaining "
                     "CAR sections."
                 )
-            expected_count = data_size // 2  # int16 per coordinate
-            raw_data = np.fromfile(file, dtype='<i2', count=expected_count)
-            # Decode to absolute positions (float32)
-            positions = raw_data.reshape(frames_count, vcount, 3).astype(np.float32) / 16.0
+            if parse_positions:
+                expected_count = data_size // 2  # int16 per coordinate
+                raw_data = np.fromfile(file, dtype='<i2', count=expected_count)
+                # Decode to absolute positions (float32)
+                positions = raw_data.reshape(frames_count, vcount, 3).astype(np.float32) / 16.0
+            else:
+                file.seek(data_size, os.SEEK_CUR)
+                positions = None
+
             animations.append({
                 'name': ani_name,
                 'kps': int(ani_kps),
                 'frames_count': int(frames_count),
                 'positions': positions
             })
-            debug(f"Parsed anim '{ani_name}': {frames_count} frames, {ani_kps} kps, shape {positions.shape}")
+            if positions is not None:
+                debug(f"Parsed anim '{ani_name}': {frames_count} frames, {ani_kps} kps, shape {positions.shape}")
         debug(f"Finished animations: {len(animations)} parsed, total frames {sum(a['frames_count'] for a in animations)}")
     else:
         debug("No animations (AniCount=0)")
@@ -131,7 +140,8 @@ def skip_car_sounds_and_crossref(file, header, context):
     file.seek(cross_ref_size, 1)
     debug(f"Skipped cross-ref table: {cross_ref_size} bytes")
 
-def parse_car_sounds_and_crossref(file, header, context, validate=True):
+@timed('parse_car.sounds')
+def parse_car_sounds_and_crossref(file, header, context, validate=True, parse_samples=True):
     """
     Returns:
         sounds   – list[dict]
@@ -196,25 +206,28 @@ def parse_car_sounds_and_crossref(file, header, context, validate=True):
                 "before the remaining CAR sections."
             )
 
-        expected_samples = pcm_length // 2
-        data = np.fromfile(file, dtype='<i2', count=expected_samples)
-        if has_trailing_byte:
-            file.seek(1, io.SEEK_CUR)
+        if parse_samples:
+            expected_samples = pcm_length // 2
+            data = np.fromfile(file, dtype='<i2', count=expected_samples)
+            if has_trailing_byte:
+                file.seek(1, io.SEEK_CUR)
 
-        if data.dtype != np.int16:
-            data = data.astype(np.int16)
+            if data.dtype != np.int16:
+                data = data.astype(np.int16)
 
-        if data.size != expected_samples:
-            if validate:
-                context.warnings.append(
-                    f"Truncated sound '{name}': expected {expected_samples} samples, got {data.size}"
-                )
+            if data.size != expected_samples:
+                if validate:
+                    context.warnings.append(
+                        f"Truncated sound '{name}': expected {expected_samples} samples, got {data.size}"
+                    )
 
-        sounds.append({
-            'name': name,
-            'data': data,
-            'length_bytes': pcm_length,
-        })
+            sounds.append({
+                'name': name,
+                'data': data,
+                'length_bytes': pcm_length,
+            })
+        else:
+            file.seek(declared_length, io.SEEK_CUR)
 
     # ------------------- Cross-reference table -------------------
     # Verify 256 bytes remain
@@ -245,10 +258,25 @@ def parse_car_sounds_and_crossref(file, header, context, validate=True):
     return sounds, cross_ref
 
 @timed('parse_car')
-def parse_car(filepath, validate=True, parse_texture=True, flip_handedness=True, import_sounds=True):
+def parse_car(filepath, validate=True, parse_texture=True, flip_handedness=True,
+              import_sounds=True, parse_animations=True):
     context = ParserContext()
     with open(filepath, 'rb') as file:
         header, model_name, texture_height = parse_car_header(file)
+        session = current_session()
+        if session:
+            session.add_metadata(
+                format="CAR",
+                file_size=os.path.getsize(filepath),
+                vertices=int(header['vertex_count']),
+                faces=int(header['face_count']),
+                animations=int(header['ani_count']),
+                sounds=int(header['sfx_count']),
+                texture_height=int(texture_height),
+                parse_texture=bool(parse_texture),
+                parse_animations=bool(parse_animations),
+                import_sounds=bool(import_sounds),
+            )
         if validate and not model_name.endswith('msc: #'):
             context.warnings.append(
                 f"Unexpected model name format: '{model_name}' (expected suffix 'msc: #')."
@@ -286,9 +314,21 @@ def parse_car(filepath, validate=True, parse_texture=True, flip_handedness=True,
                 compatibility=validate,
             )
 
-        animations = parse_car_animations(file, header, context, compatibility=validate)
-        
-        sounds, cross_ref = parse_car_sounds_and_crossref(file, header, context, validate=validate)
+        animations = parse_car_animations(
+            file,
+            header,
+            context,
+            compatibility=validate,
+            parse_positions=parse_animations,
+        )
+
+        sounds, cross_ref = parse_car_sounds_and_crossref(
+            file,
+            header,
+            context,
+            validate=validate,
+            parse_samples=import_sounds,
+        )
 
     return (header, model_name, faces, uvs, vertices,
             bone_names, owner_mapping.raw_per_vertex, texture, texture_height,
