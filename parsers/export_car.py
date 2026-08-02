@@ -247,6 +247,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         
         # 1. Identify F-Curves
         # Map: Key Index (1-based because 0 is basis) -> FCurve
+        start_setup = time.perf_counter()
         fcurve_map = {}
         eval_time_fc = None
         target_action = anim_source_data
@@ -267,7 +268,8 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                 return fcs
             return getattr(act, "fcurves", [])
 
-        for fc in get_fcurves(target_action):
+        all_fcurves = get_fcurves(target_action)
+        for fc in all_fcurves:
             if use_relative:
                 # Path format: key_blocks["Name"].value
                 match = re.match(r'key_blocks\["(.+)"\]\.value', fc.data_path)
@@ -282,6 +284,16 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                 if fc.data_path == 'eval_time':
                     eval_time_fc = fc
                     break
+
+        setup_elapsed = time.perf_counter() - start_setup
+        benchmark = current_session()
+        if benchmark:
+            benchmark.record_duration(
+                "shape_key_fcurve_setup",
+                setup_elapsed,
+                animation=name,
+                fcurves=len(all_fcurves),
+            )
 
         # 2. Sample
         start_sampling = time.perf_counter()
@@ -349,6 +361,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                 animation=name,
                 samples=num_samples,
                 vertices=vertex_count,
+                fcurves=len(fcurve_map),
             )
         return frames_data
 
@@ -398,8 +411,16 @@ def gather_car_animations(obj, export_matrix, vertex_count):
             anim_data.use_nla = True # Ensure NLA is ON
             
             # Mute ALL tracks first
+            state_start = time.perf_counter()
             for track in anim_data.nla_tracks:
                 track.mute = True
+            benchmark = current_session()
+            if benchmark:
+                benchmark.record_duration(
+                    "nla_state_mute_all",
+                    time.perf_counter() - state_start,
+                    tracks=len(anim_data.nla_tracks),
+                )
             
             # Iterate Tracks in REVERSE (Top-most first? or whatever user requested)
             # User requested "reversed order we handle them currently"
@@ -407,6 +428,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
             for track in reversed(anim_data.nla_tracks):
                 
                 # Solo this track
+                track_start = time.perf_counter()
                 track.mute = False
                 
                 for strip in track.strips:
@@ -444,6 +466,13 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                 
                 # Re-mute after processing this track
                 track.mute = True
+                benchmark = current_session()
+                if benchmark:
+                    benchmark.record_duration(
+                        "nla_track_solo",
+                        time.perf_counter() - track_start,
+                        track=track.name,
+                    )
 
         # --- PATH B: ACTIVE ACTION (Fallback) ---
         elif anim_data.action:
@@ -480,6 +509,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
 
     finally:
         # --- RESTORE STATE ---
+        restore_start = time.perf_counter()
         scene.frame_set(original_frame)
         
         if anim_data: 
@@ -506,6 +536,13 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         # Restore Pinning
         if original_show_only_shape_key:
              obj.show_only_shape_key = True
+
+        benchmark = current_session()
+        if benchmark:
+            benchmark.record_duration(
+                "nla_state_restore",
+                time.perf_counter() - restore_start,
+            )
 
     return animations
 

@@ -115,7 +115,7 @@ Tools are accessed through two locations in Blender:
 1. Open **File > Import > Carnivores Engine (.3df, .car) > Animated Model (.car)**.
 2. Select one or more `.car` files and configure:
    - **Import Animations** -- converts vertex animations to Shape Key Actions with NLA strips (enabled by default).
-   - **Absolute Shape Keys** -- use Absolute (Evaluation Time) shape keys instead of the default Relative ones.
+   - **Absolute Shape Keys** -- use Absolute (Evaluation Time) shape keys for a cleaner Action Editor and faster import (enabled by default); disable for the Relative mode.
    - **Respect KPS Timing** -- align keyframes to sub-frame positions per the file's KPS; disable to snap to integer frames.
    - **Import Sounds** -- load embedded WAV data and link sounds to the corresponding Actions. If **Import Animations** is disabled, sounds are imported as unlinked sound datablocks.
    - **Smooth Weights** -- apply weight smoothing after vertex group creation.

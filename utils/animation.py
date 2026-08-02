@@ -564,6 +564,7 @@ def get_action_frame_range(action):
 
     return (int(minimum), int(maximum))
 
+@timed('import_car_sounds')
 def import_car_sounds(self, sounds, model_name, context):
     imported_sounds = []
     for idx, s in enumerate(sounds):
@@ -594,6 +595,7 @@ def import_car_sounds(self, sounds, model_name, context):
                 os.remove(temp_path)
     return imported_sounds
 
+@timed('associate_sounds_with_animations')
 def associate_sounds_with_animations(self, obj, animations, cross_ref, imported_sounds, actions=None):
     if not animations or cross_ref is None or not imported_sounds:
         return

@@ -143,6 +143,35 @@ def benchmark_session(operation, metadata=None):
     return BenchmarkSession(operation, metadata=metadata)
 
 
+def record_operator_options(operator, option_names):
+    """Record the user-selected operator options into the active benchmark session.
+
+    ``option_names`` is a list of property names on the operator. Only values
+    that can be serialized to JSON are recorded; other property types (such as
+    strings exceeding limits) are stored as their string form. The resulting
+    ``options`` metadata appears in the performance report's ``metadata`` field.
+    """
+    session = current_session()
+    if session is None or not session.enabled:
+        return
+    options = {}
+    for name in option_names:
+        value = getattr(operator, name, None)
+        # Skip hidden/helper properties and non-serializable values.
+        if value is None or name.startswith("_"):
+            continue
+        if isinstance(value, (bool, int, float, str)):
+            options[name] = value
+        else:
+            try:
+                json.dumps(value)
+                options[name] = value
+            except (TypeError, ValueError):
+                options[name] = str(value)
+    if options:
+        session.add_metadata(options=options)
+
+
 @contextmanager
 def benchmark_stage(name, **metadata):
     session = current_session()

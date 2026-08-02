@@ -9,6 +9,7 @@ from ..utils import common
 from ..utils.addon import get_addon_preferences
 from ..utils.logger import info, debug, warn, error
 from ..utils.reporting import OperationReport, write_report_text
+from ..utils.performance import record_operator_options
 from ..utils.validation import validate_blender_model
 from ..utils.rig_reconstruction import (
     OWNER_MAPPING_PROPERTY,
@@ -498,6 +499,26 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
     @common.timed("CARNIVORES_OT_import_3df.execute", is_operator=True)
     def execute(self, context):
         
+        record_operator_options(
+            self,
+            [
+                "scale",
+                "import_textures",
+                "create_materials",
+                "normal_smooth",
+                "select_imported",
+                "frame_imported",
+                "bone_import_type",
+                "validate",
+                "flip_handedness",
+                "smooth_weights",
+                "smooth_iterations",
+                "smooth_factor",
+                "smooth_joints_only",
+                "axis_forward",
+                "axis_up",
+            ],
+        )
         handedness_matrix = mathutils.Matrix.Scale(-1, 4, (1, 0, 0)) if self.flip_handedness else mathutils.Matrix.Identity(4)
         import_matrix = (
             mathutils.Matrix.Scale(self.scale, 4) 
@@ -746,6 +767,20 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
 
     @common.timed("CARNIVORES_OT_export_3df.execute", is_operator=True)
     def execute(self, context):
+        record_operator_options(
+            self,
+            [
+                "scale",
+                "export_textures",
+                "flip_u",
+                "flip_v",
+                "use_multi_export",
+                "flip_handedness",
+                "preflight_validation",
+                "axis_forward",
+                "axis_up",
+            ],
+        )
         handedness_matrix = mathutils.Matrix.Scale(-1, 4, (1, 0, 0)) if self.flip_handedness else mathutils.Matrix.Identity(4)
         export_matrix = (
             bpy_extras.io_utils.axis_conversion(
@@ -1005,6 +1040,20 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
 
     @common.timed("CARNIVORES_OT_export_car.execute", is_operator=True)
     def execute(self, context):
+        record_operator_options(
+            self,
+            [
+                "scale",
+                "model_name",
+                "export_textures",
+                "flip_u",
+                "flip_v",
+                "flip_handedness",
+                "preflight_validation",
+                "axis_forward",
+                "axis_up",
+            ],
+        )
         handedness_matrix = mathutils.Matrix.Scale(-1, 4, (1, 0, 0)) if self.flip_handedness else mathutils.Matrix.Identity(4)
         export_matrix = (
             bpy_extras.io_utils.axis_conversion(
@@ -1143,7 +1192,7 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
     use_absolute_shape_keys: bpy.props.BoolProperty(
         name="Absolute Shape Keys",
         description="Use Absolute Shape Keys (Evaluation Time) for a cleaner Action Editor and easier timing edits",
-        default=False
+        default=True,
     )
     use_kps_timing: bpy.props.BoolProperty(
         name="Respect KPS Timing",
@@ -1275,6 +1324,29 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
 
     @common.timed('CARNIVORES_OT_import_car.execute', is_operator=True)
     def execute(self, context):
+        record_operator_options(
+            self,
+            [
+                "scale",
+                "import_textures",
+                "create_materials",
+                "normal_smooth",
+                "validate",
+                "flip_handedness",
+                "import_animations",
+                "use_absolute_shape_keys",
+                "use_kps_timing",
+                "import_sounds",
+                "select_imported",
+                "frame_imported",
+                "smooth_weights",
+                "smooth_iterations",
+                "smooth_factor",
+                "smooth_joints_only",
+                "axis_forward",
+                "axis_up",
+            ],
+        )
         handedness_matrix = mathutils.Matrix.Scale(-1, 4, (1, 0, 0)) if self.flip_handedness else mathutils.Matrix.Identity(4)
         import_matrix = mathutils.Matrix.Scale(self.scale, 4) @ handedness_matrix @ bpy_extras.io_utils.axis_conversion(
             from_forward=self.axis_forward, from_up=self.axis_up, to_forward='Y', to_up='Z').to_4x4()
@@ -1596,6 +1668,21 @@ class CARNIVORES_OT_export_3dn(bpy.types.Operator, bpy_extras.io_utils.ExportHel
 
     @common.timed("CARNIVORES_OT_export_3dn.execute", is_operator=True)
     def execute(self, context):
+        record_operator_options(
+            self,
+            [
+                "scale",
+                "model_name",
+                "has_sprite",
+                "sprite_name",
+                "flip_u",
+                "flip_v",
+                "flip_handedness",
+                "preflight_validation",
+                "axis_forward",
+                "axis_up",
+            ],
+        )
         handedness_matrix = mathutils.Matrix.Scale(-1, 4, (1, 0, 0)) if self.flip_handedness else mathutils.Matrix.Identity(4)
         export_matrix = (
             bpy_extras.io_utils.axis_conversion(
@@ -1767,6 +1854,16 @@ class CARNIVORES_OT_export_vtl(bpy.types.Operator, bpy_extras.io_utils.ExportHel
 
     @common.timed("CARNIVORES_OT_export_vtl.execute", is_operator=True)
     def execute(self, context):
+        record_operator_options(
+            self,
+            [
+                "scale",
+                "flip_handedness",
+                "preflight_validation",
+                "axis_forward",
+                "axis_up",
+            ],
+        )
         handedness_matrix = mathutils.Matrix.Scale(-1, 4, (1, 0, 0)) if self.flip_handedness else mathutils.Matrix.Identity(4)
         export_matrix = (
             bpy_extras.io_utils.axis_conversion(
