@@ -1463,7 +1463,20 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                             suggested_action="Review imported shape keys and create actions manually if needed.",
                         )
                 if self.import_sounds and sounds:
-                    imported_sounds = anim_utils.import_car_sounds(self, sounds, model_name, context)
+                    referenced_sound_indices = None
+                    if actions and cross_ref is not None:
+                        referenced_sound_indices = {
+                            int(index)
+                            for index in np.asarray(cross_ref[:len(animations)]).ravel()
+                            if 0 <= int(index) < len(sounds)
+                        }
+                    imported_sounds = anim_utils.import_car_sounds(
+                        self,
+                        sounds,
+                        model_name,
+                        context,
+                        referenced_indices=referenced_sound_indices,
+                    )
                     if actions:
                         anim_utils.associate_sounds_with_animations(
                             self, obj, animations, cross_ref, imported_sounds, actions
@@ -1493,7 +1506,7 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                 if coll:
                     created_collections.append(coll.name)
                 created_animation_count += len(actions)
-                created_sound_count += len(imported_sounds)
+                created_sound_count += sum(sound is not None for sound in imported_sounds)
                 parsed_animation_count += file_parsed_animation_count
                 parsed_sound_count += file_parsed_sound_count
                 report.info(

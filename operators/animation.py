@@ -141,18 +141,20 @@ class AudioManager:
 
         self._migrate_legacy()
 
-        # Managed audio is intentionally limited to extension preview and NLA
-        # tweak mode. Avoid scanning every scene object during normal playback.
-        if not _preview_restore_state and not scene.is_nla_tweakmode:
-            self._clear_playback_state()
-            return
-
         self._mark_completed_handles()
         self._prune_deleted_objects(scene)
 
         # Resolve desired sources
         desired = {}  # source_key -> (obj, action, snd, strip, cycle, offset)
-        for obj in scene.objects:
+        if _preview_restore_state or scene.is_nla_tweakmode:
+            candidate_objects = scene.objects
+        else:
+            # Ordinary playback follows only the active object's selected
+            # Carnivores track, avoiding multiple overlapping track sounds.
+            active_object = getattr(bpy.context.view_layer.objects, "active", None)
+            is_scene_object = bool(active_object and scene.objects.get(active_object.name) == active_object)
+            candidate_objects = (active_object,) if is_scene_object else ()
+        for obj in candidate_objects:
             key, info = self._resolve_active_source(obj, scene)
             if info:
                 desired[key] = info
@@ -311,7 +313,7 @@ class AudioManager:
     # --- Source resolution helpers ---
 
     def _resolve_active_source(self, obj, scene):
-        """Priority: preview > tweak. Only focused (tweak mode) strips produce audio."""
+        """Priority: preview > tweak mode > selected Carnivores NLA track."""
         global _preview_restore_state
 
         # 1. Preview mode
@@ -348,6 +350,26 @@ class AudioManager:
                                 return key, (obj, active_action, snd, strip, cycle, offset)
             return None, None  # tweak mode — no audio outside the tweaked strip
 
+        # 3. Ordinary timeline playback — use the track selected in the
+        # Carnivores panel. This keeps playback deterministic when imported
+        # tracks overlap while allowing audio without entering tweak mode.
+        track_index = int(getattr(obj, "carnivores_active_nla_index", -1))
+        if not (0 <= track_index < len(anim_data.nla_tracks)):
+            return None, None
+        track = anim_data.nla_tracks[track_index]
+        if track.mute:
+            return None, None
+        for strip in track.strips:
+            if not strip.action or not (strip.frame_start <= scene.frame_current < strip.frame_end):
+                continue
+            action = strip.action
+            snd = anim_utils.resolve_action_sound(action)
+            if not snd:
+                return None, None
+            cycle = self._compute_strip_cycle(obj, strip, scene.frame_current)
+            offset = _compute_audio_offset(strip, scene)
+            key = (obj, action.name, strip.name, cycle)
+            return key, (obj, action, snd, strip, cycle, offset)
         return None, None
 
     def _compute_strip_cycle(self, obj, strip, current_frame):
@@ -716,7 +738,7 @@ class CARNIVORES_OT_clear_action_sound(bpy.types.Operator):
 class CARNIVORES_OT_toggle_nla_sound_playback(bpy.types.Operator):
     bl_idname = "carnivores.toggle_nla_sound_playback"
     bl_label = "Toggle NLA Sound Playback"
-    bl_description = "Enable or disable automatic playback of sounds linked to the focused NLA animation strip."
+    bl_description = "Enable or disable linked sound playback for previews and the selected Carnivores NLA track."
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -1021,13 +1043,24 @@ def _restore_preview_state(scene, context=None):
         is_obj_valid = bool(obj and obj.name)
     except ReferenceError:
         pass
-    if is_obj_valid and obj.animation_data:
+    # Restore the exact animation-data owner used by the preview. CAR imports
+    # normally store NLA tracks on mesh shape keys, not on obj.animation_data.
+    anim_data = state.get('anim_data')
+    try:
+        anim_data_valid = bool(anim_data and anim_data.nla_tracks is not None)
+    except (ReferenceError, RuntimeError):
+        anim_data_valid = False
+    if not anim_data_valid and is_obj_valid:
+        anim_data = anim_utils.get_active_animation_data(obj)
+        anim_data_valid = anim_data is not None
+
+    if anim_data_valid:
         for track_name, mute_state in state['track_mutes'].items():
-            track = obj.animation_data.nla_tracks.get(track_name)
+            track = anim_data.nla_tracks.get(track_name)
             if track:
                 track.mute = mute_state
-        if hasattr(obj, "carnivores_active_nla_index"):
-            obj.carnivores_active_nla_index = state.get("original_active_index", 0)
+    if is_obj_valid and hasattr(obj, "carnivores_active_nla_index"):
+        obj.carnivores_active_nla_index = state.get("original_active_index", 0)
 
     scene.frame_start = state['original_start']
     scene.frame_end = state['original_end']
@@ -1135,6 +1168,7 @@ class CARNIVORES_OT_play_track_preview(bpy.types.Operator):
         # Store State
         _preview_restore_state = {
             'obj': obj,
+            'anim_data': anim_data,
             'action_name': self.action_name,
             'original_frame': context.scene.frame_current,
             'original_subframe': getattr(context.scene, 'frame_subframe', 0.0),
@@ -1702,7 +1736,7 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
             stop = preview_box.operator("carnivores.play_track_preview", text="Stop Preview", icon='PAUSE')
             stop.action_name = _preview_restore_state.get('action_name', '')
         sound_box = layout.box()
-        sound_box.label(text="Preview Audio", icon='PLAY_SOUND')
+        sound_box.label(text="Animation Audio", icon='PLAY_SOUND')
         sound_box.prop(
             scene,
             "carnivores_nla_sound_enabled",
@@ -1710,7 +1744,7 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
             toggle=True,
         )
         sound_box.prop(scene, "carnivores_nla_sound_volume", text="Volume")
-        sound_box.label(text="Disabling audio stops managed playback immediately.", icon='INFO')
+        sound_box.label(text="Timeline playback uses the selected, unmuted Carnivores track.", icon='INFO')
         layout.separator()
 
         if not obj:
@@ -1784,6 +1818,7 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
                     clear = row.operator("carnivores.clear_action_sound", text="Clear", icon='X')
                     clear.action_name = action.name
                     sound = anim_utils.resolve_action_sound(action)
+                    duration = 0.0
                     if sound:
                         if sound.packed_file:
                             source_state = "Packed"
@@ -1792,8 +1827,14 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
                         else:
                             source_state = "Unavailable"
                         box.label(text=f"Sound source: {source_state} ({sound.name})", icon='SPEAKER')
-                        if sound.duration > 0.0:
-                            box.label(text=f"Sound duration: {sound.duration:.3f}s")
+                        # Imported CAR sounds store their known duration. Avoid
+                        # factory.length here because panel redraws can trigger decoding.
+                        try:
+                            duration = float(sound.get("carnivores_duration_seconds", 0.0))
+                        except (TypeError, ValueError):
+                            duration = 0.0
+                        if duration > 0.0:
+                            box.label(text=f"Sound duration: {duration:.3f}s")
                     else:
                         box.label(text="No linked sound", icon='INFO')
                     box.prop(action, "carnivores_sound_volume", text="Sound Volume")
@@ -1814,8 +1855,8 @@ class VIEW3D_PT_carnivores_animation(bpy.types.Panel):
                         row.label(text=f"Scene FPS: {scene.render.fps}")
                     box.label(text=f"Action: {action.name} | Frames: {frame_count} ({action_start}–{action_end})")
                     box.label(text=f"CAR timing: {export_frame_count} samples, {animation_duration:.3f}s at {kps:g} KPS")
-                    if sound and sound.duration > 0.0:
-                        difference = animation_duration - sound.duration
+                    if sound and duration > 0.0:
+                        difference = animation_duration - duration
                         box.label(text=f"Animation − sound: {difference:+.3f}s", icon='TIME')
 
                     row = box.row(align=True)

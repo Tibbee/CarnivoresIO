@@ -351,7 +351,7 @@ The per-frame handler currently scans `scene.objects`, but existing measurements
 
 #### Focused source selection
 
-The runtime supports one managed sound per object and requires explicit focus. Extension preview selects the requested action; NLA Tweak Mode selects the focused strip. Overlapping strips in normal NLA evaluation are intentionally ignored, so influence and blend-stack arbitration are not part of the audio manager.
+The runtime supports one managed sound per object and requires explicit focus. Extension preview selects the requested action; NLA Tweak Mode selects the focused strip; ordinary timeline playback uses the active object's track selected in the Carnivores Animation panel. Muted selected tracks remain silent. Other overlapping strips are intentionally ignored, so influence and blend-stack arbitration are not part of the audio manager.
 
 #### Authored timing
 

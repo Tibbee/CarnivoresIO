@@ -4,6 +4,8 @@
 
 > **Measurement status:** Timing values below are historical estimates, not a controlled benchmark baseline. Enable **Performance Instrumentation** in the add-on preferences to capture structured wall-clock stages for the current asset. The latest operation is written as JSON to the `Carnivores_Performance_Report` Blender Text datablock, including Blender/platform metadata and available model counts.
 
+> **Measured data:** For the current controlled benchmark baselines (DiloTest.car), the optimization history, and the open optimization targets, see [`PERFORMANCE_HANDOFF.md`](PERFORMANCE_HANDOFF.md) — the session-handoff file for continuing performance work.
+
 ---
 
 ## 1. Execution-Frequency Categories

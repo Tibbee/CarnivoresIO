@@ -4,6 +4,7 @@ import re
 import wave
 import io
 import os
+import struct
 import tempfile
 import aud
 import numpy as np
@@ -211,14 +212,16 @@ def create_shape_keys_from_car_animations(obj, animations, import_matrix_np, use
         if positions.shape != (frames_count, vcount, 3):
             warn(f"Skipping {anim_name} (invalid positions shape {positions.shape})")
             continue
+        # Transform every frame in one NumPy operation, avoiding one small
+        # matrix multiplication and allocation per shape key.
+        transformed_positions = apply_import_matrix(
+            positions.reshape(-1, 3), import_matrix_np
+        ).reshape(positions.shape)
         for frame_i in range(frames_count):  # All frames as keys (Basis is static verts)
             key_name = f"{anim_name}.Frame_{frame_i+1:03d}"
-            # Transform this frame's positions
-            frame_pos = apply_import_matrix(positions[frame_i], import_matrix_np)  # Note: Use direct call (utils. not needed internally)
             # Add new key (from_mix=False to base on Basis)
             key = obj.shape_key_add(name=key_name, from_mix=False)
-            flat_pos = frame_pos.ravel()
-            key.data.foreach_set('co', flat_pos)
+            key.data.foreach_set('co', transformed_positions[frame_i].ravel())
             total_keys += 1
         debug(f"Added {frames_count} keys for '{anim_name}'")
     mesh.update()
@@ -252,7 +255,7 @@ def create_shape_key_action(obj, action_name="CarAnimation"):
     return action
 
 @timed('keyframe_shape_key_animation_as_action')
-def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, kps=None, scene_fps=None, use_absolute=False, use_kps_timing=True):
+def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, kps=None, scene_fps=None, use_absolute=False, use_kps_timing=True, key_blocks=None):
     if not obj or obj.type != 'MESH':
         error('Selected object is not a mesh')
         return
@@ -304,7 +307,10 @@ def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, kps=No
     except AttributeError:
         warn(f"Could not set active action '{action.name}' (likely driven by NLA). Continuing update...")
 
-    key_blocks = [kb for kb in sk_data.key_blocks if re.match(fr"^{re.escape(anim_name)}\.Frame_\d+", kb.name)]
+    if key_blocks is None:
+        key_blocks = [kb for kb in sk_data.key_blocks if re.match(fr"^{re.escape(anim_name)}\.Frame_\d+", kb.name)]
+    else:
+        key_blocks = list(key_blocks)
     key_blocks.sort(key=lambda kb: kb.name)
     if not key_blocks:
         warn(f"No shape keys found for animation '{anim_name}'")
@@ -319,14 +325,18 @@ def keyframe_shape_key_animation_as_action(obj, anim_name, frame_start=1, kps=No
         fc = fc_storage.fcurves.new(data_path='eval_time', index=-1)
         current_frame = float(frame_start)
 
-        for i in range(num_frames):
-            kb = key_blocks[i]
-            # In absolute mode, ShapeKey.frame is its "address" on the timeline
-            kp = fc.keyframe_points.insert(current_frame, kb.frame)
-            kp.interpolation = 'LINEAR'
-            kp.handle_left_type = 'VECTOR'
-            kp.handle_right_type = 'VECTOR'
-            current_frame += frame_step
+        # Bulk allocation avoids repeated collection growth for long actions.
+        if num_frames > 0:
+            fc.keyframe_points.add(count=num_frames)
+            for i in range(num_frames):
+                kb = key_blocks[i]
+                kp = fc.keyframe_points[i]
+                # In absolute mode, ShapeKey.frame is its "address" on the timeline
+                kp.co = (current_frame, kb.frame)
+                kp.interpolation = 'LINEAR'
+                kp.handle_left_type = 'VECTOR'
+                kp.handle_right_type = 'VECTOR'
+                current_frame += frame_step
 
         fc.update()
     else:
@@ -443,8 +453,8 @@ def push_shape_key_action_to_nla(obj, strip_name=None, frame_start=1, frame_end=
         frame_start, frame_end = start, end
 
     # Add the strip to the NLA
-    strip = track.strips.new(strip_name, frame_start, action)
-    strip.frame_end = frame_end
+    strip = track.strips.new(strip_name, int(frame_start), action)
+    strip.frame_end = float(frame_end)
     anim_data.action = None  # Unlink active action (push down)
 
     debug(f"Action '{action.name}' pushed to NLA strip '{strip.name}' ({frame_start}-{frame_end})")
@@ -460,7 +470,12 @@ def auto_create_shape_key_actions_from_car(obj, frame_step=1, parsed_animations=
         info('No shape keys on object; skipping animation setup.')
         return
     sk_data = mesh.shape_keys
-    names = [kb.name for kb in sk_data.key_blocks if '.' in kb.name]
+    grouped_key_blocks = {}
+    for key_block in sk_data.key_blocks:
+        if '.Frame_' not in key_block.name:
+            continue
+        base_name = key_block.name.split('.Frame_', 1)[0]
+        grouped_key_blocks.setdefault(base_name, []).append(key_block)
 
     # Create KPS lookup map if animations provided
     kps_map = {}
@@ -468,15 +483,8 @@ def auto_create_shape_key_actions_from_car(obj, frame_step=1, parsed_animations=
         for anim in parsed_animations:
             kps_map[anim['name']] = anim['kps']
 
-    # Preserve order: iterate names, extract base, add to list if not seen
-    base_names = []
-    seen = set()
-    for n in names:
-        if '.Frame_' in n:
-            base = n.split('.Frame_')[0]
-            if base not in seen:
-                seen.add(base)
-                base_names.append(base)
+    # Dict insertion order preserves the source shape-key order.
+    base_names = list(grouped_key_blocks)
 
     if not base_names:
         info('No animation-style shape keys found (no .Frame_### pattern).')
@@ -495,8 +503,9 @@ def auto_create_shape_key_actions_from_car(obj, frame_step=1, parsed_animations=
             anim_name, 
             frame_start=1, 
             kps=anim_kps, 
-            use_absolute=use_absolute, 
-            use_kps_timing=use_kps_timing
+            use_absolute=use_absolute,
+            use_kps_timing=use_kps_timing,
+            key_blocks=grouped_key_blocks[anim_name],
         )
         if action:
             actions.append(action)
@@ -529,7 +538,7 @@ def auto_create_shape_key_actions_from_car(obj, frame_step=1, parsed_animations=
                     num_tracks_used += 1
                 
                 # Add strip
-                strip = track.strips.new(strip_name, start_frame, action)
+                strip = track.strips.new(strip_name, int(start_frame), action)
                 strip.use_sync_length = True  # Tighten eval for discrete steps
             
             anim_data.action = None  # Clear active action
@@ -562,12 +571,15 @@ def get_action_frame_range(action):
     if minimum is None:
         return (1, 1)
 
-    return (int(minimum), int(maximum))
+    return (float(minimum), float(maximum))
 
 @timed('import_car_sounds')
-def import_car_sounds(self, sounds, model_name, context):
-    imported_sounds = []
+def import_car_sounds(self, sounds, model_name, context, referenced_indices=None):
+    referenced = None if referenced_indices is None else {int(index) for index in referenced_indices}
+    imported_sounds = [None] * len(sounds)
     for idx, s in enumerate(sounds):
+        if referenced is not None and idx not in referenced:
+            continue
         sound_name = s['name']
         data = s['data']
         if data.size == 0:
@@ -577,17 +589,27 @@ def import_car_sounds(self, sounds, model_name, context):
         temp_dir = _get_sound_temp_dir()
         temp_path = os.path.join(temp_dir, f"{sound_name}_{idx}.wav")
         try:
-            with wave.open(temp_path, 'wb') as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(22050)
-                wf.setnframes(data.size)
-                wf.writeframes(data.tobytes())
+            # Write a minimal PCM16 mono 22050 Hz WAV in a single pass.
+            # Data from the CAR file is already int16 mono 22050, so no
+            # conversion is needed — only the 44-byte RIFF header.
+            data_bytes = data.tobytes()
+            sample_count = data.size
+            data_size = len(data_bytes)
+            header = struct.pack(
+                '<4sI4s4sIHHIIHH4sI',
+                b'RIFF', 36 + data_size, b'WAVE',
+                b'fmt ', 16, 1, 1, 22050, 22050 * 2, 2, 16,
+                b'data', data_size,
+            )
+            with open(temp_path, 'wb') as f:
+                f.write(header)
+                f.write(data_bytes)
             sound_block = bpy.data.sounds.load(temp_path)
             sound_block.name = sound_name
             sound_block.pack()
-            imported_sounds.append(sound_block)
-            info(f"Imported and packed sound '{sound_block.name}' ({data.size} samples).")
+            sound_block["carnivores_duration_seconds"] = sample_count / 22050.0
+            imported_sounds[idx] = sound_block
+            info(f"Imported and packed sound '{sound_block.name}' ({sample_count} samples).")
         except Exception as e:
             error(f"Failed to import sound '{sound_name}': {str(e)}")
         finally:
@@ -612,6 +634,8 @@ def associate_sounds_with_animations(self, obj, animations, cross_ref, imported_
             continue
 
         linked_sound = imported_sounds[sound_idx]
+        if linked_sound is None:
+            continue
         action_name = f"{anim['name']}_Action"
         
         # Find the action in the provided list or the fallback list

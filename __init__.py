@@ -322,7 +322,7 @@ def register():
     
     bpy.types.Scene.carnivores_nla_sound_enabled = bpy.props.BoolProperty(
         name="Enable NLA Sound",
-        description="Play linked sounds when scrubbing or previewing NLA strips; disabling stops managed playback immediately.",
+        description="Play linked sounds for previews, NLA tweak mode, and the selected Carnivores track during timeline playback; disabling stops managed playback immediately.",
         default=True,
         update=_nla_sound_enabled_changed,
     )

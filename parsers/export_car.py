@@ -1,10 +1,12 @@
 import bpy
 import numpy as np
 import aud
+import io
 import os
 import struct
 import re
 import time
+import wave
 
 from ..core.core import CAR_HEADER_DTYPE, VERTEX_DTYPE, FACE_DTYPE
 from ..core.constants import TEXTURE_WIDTH
@@ -13,6 +15,49 @@ from .export_3df import gather_mesh_data
 from ..utils.logger import info, debug, warn, error
 from ..utils.animation import resolve_action_sound, sound_datablock_to_factory
 from ..utils.performance import current_session
+
+def _extract_pcm16_mono_22050_wav(raw_bytes):
+    """Return an unchanged compatible WAV payload, or None for fallback conversion."""
+    if not raw_bytes:
+        return None
+    try:
+        with wave.open(io.BytesIO(bytes(raw_bytes)), 'rb') as wav_file:
+            if (
+                wav_file.getcomptype() != 'NONE'
+                or wav_file.getnchannels() != 1
+                or wav_file.getsampwidth() != 2
+                or wav_file.getframerate() != 22050
+                or wav_file.getnframes() <= 0
+            ):
+                return None
+            expected_size = wav_file.getnframes() * 2
+            payload = wav_file.readframes(wav_file.getnframes())
+            if len(payload) != expected_size or len(payload) % 2:
+                return None
+            return payload
+    except (EOFError, OSError, TypeError, ValueError, wave.Error):
+        return None
+
+
+def _compatible_wav_payload(sound_datablock):
+    """Resolve exact CAR-compatible PCM without invoking Audaspace decoding."""
+    packed_file = getattr(sound_datablock, "packed_file", None)
+    if packed_file:
+        payload = _extract_pcm16_mono_22050_wav(getattr(packed_file, "data", None))
+        if payload is not None:
+            return payload
+
+    filepath = bpy.path.abspath(getattr(sound_datablock, "filepath", ""))
+    if filepath and os.path.isfile(filepath):
+        try:
+            with open(filepath, "rb") as source_file:
+                payload = _extract_pcm16_mono_22050_wav(source_file.read())
+            if payload is not None:
+                return payload
+        except OSError:
+            pass
+    return None
+
 
 # Helper for sound conversion
 def _convert_sound_to_22khz_mono(sound_datablock):
@@ -24,13 +69,30 @@ def _convert_sound_to_22khz_mono(sound_datablock):
         return None, 0
 
     try:
+        compatible_payload = _compatible_wav_payload(sound_datablock)
+        if compatible_payload is not None:
+            return compatible_payload, len(compatible_payload)
+
         factory = sound_datablock_to_factory(sound_datablock)
         if not factory:
             warn(f"Could not load factory for sound {sound_datablock.name}")
             return None, 0
 
-        factory = factory.resample(22050)
-        factory = factory.rechannel(1)  # mono
+        # Fast path: skip resample/rechannel ONLY when the datablock's cached
+        # RNA header values are definitively known to be 22050 Hz mono. The RNA
+        # values are populated at load time by Blender's aud integration.
+        # Accessing factory.specs can force a decode, so we never probe it here
+        # (that would double the cost) — unknown values fall through to the
+        # full conversion, which is the original behavior.
+        rate = getattr(sound_datablock, "samplerate", 0) or 0
+        channels_enum = getattr(sound_datablock, "channels", "")
+        is_known_22050_mono = (
+            rate == 22050 and channels_enum == "MONO"
+        )
+
+        if not is_known_22050_mono:
+            factory = factory.resample(22050)
+            factory = factory.rechannel(1)
 
         data = factory.data()
 
@@ -97,6 +159,31 @@ def convert_sound_to_22khz_mono(sound_datablock, conversion_cache=None):
     return conversion_cache[cache_key]
 
 
+def _animation_sample_count(start, end, frame_step):
+    """Return the round-half-up sample count while preserving fractional ranges."""
+    if frame_step <= 0:
+        raise ValueError("Animation frame step must be positive.")
+    return max(1, int(((float(end) - float(start)) / frame_step) + 0.5) + 1)
+
+
+def _linear_fcurve_samples(fcurve, times):
+    """Evaluate a simple linear F-Curve in NumPy, returning None when unsafe."""
+    if fcurve is None or len(fcurve.keyframe_points) == 0 or len(fcurve.modifiers):
+        return None
+    points = list(fcurve.keyframe_points)
+    if any(point.interpolation != 'LINEAR' for point in points[:-1]):
+        return None
+    coordinates = np.asarray([point.co[:] for point in points], dtype=np.float64)
+    x_values = coordinates[:, 0]
+    if len(x_values) > 1 and np.any(np.diff(x_values) <= 0.0):
+        return None
+    times = np.asarray(times, dtype=np.float64)
+    tolerance = 1e-6
+    if np.any(times < x_values[0] - tolerance) or np.any(times > x_values[-1] + tolerance):
+        return None
+    return np.interp(times, x_values, coordinates[:, 1]).astype(np.float32)
+
+
 @utils.timed('export_car.animations')
 def gather_car_animations(obj, export_matrix, vertex_count):
     """
@@ -132,6 +219,18 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         
     debug(f"Found animation source: {source_label}")
 
+    # Direct shape-key sampling does not need dependency-graph or NLA state
+    # mutation. Other deformation paths retain the evaluated-mesh bake.
+    can_use_fast_path = (
+        obj.data.shape_keys is not None
+        and all(
+            mod.type not in {'ARMATURE', 'HOOK', 'CLOTH', 'SOFT_BODY'}
+            for mod in obj.modifiers
+            if mod.show_viewport
+        )
+    )
+    used_evaluated_bake = False
+
     # --- STATE MANAGEMENT ---
     original_frame = scene.frame_current
     original_action = anim_data.action
@@ -139,28 +238,32 @@ def gather_car_animations(obj, export_matrix, vertex_count):
     
     # Store original mute states if NLA exists
     original_mute_states = {}
-    if anim_data.nla_tracks:
+    if anim_data.nla_tracks and not can_use_fast_path:
         for track in anim_data.nla_tracks:
             original_mute_states[track] = track.mute
 
     # Shape Key Pinning Handling
     original_show_only_shape_key = False
-    if obj.type == 'MESH' and obj.show_only_shape_key:
+    if not can_use_fast_path and obj.type == 'MESH' and obj.show_only_shape_key:
         original_show_only_shape_key = True
         obj.show_only_shape_key = False # Disable pinning to allow animation
         debug("Temporarily disabled Shape Key Pinning for bake.")
 
-    # Store Modifier States & Force Enable Deformers
+    # Evaluated baking temporarily isolates supported deformers. The direct
+    # shape-key path reads coordinates and actions without touching modifiers.
     mod_states = {}
-    for mod in obj.modifiers:
-        mod_states[mod.name] = mod.show_viewport
-        if mod.type in {'ARMATURE', 'HOOK'}: 
-            mod.show_viewport = True # Force enable deformers
-        else:
-            mod.show_viewport = False # Disable others
+    if not can_use_fast_path:
+        for mod in obj.modifiers:
+            mod_states[mod.name] = mod.show_viewport
+            if mod.type in {'ARMATURE', 'HOOK'}:
+                mod.show_viewport = True
+            else:
+                mod.show_viewport = False
 
     # --- Define Bake Helper ---
     def bake_range(name, start, end, kps, sound_ptr):
+        nonlocal used_evaluated_bake
+        used_evaluated_bake = True
         debug(f"Baking '{name}' ({start}-{end}) KPS:{kps}")
         # Calculate time step (Blender Frames per Game Frame)
         # e.g. 60 FPS / 20 KPS = 3.0 step
@@ -168,9 +271,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         if kps <= 0: kps = 1 # Safety
         frame_step = scene_fps / kps
         
-        # Robustly calculate number of samples
-        # Use explicit +0.5 for "round half up" logic to avoid Banker's Rounding (even/odd) issues
-        num_samples = int(((end - start) / frame_step) + 0.5) + 1
+        num_samples = _animation_sample_count(start, end, frame_step)
         
         debug(f"         Step: {frame_step:.4f}, Samples: {num_samples}")
         frames_data = np.empty((num_samples, vertex_count, 3), dtype=np.int16)
@@ -300,8 +401,10 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         scene_fps = scene.render.fps
         if kps <= 0: kps = 1
         frame_step = scene_fps / kps
-        num_samples = int(((end - start) / frame_step) + 0.5) + 1
-        
+        num_samples = _animation_sample_count(start, end, frame_step)
+        times = start + np.arange(num_samples, dtype=np.float64) * frame_step
+        linear_values = _linear_fcurve_samples(eval_time_fc, times) if not use_relative else None
+
         frames_data = np.empty((num_samples, vertex_count, 3), dtype=np.int16)
 
         # Prepare Absolute frames lookup if needed
@@ -309,47 +412,92 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         if not use_relative:
             abs_frame_values = np.array([kb.frame for kb in sk_data.key_blocks], dtype=np.float32)
 
-        for i in range(num_samples):
-            t = start + (i * frame_step)
-            
-            if use_relative:
-                # Simple weighted sum
-                current_weights = np.zeros(num_keys_total - 1, dtype=np.float32)
-                for idx, fc in fcurve_map.items():
-                    current_weights[idx] = fc.evaluate(t)
-                
-                # (V, 3)
-                interp = trans_basis + np.tensordot(current_weights, trans_delta, axes=([0], [0]))
+        if not use_relative and num_samples >= 64:
+            # Absolute path, large sample count: evaluate simple linear curves
+            # in NumPy, then do searchsorted + lerp + quantization in bulk.
+            # Complex curves retain Blender evaluation; allocations dominate
+            # small animations, which use the scalar interpolation path below.
+            vals = np.empty(num_samples, dtype=np.float32)
+            if linear_values is not None:
+                vals[:] = linear_values
+            elif eval_time_fc:
+                for i in range(num_samples):
+                    vals[i] = eval_time_fc.evaluate(times[i])
             else:
-                # Absolute interpolation
-                val = eval_time_fc.evaluate(t) if eval_time_fc else 0.0
-                
-                # Find two nearest frames
-                # Optimization: if val is outside range, clip it
-                if val <= abs_frame_values[0]:
-                    interp = trans_basis
-                elif val >= abs_frame_values[-1]:
-                    interp = trans_basis + trans_delta[-1]
-                else:
-                    # Find indices
-                    idx_right = np.searchsorted(abs_frame_values, val)
-                    idx_left = idx_right - 1
-                    
-                    f_left = abs_frame_values[idx_left]
-                    f_right = abs_frame_values[idx_right]
-                    
-                    factor = (val - f_left) / (f_right - f_left)
-                    
-                    # (V, 3)
-                    co_left = trans_basis if idx_left == 0 else trans_basis + trans_delta[idx_left - 1]
-                    co_right = trans_basis + trans_delta[idx_right - 1]
-                    
-                    interp = co_left + (co_right - co_left) * factor
-            
-            # Quantize
-            frames_data[i] = np.clip(
-                np.round(interp * 16.0), -32768, 32767
+                vals.fill(0.0)
+
+            # Clip to range, then find bracketing shape-key frames.
+            np.clip(vals, abs_frame_values[0], abs_frame_values[-1], out=vals)
+            idx_right = np.searchsorted(abs_frame_values, vals, side='right')
+            idx_left = idx_right - 1
+            # Guard against val == last frame -> idx_right == N -> clamp.
+            idx_right = np.minimum(idx_right, num_keys_total - 1)
+            idx_left = np.minimum(idx_left, num_keys_total - 1)
+
+            f_left = abs_frame_values[idx_left]
+            f_right = abs_frame_values[idx_right]
+            denom = f_right - f_left
+            denom[denom == 0] = 1.0  # avoid div-by-zero on equal frames
+            factor = ((vals - f_left) / denom)[:, None, None]
+
+            # co_at[k] = trans_basis if k == 0 else trans_basis + trans_delta[k-1]
+            co_left = np.where(
+                idx_left[:, None, None] == 0,
+                trans_basis[None, :, :],
+                trans_basis[None, :, :] + trans_delta[np.maximum(idx_left - 1, 0)],
+            )
+            co_right = trans_basis[None, :, :] + trans_delta[np.maximum(idx_right - 1, 0)]
+
+            interp_all = co_left + (co_right - co_left) * factor
+
+            frames_data = np.clip(
+                np.round(interp_all * 16.0), -32768, 32767
             ).astype(np.int16)
+        else:
+            for i in range(num_samples):
+                t = start + (i * frame_step)
+
+                if not use_relative:
+                    # Absolute interpolation (scalar, small sample counts)
+                    if linear_values is not None:
+                        val = linear_values[i]
+                    else:
+                        val = eval_time_fc.evaluate(t) if eval_time_fc else 0.0
+
+                    # Find two nearest frames
+                    # Optimization: if val is outside range, clip it
+                    if val <= abs_frame_values[0]:
+                        interp = trans_basis
+                    elif val >= abs_frame_values[-1]:
+                        interp = trans_basis + trans_delta[-1]
+                    else:
+                        # Find indices
+                        idx_right = np.searchsorted(abs_frame_values, val)
+                        idx_left = idx_right - 1
+
+                        f_left = abs_frame_values[idx_left]
+                        f_right = abs_frame_values[idx_right]
+
+                        factor = (val - f_left) / (f_right - f_left)
+
+                        # (V, 3)
+                        co_left = trans_basis if idx_left == 0 else trans_basis + trans_delta[idx_left - 1]
+                        co_right = trans_basis + trans_delta[idx_right - 1]
+
+                        interp = co_left + (co_right - co_left) * factor
+                else:
+                    # Simple weighted sum (relative mode)
+                    current_weights = np.zeros(num_keys_total - 1, dtype=np.float32)
+                    for idx, fc in fcurve_map.items():
+                        current_weights[idx] = fc.evaluate(t)
+
+                    # (V, 3)
+                    interp = trans_basis + np.tensordot(current_weights, trans_delta, axes=([0], [0]))
+
+                # Quantize
+                frames_data[i] = np.clip(
+                    np.round(interp * 16.0), -32768, 32767
+                ).astype(np.int16)
 
         elapsed = time.perf_counter() - start_sampling
         debug(f"[Timing] bake_range_fast '{name}' sampling took {elapsed:.6f} seconds")
@@ -373,11 +521,6 @@ def gather_car_animations(obj, export_matrix, vertex_count):
     full_matrix = export_matrix @ mesh_to_arm
 
     # Fast Path Preliminary Data Extraction
-    can_use_fast_path = (
-        obj.data.shape_keys is not None and 
-        all(mod.type not in {'ARMATURE', 'HOOK', 'CLOTH', 'SOFT_BODY'} for mod in obj.modifiers if mod.show_viewport)
-    )
-    
     trans_basis = None
     trans_delta = None
     key_blocks_names = {}
@@ -402,18 +545,29 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         linear_matrix = full_matrix[:3, :3]
         trans_delta = (flat_delta @ linear_matrix.T).reshape(num_keys - 1, vertex_count, 3)
         
-        debug(f"[Timing] shape_key_data_extraction (pre-bake) took {time.perf_counter() - start_sk_gather:.6f} seconds")
+        extraction_elapsed = time.perf_counter() - start_sk_gather
+        debug(f"[Timing] shape_key_data_extraction (pre-bake) took {extraction_elapsed:.6f} seconds")
+        benchmark = current_session()
+        if benchmark:
+            benchmark.record_duration(
+                "shape_key_data_extraction",
+                extraction_elapsed,
+                shape_keys=num_keys,
+                vertices=vertex_count,
+            )
 
     try:
         # --- PATH A: NLA TRACKS ---
         if anim_data.nla_tracks:
             debug("Mode: NLA Tracks (Soloing)")
-            anim_data.use_nla = True # Ensure NLA is ON
-            
-            # Mute ALL tracks first
+            if not can_use_fast_path:
+                anim_data.use_nla = True
+
+            # Evaluated baking solos tracks; direct action sampling needs no NLA mutation.
             state_start = time.perf_counter()
-            for track in anim_data.nla_tracks:
-                track.mute = True
+            if not can_use_fast_path:
+                for track in anim_data.nla_tracks:
+                    track.mute = True
             benchmark = current_session()
             if benchmark:
                 benchmark.record_duration(
@@ -427,9 +581,10 @@ def gather_car_animations(obj, export_matrix, vertex_count):
             # Usually we want to export the list of animations.
             for track in reversed(anim_data.nla_tracks):
                 
-                # Solo this track
+                # Solo this track only when Blender evaluates the dependency graph.
                 track_start = time.perf_counter()
-                track.mute = False
+                if not can_use_fast_path:
+                    track.mute = False
                 
                 for strip in track.strips:
                     action = strip.action
@@ -442,9 +597,9 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                     # or rename animations for export without changing the source Action.
                     clean_name = strip.name
                     
-                    # Range
-                    start = int(strip.frame_start)
-                    end = int(strip.frame_end)
+                    # Preserve fractional endpoints created by KPS timing.
+                    start = float(strip.frame_start)
+                    end = float(strip.frame_end)
                     
                     # KPS/Sound
                     kps = action.get("carnivores_kps", int(scene.render.fps))
@@ -464,8 +619,9 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                             'sound_ptr': snd_ptr
                         })
                 
-                # Re-mute after processing this track
-                track.mute = True
+                # Re-mute after evaluated processing; direct sampling left it untouched.
+                if not can_use_fast_path:
+                    track.mute = True
                 benchmark = current_session()
                 if benchmark:
                     benchmark.record_duration(
@@ -477,11 +633,12 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         # --- PATH B: ACTIVE ACTION (Fallback) ---
         elif anim_data.action:
             debug("Mode: Active Action (No NLA)")
-            anim_data.use_nla = False # Force Action
+            if not can_use_fast_path:
+                anim_data.use_nla = False
             
             action = anim_data.action
             clean_name = action.name.replace("_Action", "")
-            start, end = int(action.frame_range[0]), int(action.frame_range[1])
+            start, end = float(action.frame_range[0]), float(action.frame_range[1])
             kps = action.get("carnivores_kps", int(scene.render.fps))
             snd_ptr = resolve_action_sound(action)
             
@@ -504,15 +661,14 @@ def gather_car_animations(obj, export_matrix, vertex_count):
 
     except Exception as e:
         error(f"Critical Error during animation bake: {e}")
-        import traceback
-        traceback.print_exc()
 
     finally:
         # --- RESTORE STATE ---
         restore_start = time.perf_counter()
-        scene.frame_set(original_frame)
-        
-        if anim_data: 
+        if used_evaluated_bake:
+            scene.frame_set(original_frame)
+
+        if anim_data and not can_use_fast_path:
             try:
                 anim_data.action = original_action
             except AttributeError:

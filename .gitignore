@@ -4,3 +4,4 @@ tools/
 else/
 .vscode
 __pycache__
+tests/resources
