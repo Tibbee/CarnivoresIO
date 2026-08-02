@@ -411,7 +411,13 @@ def create_image_texture(texture, texture_height, object_name):
         height=texture_height
     )
     image.pixels.foreach_set(np.asarray(texture, dtype=np.float32).ravel())
+    # Bulk pixel writes do not fully invalidate Blender's display/GPU cache for
+    # generated images. Flush the buffer, pack it, then reload the packed image;
+    # this is the programmatic equivalent of the Alt+R required to clear a
+    # black texture in the Image Editor.
+    image.update()
     image.pack()
+    image.reload()
     
     return image
     

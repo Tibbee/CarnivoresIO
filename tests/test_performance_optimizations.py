@@ -25,6 +25,7 @@ from carnivores_io.utils.animation import (
     keyframe_shape_key_animation_as_action,
     push_shape_key_action_to_nla,
 )
+from carnivores_io.utils import io as io_utils
 
 
 class _Point:
@@ -40,6 +41,50 @@ class _FCurve:
 
 
 class PerformanceOptimizationTests(unittest.TestCase):
+    def test_image_pixels_are_refreshed_after_packing(self):
+        events = []
+
+        class Pixels:
+            def foreach_set(self, values):
+                events.append(("pixels", np.asarray(values).copy()))
+
+        class Image:
+            pixels = Pixels()
+
+            def update(self):
+                events.append(("update", None))
+
+            def pack(self):
+                events.append(("pack", None))
+
+            def reload(self):
+                events.append(("reload", None))
+
+        class Images:
+            @staticmethod
+            def new(**_kwargs):
+                return Image()
+
+        class Data:
+            images = Images()
+
+        class FakeBpy:
+            data = Data()
+
+        original_bpy = io_utils.bpy
+        io_utils.bpy = FakeBpy()
+        try:
+            texture = np.zeros((2, 256, 4), dtype=np.float32)
+            image = io_utils.create_image_texture(texture, 2, "Test")
+        finally:
+            io_utils.bpy = original_bpy
+
+        self.assertIsInstance(image, Image)
+        self.assertEqual(
+            [event[0] for event in events],
+            ["pixels", "update", "pack", "reload"],
+        )
+
     @staticmethod
     def wav_bytes(samples, *, channels=1, sample_width=2, sample_rate=22050):
         stream = io.BytesIO()
