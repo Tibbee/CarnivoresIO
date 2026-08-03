@@ -13,7 +13,8 @@ Consolidated technical documentation for the CarnivoresIO Blender add-on, coveri
 | [Improvements](IMPROVEMENTS.md) | Implementation roadmap for audio system correctness, lifecycle, and deferred workflow enhancements |
 | [UI Usability Roadmap](UI_USABILITY_ROADMAP.md) | Prioritized implementation and LLM handoff plan for model health, reports, dialogs, face flags, animation/audio, rigging, and onboarding UX |
 | [Rig Reconstruction Plan](RIG_RECONSTRUCTION_PLAN.md) | Staged implementation plan for owner correctness, topology-aware rigs, previews, reconciliation, and motion-assisted reconstruction |
-| [Rig Reconstruction Handoff](RIG_RECONSTRUCTION_HANDOFF.md) | Copyable fresh-session prompt, current uncommitted state, latest `dilo2b` findings, and immediate next actions |
+| [Rig Reconstruction Handoff](RIG_RECONSTRUCTION_HANDOFF.md) | Copyable fresh-session prompt, current committed state, latest `dilo2b` findings, and immediate next actions |
+| [Performance Handoff](PERFORMANCE_HANDOFF.md) | Copyable fresh-session prompt, measured baselines, committed fast paths, and open performance/audio items |
 | [Rig Test Checklist](RIG_TEST_CHECKLIST.md) | Manual smoke tests, component-policy checks, known experimental limitations, and reporting guidance |
 | [Performance Analysis](PERFORMANCE_ANALYSIS.md) | Top-down cost analysis of every function, operator, and subsystem by execution frequency |
 | [Audio Test Checklist](AUDIO_TEST_CHECKLIST.md) | Manual verification checklist for audio import/export and focused playback testing |

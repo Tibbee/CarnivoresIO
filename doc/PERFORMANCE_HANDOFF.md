@@ -15,7 +15,8 @@ and the relevant sections of doc/SYSTEMS.md completely before editing.
 
 Constraints:
 - Work locally only. Do not fetch, pull, push, or modify remote branches.
-- Current branch: performance-optimizations.
+- Current branch: main.
+- Current committed HEAD: 64c3c70 fix(texture): refresh packed images after import.
 - Preserve the performance report schema (versions stay 1).
 - Performance instrumentation is gated by the "Performance Instrumentation"
   preference toggle, independent of Debug Mode.
@@ -27,7 +28,7 @@ Constraints:
   is overwritten each run, so saving the same block repeatedly yields invalid
   duplicate reports.
 
-Pre-fast-path measured baselines (DiloTest.car, 518 verts, 992 faces,
+Measured baselines (DiloTest.car, 518 verts, 992 faces,
 19 animations, 13 sounds, 769 shape keys, Blender 5.2 LTS). These values
 must not be presented as post-change results until the working tree is
 rebenchmarked:
@@ -98,17 +99,17 @@ Optimization history (committed work plus the explicitly noted working-tree chan
     shape_key_fcurve_setup, shape_key_bake, nla_state_mute_all,
     nla_track_solo, nla_state_restore.
   - import_car_sounds / associate_sounds_with_animations are timed stages.
-  - Working tree: compatible packed/external PCM16 mono 22050 Hz WAV files
+  - Committed fast path: compatible packed/external PCM16 mono 22050 Hz WAV files
     bypass Audaspace and preserve their PCM bytes exactly. Other formats retain
     the existing conversion fallback. NEVER probe factory.specs; it forces a
     decode and roughly doubles the cost.
-  - Working tree: import_car_sounds writes the WAV header + int16 bytes directly,
+  - Committed: import_car_sounds writes the WAV header + int16 bytes directly,
     imports only referenced table entries when actions exist, and stores known
     duration metadata for decode-free panel drawing.
-  - Working tree: animation coordinates are transformed in batches, shape keys
+  - Committed: animation coordinates are transformed in batches, shape keys
     are grouped once for action creation, simple linear absolute F-Curves are
     sampled in NumPy, and the direct shape-key path avoids scene/NLA mutation.
-  - Working tree: fractional action/NLA endpoints are preserved. A focused
+  - Committed: fractional action/NLA endpoints are preserved. A focused
     Blender regression test confirms a 14-frame 34 KPS action exports 14 frames.
   - Absolute bake remains vectorized only for >=64 samples; smaller animations
     use scalar coordinate interpolation after vectorized F-Curve sampling.
@@ -121,9 +122,10 @@ remain required.
 Open questions / deferred items (pick up here):
   1. Test 44100 Hz stereo and other incompatible audio through the Audaspace
      fallback. A defer-pack option for import_car_sounds remains optional work.
-  2. The former 9,324-byte round-trip difference was exactly three 518-vertex
-     frames. Fractional endpoint truncation is fixed: DILOPH now exports all 769
-     frames and returns to the original 4,073,232-byte size.
+  2. RESOLVED: the former 9,324-byte round-trip difference was exactly three
+     518-vertex frames. Fractional endpoint truncation is fixed and committed;
+     DILOPH exports all 769 frames and returns to the original 4,073,232-byte
+     size. Covered by tests/test_performance_optimizations.py.
   3. Multi-file performance-report enhancement (file identifiers on stage
      records, per-file totals, aggregate metadata, explicit partial-failure
      status) - queued from an earlier session, not started.
@@ -154,7 +156,7 @@ Test protocol:
   fast path is conditional.
 - Verify packed sounds import correctly, play correctly, preserve compatible
   PCM bytes, and leave no temp files in %TEMP% (carnivores_io_sounds_*).
-- Run the Blender suite (currently 46 tests, including focused performance
+- Run the Blender suite (currently 50 tests, including focused performance
   fast-path coverage) before and after benchmark-driven changes.
 - Use cold Blender starts, Performance Instrumentation on, Debug off.
 ```

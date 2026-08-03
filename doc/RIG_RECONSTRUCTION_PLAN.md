@@ -746,7 +746,7 @@ Do not omit vertices with no groups from mismatch counts.
 
 ## 13. Phase 8 — Motion-Assisted Rig Inference
 
-This phase uses CAR shape-key frames as additional evidence. It should be optional and fall back to topology mode when animation evidence is insufficient.
+**Implementation status:** Not started. This phase uses CAR shape-key frames as additional evidence. It should be optional and fall back to topology mode when animation evidence is insufficient.
 
 ### 13.1 Animation extraction
 
@@ -823,7 +823,7 @@ Non-rigid synthetic groups must be identified as low confidence rather than prod
 
 ## 14. Phase 9 — Optional Skeletal Animation Conversion
 
-This is a separate feature from static rig reconstruction and should not block the topology rig release.
+**Implementation status:** Not started. This is a separate feature from static rig reconstruction and should not block the topology rig release.
 
 ### 14.1 Do not use centroid translation alone
 

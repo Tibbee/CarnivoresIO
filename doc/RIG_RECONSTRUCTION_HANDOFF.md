@@ -14,16 +14,17 @@ sections of doc/SYSTEMS.md completely before editing.
 
 Constraints:
 - Work locally only. Do not fetch, pull, push, or modify remote branches.
-- Current branch: feat/rig-reconstruction-improvements.
-- Current committed HEAD: a64d423 feat(rig): add pure geometry analyzer.
-- Phase 3 / Topology v2 and the latest Legacy regression fix are uncommitted.
+- Current branch: main.
+- Current committed HEAD: 64c3c70 fix(texture): refresh packed images after import.
+- Phases 0-3 (owner mapping, pure geometry analysis, anatomy-aware Topology v2-v4,
+  legacy cluster-filter regression fix) are committed and merged.
 - Keep Legacy as the default and preserve its successful behavior.
 - Do not touch or commit .commandcode/.
 - User screenshots in doc/*.png are untracked test evidence; do not commit them
   unless the user explicitly requests it.
 - Use D:/Portable/Git/.gitmessage when an atomic commit is eventually requested.
 
-Current implementation:
+Current implementation (all committed):
 - Signed/lossless CAR owner handling and non-destructive validation are committed.
 - Legacy centroid-cluster filtering caused valid distal legs/tail groups to be
   skipped on `dilo2b`. It is now diagnostic-only by default; the explicit
@@ -41,6 +42,11 @@ Current implementation:
   - accepted-edge reasons/confidence and anatomy classification in Debug Rig Info.
 - Algorithm v2 specifically prevents lateral limbs from bridging central torso
   regions. A pure regression test covers this.
+- Topology v3 orients laterally ambiguous midline leaf controls along signed
+  Blender Y body flow; v4 prefers the earliest raw owner among central candidates
+  with at least two real topology-boundary connections, avoiding tiny but
+  graph-central control groups as roots while retaining scored fallback selection
+  for endpoint-only structures.
 
 Latest real-asset result (`dilo2b`, Topology v2, Attach Nearest, root override -1):
 - 35 groups, no skipped groups, no owner divergence.
@@ -70,9 +76,10 @@ Immediate next work:
 2. Do not change automatic root inference merely because the root moves the whole
    mesh; that is expected. Change it only if pivot placement is demonstrably poor.
 3. If pose checks pass, test one asymmetric model and one additional symmetric
-   model before committing Phase 3.
+   model. Phase 3 is already committed; additional fixes from this testing should
+   become a follow-up commit.
 4. Re-run all Blender tests, registration, compileall, and git diff --check.
-5. Keep the eventual Phase 3 commit atomic and exclude .commandcode/ and test PNGs.
+5. Keep any follow-up commit atomic and exclude .commandcode/ and test PNGs.
 
 Important implementation notes:
 - Pure logic: utils/rig_reconstruction.py.
@@ -87,7 +94,8 @@ Important implementation notes:
   each manual run.
 
 Verification at handoff:
-- 32 automated tests pass under Blender 5.2, including Topology semantic naming and non-destructive generated smoothing.
+- 50 automated tests pass under Blender 5.2, including Topology semantic naming
+  and non-destructive generated smoothing.
 - Addon register/unregister smoke test passes.
 - compileall and git diff --check pass (only an LF→CRLF working-copy warning).
 - No remote operations have occurred.
@@ -98,9 +106,9 @@ Do not commit until real-asset testing is complete or the user explicitly asks.
 
 ## Local Git State at Handoff
 
-- Branch: `feat/rig-reconstruction-improvements`
-- HEAD: `a64d423 feat(rig): add pure geometry analyzer`
-- Phase 3 and Topology v2 remain in the working tree.
+- Branch: `main`
+- HEAD: `64c3c70 fix(texture): refresh packed images after import`
+- Phases 0-3 and Topology v2-v4 are committed and merged into `main`.
 - `.commandcode/` is untracked and must remain untouched.
 - User test PNGs are untracked and are not release documentation by default.
 - No remote operations were performed during this work.

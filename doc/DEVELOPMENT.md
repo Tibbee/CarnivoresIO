@@ -139,7 +139,7 @@ Combined from `dev_notes.md` and `future_changes.md`.
 
 Improve the `.car` rig reconstruction pipeline for faithfulness, stability, and determinism. Current algorithm documentation is in [Systems: Skeleton Reconstruction](SYSTEMS.md#skeleton-reconstruction-car-models); the complete staged redesign is in [Rig Reconstruction Implementation Plan](RIG_RECONSTRUCTION_PLAN.md).
 
-**Current baseline:**
+**Current baseline (Phases 0-4 implemented, committed):**
 - Preserve imported owner indices on the mesh for reconstruction use
 - Degeneracy pruning (empty groups → filtered out, not mesh_mean)
 - Diagnostic disconnected-cluster detection via BFS; destructive largest-cluster filtering is an explicit Legacy option and disabled by default
@@ -154,19 +154,20 @@ Improve the `.car` rig reconstruction pipeline for faithfulness, stability, and 
 - Pure mesh-analysis input, characteristic-scale normalization, group PCA/bounds, and topology-island diagnostics
 - Experimental anatomy-constrained topology graph with robust boundary joints, bilateral limb isolation, a proximity-completed central backbone, deterministic `RigProposal`, explicit tails/roll references, and disconnected-component policies
 
-**Planned redesign:**
+**Planned redesign (remaining phases):**
 - Add scored body/symmetry axes and refine topology root/hierarchy costs against real assets
 - Replace legacy cumulative smoothing with idempotent generated deform weights
 - Add scale-invariant hierarchy scoring, component policies, consistent roll, and safe rig lifecycle handling
 - Add proposal preview, manual confirmation, and true dry-run export reconciliation
 - Add optional animation-assisted rigid-transform and shared-pivot fitting, followed separately by experimental skeletal animation conversion
 
-Milestones, acceptance criteria, tests, risks, and file touch points are maintained in [Rig Reconstruction Implementation Plan](RIG_RECONSTRUCTION_PLAN.md). The current uncommitted implementation state and copyable fresh-session prompt are maintained in [Rig Reconstruction Session Handoff](RIG_RECONSTRUCTION_HANDOFF.md).
+Milestones, acceptance criteria, tests, risks, and file touch points are maintained in [Rig Reconstruction Implementation Plan](RIG_RECONSTRUCTION_PLAN.md). The current committed implementation state and copyable fresh-session prompt are maintained in [Rig Reconstruction Session Handoff](RIG_RECONSTRUCTION_HANDOFF.md).
 
 ### Phase3: Codebase Architecture
-#### 3.1 Refactor Operators into Modular Files
-- Split monolithic `operators.py` into `carnivores_ops/` directory:
-  - `import_ops.py`, `export_ops.py`, `animation_ops.py`, `ui_ops.py`
+#### 3.1 Refactor Operators into Modular Files — Implemented
+- `operators.py` is split into a `operators/` package:
+  - `io.py` (import/export), `animation.py` (animation + rig), `flags.py` (face flags/selection),
+    `reporting.py` (report actions), `validation.py` (model health), `preferences.py`
 - Improves maintainability, reduces merge conflicts
 
 ### Phase4: Additional Improvements
@@ -186,13 +187,16 @@ Milestones, acceptance criteria, tests, risks, and file touch points are maintai
 - Configurable validation thresholds via preferences
 - Auto-fix options (e.g., remove degenerate faces)
 
-#### 4.5 Performance Optimization
+#### 4.5 Performance Optimization — Partially Implemented
 - Batch `foreach_get`/`foreach_set` calls
 - Cache frequently accessed data (e.g., `3df_flags`)
+- See [Performance Handoff](PERFORMANCE_HANDOFF.md) for the committed CAR import/export fast paths
 
-#### 4.6 Testing Suite
-- Automated tests with sample `.3df`/`.car` files
-- Edge case coverage (empty meshes, invalid textures, cyclic bones)
+#### 4.6 Testing Suite — Partially Implemented
+- 50 automated tests across 9 files under `tests/`, covering owner mapping, rig geometry/hierarchy/adapter,
+  structural validation, CAR validation, performance fast paths, and audio playback selection
+- Edge case coverage for empty meshes, invalid textures, cyclic bones, and fractional animation ranges
+- No fixture `.3df`/`.car` files are committed; synthetic fixtures are generated in test code
 
 ---
 
