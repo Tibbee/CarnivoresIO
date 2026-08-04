@@ -52,6 +52,30 @@ class RigHierarchyTests(unittest.TestCase):
         self.assertEqual(tiny.root_groups, baseline.root_groups)
         self.assertEqual(huge.root_groups, baseline.root_groups)
 
+    def test_root_diagnostics_include_disallowed_candidates(self):
+        analysis = self._chain_analysis()
+        proposal = rig.build_topology_rig_proposal(analysis)
+        diagnostics = []
+        group_by_id = {group.compact_id: group for group in analysis.groups}
+        accepted = tuple(
+            edge for edge in proposal.edge_candidates
+            if tuple(sorted((edge.group_a, edge.group_b))) in proposal.accepted_edges
+        )
+        root = rig._select_component_root(
+            (0, 1, 2),
+            accepted,
+            group_by_id,
+            analysis.characteristic_scale,
+            -1,
+            allowed_roots={1},
+            diagnostics=diagnostics,
+        )
+        self.assertEqual(root, 1)
+        self.assertEqual(
+            {item["compact_id"] for item in diagnostics if item["reason"] == "NOT_ALLOWED"},
+            {0, 2},
+        )
+
     def test_source_order_prior_selects_earliest_supported_backbone_group(self):
         # Both groups 0 and 3 are three-way central junctions. Raw owner 1 is
         # the source-ordered torso/root, while raw owner 17 represents a later

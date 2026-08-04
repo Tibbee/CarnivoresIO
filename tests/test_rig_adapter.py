@@ -265,6 +265,200 @@ class RigAdapterTests(unittest.TestCase):
         after = {object_.name for object_ in bpy.data.objects}
         self.assertEqual(before, after)
 
+    def _make_phase6_topology_object(self, name):
+        mesh = bpy.data.meshes.new(f"{name}Mesh")
+        mesh.from_pydata(
+            [
+                (0.0, 0.0, 0.0), (0.8, 0.0, 0.0),
+                (1.0, 0.0, 0.0), (1.8, 0.0, 0.0),
+                (2.0, 0.0, 0.0), (2.8, 0.0, 0.0),
+            ],
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
+            [],
+        )
+        obj = bpy.data.objects.new(name, mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        mapping = build_owner_mapping([0, 0, 4, 4, 9, 9])
+        owner_attr = mesh.attributes.new(
+            name=animation.OWNER_ATTR_NAME, type='INT', domain='POINT'
+        )
+        owner_attr.data.foreach_set("value", mapping.compact_per_vertex)
+        source_attr = mesh.attributes.new(
+            name=animation.OWNER_SOURCE_ATTR_NAME, type='INT', domain='POINT'
+        )
+        source_attr.data.foreach_set("value", mapping.raw_per_vertex)
+        mesh[OWNER_MAPPING_PROPERTY] = owner_mapping_to_metadata(mapping)
+        obj["carnivores_reconstruct_algorithm"] = "TOPOLOGY"
+        obj["carnivores_reconstruct_semantic_naming"] = False
+        return obj, mesh
+
+    def test_phase6_analyze_is_non_mutating_and_preview_cleanup_is_scoped(self):
+        obj, mesh = self._make_phase6_topology_object("Phase6AnalyzeObject")
+        unrelated = bpy.data.objects.new("Phase6UserObject", None)
+        bpy.context.scene.collection.objects.link(unrelated)
+        original_groups = [group.name for group in obj.vertex_groups]
+        original_assignments = [
+            [(group.group, group.weight) for group in vertex.groups]
+            for vertex in mesh.vertices
+        ]
+        armature_names = {
+            item.name for item in bpy.data.objects if item.type == 'ARMATURE'
+        }
+        try:
+            proposal, checksum = animation.analyze_topology_proposal(obj)
+            animation.store_topology_proposal(obj, proposal, checksum)
+            self.assertLess(len(mesh.get("carnivores_rig_proposal", "")), 256)
+            self.assertTrue(
+                bpy.data.texts.get(mesh.get("carnivores_rig_proposal_text", ""))
+            )
+            preview = animation.create_topology_preview(obj, proposal)
+            self.assertTrue(preview.get("carnivores_rig_preview"))
+            self.assertEqual(
+                [group.name for group in obj.vertex_groups],
+                original_groups,
+            )
+            self.assertEqual(
+                [
+                    [(group.group, group.weight) for group in vertex.groups]
+                    for vertex in mesh.vertices
+                ],
+                original_assignments,
+            )
+            self.assertEqual(
+                {item.name for item in bpy.data.objects if item.type == 'ARMATURE'},
+                armature_names,
+            )
+            preview_objects = [
+                item for item in bpy.data.objects
+                if item.get("carnivores_rig_preview_source") == obj.name
+            ]
+            preview_curve_data = {
+                item.data.name for item in preview_objects
+                if item.type == 'CURVE' and item.data
+            }
+            self.assertTrue(preview_objects)
+            obj.name = "Phase6AnalyzeObjectRenamed"
+            animation.clear_topology_preview(obj)
+            animation.clear_topology_proposal(obj)
+            self.assertFalse(any(item.get("carnivores_rig_preview_source_id") == obj.get(animation.RECONSTRUCTION_SOURCE_ID_PROPERTY) for item in bpy.data.objects))
+            self.assertFalse(any(name in bpy.data.curves for name in preview_curve_data))
+            self.assertIn(unrelated.name, bpy.data.objects)
+        finally:
+            animation.clear_topology_preview(obj)
+            animation.clear_topology_proposal(obj)
+            bpy.data.objects.remove(obj, do_unlink=True)
+            bpy.data.objects.remove(unrelated, do_unlink=True)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_phase6_apply_rejects_changed_settings_through_direct_api(self):
+        obj, mesh = self._make_phase6_topology_object("Phase6SettingsObject")
+        try:
+            proposal, checksum = animation.analyze_topology_proposal(obj)
+            animation.store_topology_proposal(obj, proposal, checksum)
+            obj["carnivores_reconstruct_semantic_naming"] = not bool(
+                proposal.settings["semantic_naming"]
+            )
+            with self.assertRaisesRegex(ValueError, "settings changed"):
+                animation.apply_stored_topology_proposal(obj)
+            self.assertFalse(
+                any(item.type == 'ARMATURE' for item in bpy.data.objects if item.parent == obj)
+            )
+        finally:
+            animation.clear_topology_proposal(obj)
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_phase6_apply_rejects_modified_proposal_text(self):
+        obj, mesh = self._make_phase6_topology_object("Phase6PayloadHashObject")
+        try:
+            proposal, checksum = animation.analyze_topology_proposal(obj)
+            animation.store_topology_proposal(obj, proposal, checksum)
+            text = bpy.data.texts.get(mesh.get("carnivores_rig_proposal_text", ""))
+            self.assertIsNotNone(text)
+            original = text.as_string()
+            text.clear()
+            text.write(original + " ")
+            with self.assertRaisesRegex(ValueError, "payload was modified"):
+                animation.apply_stored_topology_proposal(obj)
+            self.assertEqual(
+                len(mesh.get(animation.TOPOLOGY_PROPOSAL_PAYLOAD_HASH_PROPERTY, "")),
+                64,
+            )
+        finally:
+            animation.clear_topology_proposal(obj)
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_phase6_apply_consumes_stored_proposal_and_validates_structure(self):
+        obj, mesh = self._make_phase6_topology_object("Phase6ApplyObject")
+        armature = None
+        armature_data = None
+        try:
+            proposal, checksum = animation.analyze_topology_proposal(obj)
+            animation.store_topology_proposal(obj, proposal, checksum)
+            armature = animation.apply_stored_topology_proposal(obj)
+            armature_data = armature.data
+            self.assertEqual(armature.get("carnivores_rig_algorithm"), "TOPOLOGY")
+            validation = animation.validate_stored_topology_proposal(obj)
+            self.assertTrue(validation["valid"], validation["errors"])
+            self.assertEqual(mesh.get("carnivores_rig_proposal_checksum"), checksum)
+        finally:
+            animation.clear_topology_proposal(obj)
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data is not None and armature_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(armature_data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_phase6_stale_proposal_is_rejected_before_apply(self):
+        obj, mesh = self._make_phase6_topology_object("Phase6StaleObject")
+        try:
+            proposal, checksum = animation.analyze_topology_proposal(obj)
+            animation.store_topology_proposal(obj, proposal, checksum)
+            mesh.vertices[0].co.x += 0.25
+            mesh.update()
+            with self.assertRaisesRegex(ValueError, "stale"):
+                animation.apply_stored_topology_proposal(obj)
+            self.assertFalse(any(item.type == 'ARMATURE' for item in bpy.data.objects if item.parent == obj))
+        finally:
+            animation.clear_topology_preview(obj)
+            animation.clear_topology_proposal(obj)
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_phase6_apply_operator_rejects_stale_mesh_without_reanalysis(self):
+        obj, mesh = self._make_phase6_topology_object("Phase6OperatorStaleObject")
+        armature = None
+        try:
+            bpy.ops.object.select_all(action='DESELECT')
+            obj.select_set(True)
+            bpy.context.view_layer.objects.active = obj
+            result = bpy.ops.carnivores.analyze_rig_proposal()
+            self.assertEqual(result, {'FINISHED'})
+            mesh.vertices[0].co.x += 0.5
+            mesh.update()
+            with self.assertRaisesRegex(RuntimeError, "stale"):
+                bpy.ops.carnivores.apply_rig_proposal()
+            armature = next(
+                (
+                    modifier.object for modifier in obj.modifiers
+                    if modifier.type == 'ARMATURE' and modifier.object
+                ),
+                None,
+            )
+            self.assertIsNone(armature)
+        finally:
+            animation.clear_topology_preview(obj)
+            animation.clear_topology_proposal(obj)
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
     def test_parented_nonuniform_mesh_preserves_world_matrix(self):
         mesh = bpy.data.meshes.new("ParentTransformMesh")
         mesh.from_pydata(

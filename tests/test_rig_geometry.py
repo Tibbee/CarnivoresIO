@@ -149,6 +149,103 @@ class RigGeometryTests(unittest.TestCase):
         right_x = proposal.roll_reference_by_group[2][0]
         self.assertLess(left_x * right_x, 0.0)
 
+    def test_proposal_metadata_round_trip_preserves_structure(self):
+        analysis = self._scaled_analysis(1.0)
+        proposal = rig.build_topology_rig_proposal(analysis)
+
+        metadata = rig.rig_proposal_to_metadata(proposal)
+        restored = rig.deserialize_rig_proposal(metadata)
+
+        self.assertEqual(restored.root_groups, proposal.root_groups)
+        self.assertEqual(restored.accepted_edges, proposal.accepted_edges)
+        self.assertEqual(restored.settings, proposal.settings)
+        np.testing.assert_array_equal(restored.parent_by_group, proposal.parent_by_group)
+        np.testing.assert_allclose(restored.head_by_group, proposal.head_by_group)
+        np.testing.assert_allclose(restored.tail_by_group, proposal.tail_by_group)
+        self.assertEqual(
+            rig.rig_proposal_to_metadata(restored),
+            metadata,
+        )
+
+    def test_proposal_metadata_allows_empty_compact_owner_slots(self):
+        mesh = rig.build_mesh_analysis_input(
+            [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]],
+            [0, 0, 2, 2],
+            [10, 11, 12],
+            edges=[[0, 1], [1, 2], [2, 3]],
+        )
+        proposal = rig.build_topology_rig_proposal(rig.analyze_rig_geometry(mesh))
+        restored = rig.deserialize_rig_proposal(
+            rig.rig_proposal_to_metadata(proposal, compact=True)
+        )
+        self.assertEqual([group.compact_id for group in restored.groups], [0, 2])
+        self.assertEqual(restored.parent_by_group.shape, (3,))
+        self.assertTrue(all(len(group.vertex_indices) == 0 for group in restored.groups))
+
+    def test_mesh_analysis_checksum_changes_with_source_geometry(self):
+        baseline = rig.build_mesh_analysis_input(
+            [[0, 0, 0], [1, 0, 0]], [0, 0], [42], edges=[[0, 1]]
+        )
+        changed = rig.build_mesh_analysis_input(
+            [[0, 0, 0], [1.1, 0, 0]], [0, 0], [42], edges=[[0, 1]]
+        )
+
+        self.assertEqual(rig.mesh_analysis_checksum(baseline), rig.mesh_analysis_checksum(baseline))
+        self.assertNotEqual(
+            rig.mesh_analysis_checksum(baseline),
+            rig.mesh_analysis_checksum(changed),
+        )
+
+    def test_side_axis_can_drive_mirror_classification(self):
+        mesh = rig.build_mesh_analysis_input(
+            [
+                [0.0, 0.0, 0.0], [0.1, 0.0, 0.0],
+                [0.0, -1.0, 0.0], [0.0, -1.1, 0.0],
+                [0.0, 1.0, 0.0], [0.0, 1.1, 0.0],
+            ],
+            [0, 0, 1, 1, 2, 2],
+            [0, 10, 20],
+            edges=[[0, 1], [1, 2], [1, 3], [1, 4], [1, 5]],
+        )
+        proposal = rig.build_topology_rig_proposal(
+            rig.analyze_rig_geometry(mesh), side_axis="Y"
+        )
+
+        self.assertEqual(proposal.settings["side_axis"], "Y")
+        self.assertEqual(proposal.settings["side_inverted"], False)
+        self.assertEqual(proposal.settings["mirror_pair_count"], 1)
+        self.assertEqual(proposal.settings["mirror_pairs"], [[10, 20]])
+
+    def test_edge_overrides_honor_force_and_reject_decisions(self):
+        mesh = rig.build_mesh_analysis_input(
+            [
+                [0.0, 0.0, 0.0], [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0], [1.0, 1.0, 0.0],
+                [2.0, 0.0, 0.0], [2.0, 1.0, 0.0],
+            ],
+            [0, 0, 1, 1, 2, 2],
+            [0, 1, 2],
+            edges=[[0, 1], [2, 3], [4, 5], [1, 2], [3, 4], [0, 2], [0, 4]],
+        )
+        analysis = rig.analyze_rig_geometry(mesh)
+        proposal = rig.build_topology_rig_proposal(
+            analysis,
+            forced_edges=[(0, 2)],
+            rejected_edges=[(0, 1)],
+        )
+
+        self.assertIn((0, 2), proposal.accepted_edges)
+        self.assertNotIn((0, 1), proposal.accepted_edges)
+        self.assertEqual(proposal.settings["forced_edges"], [[0, 2]])
+        self.assertEqual(proposal.settings["rejected_edges"], [[0, 1]])
+
+    def test_impossible_forced_edge_is_reported(self):
+        proposal = rig.build_topology_rig_proposal(
+            self._scaled_analysis(1.0), forced_edges=[(0, 99)]
+        )
+
+        self.assertTrue(any("not a proposal candidate" in warning for warning in proposal.warnings))
+
 
 if __name__ == "__main__":
     unittest.main()

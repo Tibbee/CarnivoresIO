@@ -6,6 +6,7 @@ import aud
 import math
 import os
 import time
+import numpy as np
 from ..utils import animation as anim_utils
 from ..utils import io as io_utils
 from ..utils import common
@@ -22,6 +23,34 @@ def _poll_message(cls, message):
     except (AttributeError, TypeError, RuntimeError):
         pass
     return False
+
+
+class CARNIVORES_PG_rig_proposal_edge(bpy.types.PropertyGroup):
+    compact_a: bpy.props.IntProperty()
+    compact_b: bpy.props.IntProperty()
+    raw_a: bpy.props.IntProperty()
+    raw_b: bpy.props.IntProperty()
+    reason: bpy.props.StringProperty()
+    confidence: bpy.props.FloatProperty()
+    cost: bpy.props.FloatProperty()
+    accepted: bpy.props.BoolProperty()
+    action: bpy.props.EnumProperty(
+        items=[
+            ('AUTO', "Auto", "Use the deterministic proposal decision."),
+            ('FORCE', "Force", "Force this candidate into the proposal forest."),
+            ('REJECT', "Reject", "Reject this candidate from the proposal forest."),
+        ],
+        default='AUTO',
+    )
+
+
+class CARNIVORES_UL_rig_proposal_edges(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        row = layout.row(align=True)
+        row.prop(item, "action", text="")
+        row.label(text=f"c{item.compact_a}/r{item.raw_a} <-> c{item.compact_b}/r{item.raw_b}")
+        row.label(text=f"{item.confidence:.2f}")
+        row.label(text=item.reason or "candidate")
 
 
 # ---------------------------------------------------------------------------
@@ -1326,6 +1355,215 @@ class CARNIVORES_OT_resync_animation(bpy.types.Operator):
                             updated = True
         return updated
 
+def _proposal_edge_decisions(obj):
+    forced = []
+    rejected = []
+    for item in getattr(obj, "carnivores_rig_proposal_edges", ()):
+        pair = (int(item.compact_a), int(item.compact_b))
+        if item.action == 'FORCE':
+            forced.append(pair)
+        elif item.action == 'REJECT':
+            rejected.append(pair)
+    return tuple(sorted(forced)), tuple(sorted(rejected))
+
+
+def _populate_proposal_edges(obj, proposal):
+    items = obj.carnivores_rig_proposal_edges
+    items.clear()
+    raw_by_compact = {
+        int(group.compact_id): int(group.raw_owner_id) for group in proposal.groups
+    }
+    forced = {
+        tuple(edge) for edge in proposal.settings.get("forced_edges", [])
+    }
+    rejected = {
+        tuple(edge) for edge in proposal.settings.get("rejected_edges", [])
+    }
+    for edge in proposal.edge_candidates:
+        item = items.add()
+        item.compact_a = int(edge.group_a)
+        item.compact_b = int(edge.group_b)
+        item.raw_a = raw_by_compact.get(int(edge.group_a), -1)
+        item.raw_b = raw_by_compact.get(int(edge.group_b), -1)
+        item.reason = "+".join(edge.reason_codes)
+        item.confidence = float(edge.confidence)
+        item.cost = float(edge.total_cost)
+        item.accepted = tuple(sorted((edge.group_a, edge.group_b))) in {
+            tuple(sorted(pair)) for pair in proposal.accepted_edges
+        }
+        pair = tuple(sorted((edge.group_a, edge.group_b)))
+        item.action = 'FORCE' if pair in forced else ('REJECT' if pair in rejected else 'AUTO')
+
+
+class CARNIVORES_OT_analyze_rig_proposal(bpy.types.Operator):
+    bl_idname = "carnivores.analyze_rig_proposal"
+    bl_label = "Analyze Rig Proposal"
+    bl_description = "Analyze topology reconstruction without creating or changing an armature"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = getattr(context, "active_object", None)
+        if not obj or obj.type != 'MESH':
+            return _poll_message(cls, "Select a mesh with imported owner data or vertex groups.")
+        if anim_utils._get_reconstruction_setting(
+            obj, "carnivores_reconstruct_algorithm", "LEGACY"
+        ) != 'TOPOLOGY':
+            return _poll_message(cls, "Set Reconstruction Algorithm to Topology first.")
+        return bool(obj.vertex_groups) or bool(obj.data.attributes.get('carnivores_owner_index'))
+
+    def execute(self, context):
+        obj = context.active_object
+        forced, rejected = _proposal_edge_decisions(obj)
+        try:
+            proposal, checksum = anim_utils.analyze_topology_proposal(
+                obj,
+                root_override_idx=int(anim_utils._get_reconstruction_setting(
+                    obj, "carnivores_reconstruct_root_override", -1
+                )),
+                forced_edges=forced,
+                rejected_edges=rejected,
+            )
+            anim_utils.store_topology_proposal(obj, proposal, checksum)
+            _populate_proposal_edges(obj, proposal)
+            anim_utils.create_topology_preview(obj, proposal)
+            obj.data["carnivores_rig_proposal_status"] = "ANALYZED"
+            self.report(
+                {'WARNING'} if proposal.warnings else {'INFO'},
+                f"Proposal analyzed: {len(proposal.groups) - len(proposal.skipped_groups)} active groups, "
+                f"{len(proposal.accepted_edges)} accepted edges, checksum {checksum[:12]}.",
+            )
+            return {'FINISHED'}
+        except Exception as exc:
+            self.report({'ERROR'}, f"Proposal analysis failed: {exc}")
+            error(f"Rig proposal analysis failed for '{obj.name}': {exc}")
+            return {'CANCELLED'}
+
+
+class CARNIVORES_OT_apply_rig_proposal(bpy.types.Operator):
+    bl_idname = "carnivores.apply_rig_proposal"
+    bl_label = "Apply Rig Proposal"
+    bl_description = "Apply the currently analyzed topology proposal after validating its source mesh"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = getattr(context, "active_object", None)
+        return bool(
+            obj and obj.type == 'MESH'
+            and obj.data.get("carnivores_rig_proposal")
+        )
+
+    def execute(self, context):
+        obj = context.active_object
+        try:
+            if anim_utils._get_reconstruction_setting(
+                obj, "carnivores_reconstruct_algorithm", "LEGACY"
+            ) != 'TOPOLOGY':
+                raise ValueError("Set Reconstruction Algorithm to Topology before Apply.")
+            # Apply must consume the proposal that Analyze stored. Re-running
+            # analysis here would silently accept mesh edits and defeat the
+            # stale-proposal guard.
+            proposal, _checksum = anim_utils.load_topology_proposal(obj)
+            if not anim_utils.topology_proposal_settings_match(obj, proposal):
+                raise ValueError(
+                    "Proposal settings changed after Analyze; analyze the mesh again."
+                )
+            forced, rejected = _proposal_edge_decisions(obj)
+            stored_forced = {
+                tuple(edge) for edge in proposal.settings.get("forced_edges", [])
+            }
+            stored_rejected = {
+                tuple(edge) for edge in proposal.settings.get("rejected_edges", [])
+            }
+            if set(forced) != stored_forced or set(rejected) != stored_rejected:
+                raise ValueError(
+                    "Edge decisions changed after Analyze; analyze the proposal again."
+                )
+            armature = anim_utils.apply_topology_proposal(obj, proposal)
+            if armature is None:
+                self.report({'ERROR'}, "Proposal application produced no armature.")
+                return {'CANCELLED'}
+            anim_utils.clear_topology_preview(obj)
+            obj.data["carnivores_rig_proposal_status"] = "APPLIED"
+            self.report({'INFO'}, "Rig proposal applied and preview cleared.")
+            return {'FINISHED'}
+        except Exception as exc:
+            self.report({'ERROR'}, f"Proposal application failed: {exc}")
+            error(f"Rig proposal application failed for '{obj.name}': {exc}")
+            return {'CANCELLED'}
+
+
+class CARNIVORES_OT_clear_rig_preview(bpy.types.Operator):
+    bl_idname = "carnivores.clear_rig_preview"
+    bl_label = "Clear Rig Preview"
+    bl_description = "Remove the generated rig proposal preview and stored proposal metadata"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = getattr(context, "active_object", None)
+        return bool(obj and obj.type == 'MESH')
+
+    def execute(self, context):
+        obj = context.active_object
+        anim_utils.clear_topology_preview(obj)
+        anim_utils.clear_topology_proposal(obj)
+        obj.carnivores_rig_proposal_edges.clear()
+        self.report({'INFO'}, "Rig proposal preview and stored proposal cleared.")
+        return {'FINISHED'}
+
+
+class CARNIVORES_OT_validate_rig_round_trip(bpy.types.Operator):
+    bl_idname = "carnivores.validate_rig_round_trip"
+    bl_label = "Validate Rig Round Trip"
+    bl_description = "Validate the analyzed proposal, generated armature structure, and owner reconciliation"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = getattr(context, "active_object", None)
+        return bool(obj and obj.type == 'MESH')
+
+    def execute(self, context):
+        obj = context.active_object
+        try:
+            result = anim_utils.validate_stored_topology_proposal(obj)
+        except Exception as exc:
+            self.report({'ERROR'}, f"Proposal validation failed: {exc}")
+            return {'CANCELLED'}
+        status = "VALID" if result['valid'] else "FAILED"
+        if result['valid'] and not result.get('applied'):
+            status = "VALID PROPOSAL / NOT APPLIED"
+        lines = [
+            f"RIG PROPOSAL VALIDATION: {obj.name}",
+            "=" * 40,
+            f"Status: {status}",
+            f"Applied: {'YES' if result.get('applied') else 'NO'}",
+            f"Checksum: {result['checksum']}",
+        ]
+        if result["errors"]:
+            lines.append("Errors:")
+            lines.extend(f"- {message}" for message in result["errors"])
+        if result["warnings"]:
+            lines.append("Warnings:")
+            lines.extend(f"- {message}" for message in result["warnings"])
+        reconciliation = result.get("reconciliation", {})
+        if reconciliation:
+            lines.append("Reconciliation:")
+            for key, value in reconciliation.items():
+                lines.append(f"- {key}: {value}")
+        text_name = "Carnivores_Rig_Proposal_Report"
+        text = bpy.data.texts.get(text_name) or bpy.data.texts.new(text_name)
+        text.clear()
+        text.write("\n".join(lines) + "\n")
+        self.report(
+            {'INFO' if result['valid'] else 'WARNING'},
+            f"Rig proposal validation {'passed' if result['valid'] else 'found issues'}; report written to {text_name}.",
+        )
+        return {'FINISHED'}
+
+
 class CARNIVORES_OT_reconstruct_armature(bpy.types.Operator):
     """Reconstruct a skeletal rig from vertex groups (bone owners). Useful for .car models."""
     bl_idname = "carnivores.reconstruct_armature"
@@ -1442,6 +1680,82 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
             f"factor={getattr(obj, 'carnivores_reconstruct_smooth_factor', 0.5):.3f} "
             f"joints_only={getattr(obj, 'carnivores_reconstruct_smooth_joints_only', True)}"
         )
+        source_id = obj.get(anim_utils.RECONSTRUCTION_SOURCE_ID_PROPERTY, "")
+        lines.append(f"Reconstruction Source ID: {source_id or 'none'}")
+        owner_attr = obj.data.attributes.get("carnivores_owner_index")
+        if owner_attr and owner_attr.domain == 'POINT' and len(owner_attr.data) == len(obj.data.vertices):
+            owner_values = np.empty(len(obj.data.vertices), dtype=np.int32)
+            owner_attr.data.foreach_get("value", owner_values)
+            lines.append(
+                f"Owner schema: compact POINT/INT | unowned vertices: {int(np.count_nonzero(owner_values < 0))}"
+            )
+        mapping = obj.data.get("carnivores_owner_mapping", "")
+        if mapping:
+            try:
+                mapping_payload = json.loads(mapping)
+                raw_by_compact = mapping_payload.get("raw_by_compact", [])
+                lines.append(
+                    f"Raw-to-compact mapping ({len(raw_by_compact)}): "
+                    + ", ".join(f"{raw}->{compact}" for compact, raw in enumerate(raw_by_compact))
+                )
+            except (TypeError, ValueError, AttributeError):
+                lines.append("Raw-to-compact mapping: (could not decode)")
+
+        stored_proposal = None
+        if obj.data.get("carnivores_rig_proposal"):
+            try:
+                stored_proposal, proposal_checksum = anim_utils.load_topology_proposal(obj)
+                lines.append(
+                    f"Proposal: stored | checksum={proposal_checksum} | "
+                    f"payload_hash={obj.data.get(anim_utils.TOPOLOGY_PROPOSAL_PAYLOAD_HASH_PROPERTY, 'none')} | "
+                    f"algorithm_version={stored_proposal.algorithm_version}"
+                )
+                lines.append(f"Proposal settings: {json.dumps(stored_proposal.settings, sort_keys=True)}")
+                for warning in stored_proposal.warnings:
+                    lines.append(f"Proposal warning: {warning}")
+                for component in stored_proposal.settings.get("component_sizes", []):
+                    lines.append(
+                        f"  Component groups={component.get('group_count', 0)} "
+                        f"vertices={component.get('vertex_count', 0)} "
+                        f"raw={component.get('raw_owner_ids', [])}"
+                    )
+                for root_component in stored_proposal.settings.get("root_candidates", []):
+                    lines.append(
+                        f"Root candidates {root_component.get('compact_ids', [])}: "
+                        + json.dumps(root_component.get('candidates', []), sort_keys=True)
+                    )
+                lines.append("Proposal edge decisions:")
+                accepted_pairs = {
+                    tuple(sorted(item)) for item in stored_proposal.accepted_edges
+                }
+                forced_pairs = {
+                    tuple(item) for item in stored_proposal.settings.get("forced_edges", [])
+                }
+                rejected_pairs = {
+                    tuple(item) for item in stored_proposal.settings.get("rejected_edges", [])
+                }
+                for edge in stored_proposal.edge_candidates:
+                    pair = tuple(sorted((edge.group_a, edge.group_b)))
+                    decision = "ACCEPTED" if pair in accepted_pairs else "REJECTED"
+                    if pair in forced_pairs:
+                        decision = "FORCED" if pair in accepted_pairs else "FORCED_IGNORED"
+                    elif pair in rejected_pairs:
+                        decision = "EXPLICIT_REJECT"
+                    elif edge.confidence >= 0.35 and pair not in accepted_pairs:
+                        decision = "HIGH_VALUE_REJECTED"
+                    elif edge.confidence < 0.35 and pair not in accepted_pairs:
+                        decision = "LOW_CONFIDENCE_REJECTED"
+                    lines.append(
+                        f"  compact={pair} | raw=({stored_proposal.groups[pair[0]].raw_owner_id},"
+                        f" {stored_proposal.groups[pair[1]].raw_owner_id}) | "
+                        f"decision={decision} | source={'+'.join(edge.reason_codes)} | "
+                        f"joint=({', '.join(f'{float(value):.4f}' for value in edge.boundary_joint)}) | "
+                        f"confidence={edge.confidence:.3f} | terms={edge.cost_terms}"
+                    )
+            except Exception as exc:
+                lines.append(f"Proposal: invalid or stale ({exc})")
+        else:
+            lines.append("Proposal: none")
 
         # Armature Info
         arm = None
@@ -1457,6 +1771,15 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
         if arm:
             lines.append(f"\nARMATURE: {arm.name}")
             lines.append("-" * 20)
+            lines.append(
+                "World transform: " + "; ".join(
+                    "(" + ", ".join(f"{float(value):.5f}" for value in row) + ")"
+                    for row in arm.matrix_world
+                )
+            )
+            lines.append(
+                f"Generated source ID: {arm.get(anim_utils.RECONSTRUCTION_SOURCE_ID_PROPERTY, 'none')}"
+            )
             for bone in arm.data.bones:
                 p_name = bone.parent.name if bone.parent else "NONE"
                 h = bone.head_local
@@ -1482,6 +1805,9 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
             algorithm = arm.get("carnivores_rig_algorithm", "LEGACY")
             confidence = arm.get("carnivores_reconstruct_confidence", None)
             edge_details = arm.get("carnivores_reconstruct_edge_details", "")
+            component_sizes = arm.get("carnivores_reconstruct_component_sizes", "")
+            proposal_settings = arm.get("carnivores_reconstruct_proposal_settings", "")
+            mirror_pair_details = arm.get("carnivores_reconstruct_mirror_pair_details", "[]")
             algorithm_version = arm.get("carnivores_rig_algorithm_version", None)
             lines.append(
                 f"Algorithm: {algorithm}"
@@ -1496,10 +1822,34 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
                 lines.append(
                     f"Mirror Pairs: {arm.get('carnivores_reconstruct_mirror_pairs', '[]')}"
                 )
+                if mirror_pair_details:
+                    lines.append(f"Mirror Pair Scores: {mirror_pair_details}")
             if confidence is not None:
                 lines.append(f"Mean Edge Confidence: {float(confidence):.3f}")
             lines.append(f"Selected Root: {root_name} (orig idx: {root_idx})")
             lines.append(f"Clusters Detected: {cluster_count}")
+            lines.append(
+                f"Side Axis: {arm.get('carnivores_reconstruct_side_axis', 'X')} "
+                f"(inverted={bool(arm.get('carnivores_reconstruct_side_inverted', False))})"
+            )
+            if arm.get("carnivores_reconstruct_proposal_checksum"):
+                lines.append(
+                    f"Proposal Checksum: {arm.get('carnivores_reconstruct_proposal_checksum')}"
+                )
+            if proposal_settings:
+                lines.append(f"Applied Proposal Settings: {proposal_settings}")
+            if component_sizes:
+                try:
+                    decoded_components = json.loads(component_sizes)
+                    lines.append(f"Components ({len(decoded_components)}):")
+                    for component in decoded_components:
+                        lines.append(
+                            f"  groups={component.get('group_count', 0)} | "
+                            f"vertices={component.get('vertex_count', 0)} | "
+                            f"raw={component.get('raw_owner_ids', [])}"
+                        )
+                except (TypeError, ValueError, AttributeError):
+                    lines.append("Components: (could not decode)")
             if skipped_str:
                 lines.append(f"Skipped Groups (raw IDs): {skipped_str}")
                 if arm.get("carnivores_reconstruct_skipped_cleanup"):
@@ -1541,8 +1891,11 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
                         reason = "+".join(edge.get("reason", []))
                         lines.append(
                             f"  [{owners[0]}] -- [{owners[1]}] | {reason} | "
+                            f"joint={edge.get('joint_source', reason)} | "
+                            f"decision={edge.get('decision', 'AUTO')} | "
                             f"boundary={edge.get('boundary_edges', 0)} | "
-                            f"confidence={float(edge.get('confidence', 0.0)):.3f}"
+                            f"confidence={float(edge.get('confidence', 0.0)):.3f} | "
+                            f"terms={edge.get('cost_terms', {})}"
                         )
                 except (TypeError, ValueError):
                     lines.append("Accepted Edges: (could not decode)")
@@ -1571,7 +1924,6 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
         owner_attr = obj.data.attributes.get("carnivores_owner_index")
         if owner_attr and obj.vertex_groups:
             lines.append("\nDIVERGENCE CHECK:")
-            import numpy as np
             n = len(obj.data.vertices)
             owner_vals = np.empty(n, dtype=np.int32)
             owner_attr.data.foreach_get("value", owner_vals)
@@ -1587,21 +1939,36 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
                 pct = (mismatch_count / max(n, 1)) * 100.0
                 if arm and bool(arm.get("carnivores_reconstruct_smoothing", False)):
                     lines.append(
-                        f"ℹ️  Generated smoothed deform weights change the dominant group on "
+                        f"INFO: Generated smoothed deform weights change the dominant group on "
                         f"{mismatch_count} vertices ({pct:.1f}%)."
                     )
                     lines.append("   Canonical imported owner attributes remain unchanged.")
                 else:
-                    lines.append(f"⚠️  {mismatch_count} vertices ({pct:.1f}%) diverge from imported owners!")
+                    lines.append(f"WARNING: {mismatch_count} vertices ({pct:.1f}%) diverge from imported owners!")
                     lines.append("   Tip: Use 'Reset to Imported Owners' to restore them.")
             else:
                 if arm and bool(arm.get("carnivores_reconstruct_smoothing", False)):
-                    lines.append("✅ Smoothed deform weights retain imported owners as dominant groups.")
+                    lines.append("OK: Smoothed deform weights retain imported owners as dominant groups.")
                     lines.append("   Canonical imported owner attributes remain unchanged.")
                 else:
-                    lines.append("✅ Vertex groups match imported owner cache.")
+                    lines.append("OK: Vertex groups match imported owner cache.")
         else:
             lines.append("\nDIVERGENCE CHECK: No owner cache or no VGs")
+
+        if stored_proposal:
+            try:
+                validation = anim_utils.validate_stored_topology_proposal(obj)
+                lines.append(
+                    f"\nPROPOSAL RECONCILIATION: {'VALID' if validation['valid'] else 'FAILED'}"
+                )
+                for key, value in validation.get("reconciliation", {}).items():
+                    lines.append(f"  {key}: {value}")
+                for message in validation.get("errors", []):
+                    lines.append(f"  ERROR: {message}")
+                for message in validation.get("warnings", []):
+                    lines.append(f"  WARNING: {message}")
+            except Exception as exc:
+                lines.append(f"\nPROPOSAL RECONCILIATION: unavailable ({exc})")
 
         # Write to Text Editor
         txt_name = "Carnivores_Rig_Debug"
@@ -1847,9 +2214,32 @@ class VIEW3D_PT_carnivores_rig(bpy.types.Panel):
         reconstruction.prop(obj, 'carnivores_reconstruct_algorithm', text='Algorithm')
         if obj.carnivores_reconstruct_algorithm == 'TOPOLOGY':
             experimental = reconstruction.box()
-            experimental.label(text="Experimental topology mode", icon='ERROR')
-            experimental.label(text="Uses canonical owner boundaries for structure; generated weights do not redefine owners.")
+            experimental.label(text="Topology proposal workflow", icon='INFO')
+            experimental.label(text="Analyze is non-destructive; Apply uses the stored proposal.")
             experimental.prop(obj, 'carnivores_reconstruct_component_policy', text='Components')
+            experimental.prop(obj, 'carnivores_reconstruct_side_axis', text='Side Axis')
+            experimental.prop(obj, 'carnivores_reconstruct_side_inverted', text='Invert Side')
+            proposal_status = obj.data.get('carnivores_rig_proposal_status', 'NONE')
+            checksum = obj.data.get('carnivores_rig_proposal_checksum', '')
+            experimental.label(text=f"Proposal: {proposal_status}")
+            if checksum:
+                experimental.label(text=f"Checksum: {checksum[:12]}")
+            if obj.carnivores_rig_proposal_edges:
+                experimental.template_list(
+                    'CARNIVORES_UL_rig_proposal_edges',
+                    '',
+                    obj,
+                    'carnivores_rig_proposal_edges',
+                    obj,
+                    'carnivores_rig_proposal_edge_index',
+                    rows=min(8, len(obj.carnivores_rig_proposal_edges)),
+                )
+            proposal_actions = experimental.row(align=True)
+            proposal_actions.operator('carnivores.analyze_rig_proposal', text='Analyze', icon='VIEWZOOM')
+            proposal_actions.operator('carnivores.apply_rig_proposal', text='Apply', icon='CHECKMARK')
+            proposal_actions.operator('carnivores.clear_rig_preview', text='Clear', icon='X')
+            proposal_actions = experimental.row(align=True)
+            proposal_actions.operator('carnivores.validate_rig_round_trip', text='Validate', icon='CHECKMARK')
         else:
             reconstruction.prop(obj, 'carnivores_reconstruct_legacy_filter_clusters', text='Filter Detached Clusters')
         reconstruction.prop(obj, 'carnivores_reconstruct_rig_policy', text='Existing Rig')

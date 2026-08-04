@@ -9,19 +9,20 @@ Use duplicate `.blend` files or disposable imports while the **Topology** algori
 3. Confirm **Reset to Imported Owners** restores `CarBone_<raw owner>` groups.
 4. Save the file before applying either reconstruction algorithm.
 
-## Topology Smoke Test
+## Topology Proposal Workflow
 
-1. Set **Reconstruction Algorithm** to **Topology (Experimental)**. For Legacy comparisons, leave **Filter Detached Centroid Clusters** disabled unless testing that compatibility option explicitly.
-2. Set **Disconnected Components** to **Multiple Roots**.
-3. Choose **Automatic** in the searchable Root selector.
-4. Run **Reconstruct Rig**.
-5. Confirm:
-   - an armature is created without errors;
-   - owner `0`, when present, has a `CarBone_0` bone;
-   - limb child heads are near visible owner-region boundaries;
-   - detached geometry remains represented as an additional root;
-   - no left limb is directly parented to its right-side counterpart when a torso boundary path exists.
-6. Run **Generate Rig Report**, then **Open Report**, and record the algorithm version, anatomy classification, mirror pairs, accepted-edge reasons, roots, hierarchy, skipped groups, and mean edge confidence.
+1. Set **Reconstruction Algorithm** to **Topology (Experimental)**. Keep **Legacy** available for comparison.
+2. Set **Disconnected Components** to **Multiple Roots** and choose **Automatic** in the searchable Root selector.
+3. Confirm **Side Axis** is **X** and **Invert Side** is disabled for the normal Carnivores orientation. Test **Y**, **Z**, and inversion on a model whose bilateral direction is known.
+4. Run **Analyze**. Confirm that no armature, modifier, parenting, vertex-group rename, selection, or mode change occurs.
+5. Confirm the tagged preview shows owner centers, roots, accepted edges, low-confidence edges, rejected/forced edges, and skipped groups without changing unrelated scene objects.
+6. Inspect **Generate Rig Report** / **Validate** output and record the checksum, algorithm version, mirror pairs, accepted-edge reasons, roots, hierarchy, skipped groups, and confidence values.
+7. Change selected edge rows between **Auto**, **Force**, and **Reject**, or change root/component/side/naming/weight settings, then run **Analyze** again. Confirm the proposal settings and preview reflect those decisions and forced cycles are reported rather than applied.
+8. Run **Apply**. Confirm an armature is created without errors, the preview is cleared, and **Validate** reports a valid proposal/armature structure.
+9. Edit a mesh vertex or owner cache after Analyze and run **Apply**. Confirm the stale proposal is rejected before any armature or modifier change.
+10. Run **Clear** and confirm only Carnivores proposal metadata and tagged preview data are removed; unrelated collections and objects remain.
+
+The existing **Reconstruct Rig** button remains the compatibility shortcut. Use it for Legacy comparisons and for direct Topology reconstruction when a preview is not required.
 
 ## `dilo2b` Reference Regression
 
@@ -68,10 +69,10 @@ Check at least one model for each applicable case:
 
 ## Known Experimental Limitations
 
-- Existing generated rigs are not yet replaced transactionally; remove old test rigs before rerunning.
 - Topology supplies explicit heads, tails, and PCA roll references, but final roll quality still requires broader visual testing.
-- Bilateral X-axis classification is active; general body-axis inference and low-symmetry fallback need broader asymmetric-model testing.
-- The reserved Hooks policy does not create hook objects yet.
+- Side-axis and inversion controls are available, but low-symmetry/asymmetric-model fallback needs broader manual testing.
+- The reserved Hooks policy does not create hook objects yet; it preserves and reports skipped groups for a later adapter.
+- Proposal payloads are stored in an owned Text datablock and are rejected when the source checksum or apply settings change.
 - Topology structure always uses canonical imported owners. Optional smoothing rebuilds deform groups from that cache on every run, then smooths generated weights without changing topology analysis or source attributes.
 
 ## Report

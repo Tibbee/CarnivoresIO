@@ -260,6 +260,30 @@ def register():
         default=-1,
         min=-1,
     )
+    bpy.types.Object.carnivores_reconstruct_side_axis = bpy.props.EnumProperty(
+        name="Side Axis",
+        description="Axis used to classify bilateral owner regions in topology proposals",
+        items=[
+            ('X', "X", "Use Blender X as the bilateral side axis."),
+            ('Y', "Y", "Use Blender Y as the bilateral side axis."),
+            ('Z', "Z", "Use Blender Z as the bilateral side axis."),
+        ],
+        default='X',
+    )
+    bpy.types.Object.carnivores_reconstruct_side_inverted = bpy.props.BoolProperty(
+        name="Invert Side Axis",
+        description="Invert positive and negative side classification for topology proposals",
+        default=False,
+    )
+    bpy.types.Object.carnivores_rig_proposal_edges = bpy.props.CollectionProperty(
+        type=anim_ops.CARNIVORES_PG_rig_proposal_edge,
+        name="Rig Proposal Edges",
+    )
+    bpy.types.Object.carnivores_rig_proposal_edge_index = bpy.props.IntProperty(
+        name="Rig Proposal Edge",
+        default=0,
+        min=0,
+    )
     bpy.types.Object.carnivores_reconstruct_root_choice = bpy.props.EnumProperty(
         name="Reconstruction Root",
         description="Choose Automatic or an owner index with its generated name and vertex count.",
@@ -402,6 +426,10 @@ def unregister():
     del bpy.types.Object.carnivores_reconstruct_component_policy
     del bpy.types.Object.carnivores_reconstruct_root_choice
     del bpy.types.Object.carnivores_reconstruct_root_override
+    del bpy.types.Object.carnivores_reconstruct_side_axis
+    del bpy.types.Object.carnivores_reconstruct_side_inverted
+    del bpy.types.Object.carnivores_rig_proposal_edges
+    del bpy.types.Object.carnivores_rig_proposal_edge_index
     del bpy.types.Object.carnivores_reconstruct_semantic_naming
     del bpy.types.Object.carnivores_reconstruct_legacy_filter_clusters
     del bpy.types.Object.carnivores_reconstruct_rig_policy

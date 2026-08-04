@@ -1,5 +1,8 @@
 import bpy
+import hashlib
 import json
+from dataclasses import replace
+from mathutils import Vector
 import re
 import wave
 import io
@@ -18,6 +21,10 @@ from .rig_reconstruction import (
     analyze_rig_geometry,
     build_mesh_analysis_input,
     build_topology_rig_proposal,
+    mesh_analysis_checksum,
+    rig_proposal_from_metadata,
+    rig_proposal_to_metadata,
+    proposal_edge_key,
     raw_ids_from_metadata,
     _deterministic_roll_reference,
 )
@@ -755,6 +762,7 @@ def get_active_animation_data(obj):
 OWNER_ATTR_NAME = "carnivores_owner_index"
 OWNER_SOURCE_ATTR_NAME = "carnivores_owner_source"
 RECONSTRUCTION_SOURCE_ID_PROPERTY = "carnivores_reconstruct_source_id"
+TOPOLOGY_PROPOSAL_PAYLOAD_HASH_PROPERTY = "carnivores_rig_proposal_payload_hash"
 RECONSTRUCTION_POLICIES = {
     "CREATE_NEW",
     "REPLACE_GENERATED",
@@ -1331,6 +1339,605 @@ def analyze_reconstruction_geometry(obj):
     return analyze_rig_geometry(mesh_input)
 
 
+def _topology_proposal_settings(obj, root_override_idx=-1):
+    """Capture every object setting that changes a topology application."""
+    return {
+        "disconnected_policy": str(_get_reconstruction_setting(
+            obj, "carnivores_reconstruct_component_policy", "MULTI_ROOT"
+        )).upper(),
+        "root_override": int(root_override_idx),
+        "side_axis": str(_get_reconstruction_setting(
+            obj, "carnivores_reconstruct_side_axis", "X"
+        )).upper(),
+        "side_inverted": bool(_get_reconstruction_setting(
+            obj, "carnivores_reconstruct_side_inverted", False
+        )),
+        "semantic_naming": bool(_get_reconstruction_setting(
+            obj, "carnivores_reconstruct_semantic_naming", True
+        )),
+        "smooth_weights": bool(_get_reconstruction_setting(
+            obj, "carnivores_reconstruct_smooth_weights", False
+        )),
+        "smooth_iterations": int(_get_reconstruction_setting(
+            obj, "carnivores_reconstruct_smooth_iterations", 3
+        )),
+        "smooth_factor": float(_get_reconstruction_setting(
+            obj, "carnivores_reconstruct_smooth_factor", 0.5
+        )),
+        "smooth_joints_only": bool(_get_reconstruction_setting(
+            obj, "carnivores_reconstruct_smooth_joints_only", True
+        )),
+    }
+
+
+def topology_proposal_settings_match(obj, proposal):
+    """Return whether current apply-affecting settings match a proposal."""
+    if proposal is None:
+        return False
+    stored = proposal.settings
+    current = _topology_proposal_settings(
+        obj,
+        root_override_idx=int(_get_reconstruction_setting(
+            obj, "carnivores_reconstruct_root_override", -1
+        )),
+    )
+    keys = (
+        "disconnected_policy",
+        "root_override",
+        "side_axis",
+        "side_inverted",
+        "semantic_naming",
+        "smooth_weights",
+        "smooth_iterations",
+        "smooth_factor",
+        "smooth_joints_only",
+    )
+    for key in keys:
+        if key not in stored:
+            return False
+        if key == "smooth_factor":
+            if not np.isclose(float(stored[key]), float(current[key])):
+                return False
+        elif stored[key] != current[key]:
+            return False
+    return True
+
+
+def _remove_stored_proposal_text(mesh):
+    """Remove an owned proposal text datablock referenced by a mesh."""
+    text_name = mesh.get("carnivores_rig_proposal_text", "")
+    text = bpy.data.texts.get(str(text_name)) if text_name else None
+    if text and bool(text.get("carnivores_rig_proposal_text", False)):
+        bpy.data.texts.remove(text)
+
+
+def _proposal_metadata_from_mesh(mesh):
+    """Read proposal JSON from the preferred Text datablock or old ID property."""
+    text_name = mesh.get("carnivores_rig_proposal_text", "")
+    if text_name:
+        text = bpy.data.texts.get(str(text_name))
+        if text is None:
+            raise ValueError("Stored rig proposal text datablock is missing.")
+        return text.as_string()
+
+    metadata = mesh.get("carnivores_rig_proposal", "")
+    if not metadata:
+        return ""
+    try:
+        envelope = json.loads(metadata) if isinstance(metadata, str) else metadata
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid stored rig proposal metadata: {exc}") from exc
+    if isinstance(envelope, dict) and envelope.get("storage") == "TEXT":
+        text_name = envelope.get("text_name", "")
+        text = bpy.data.texts.get(str(text_name)) if text_name else None
+        if text is None:
+            raise ValueError("Stored rig proposal text datablock is missing.")
+        return text.as_string()
+    # Phase 6 initially stored the complete JSON directly on the mesh. Keep
+    # reading that representation for existing .blend files.
+    return metadata
+
+
+def analyze_topology_proposal(obj, root_override_idx=-1, forced_edges=(), rejected_edges=()):
+    """Analyze topology reconstruction without changing Blender scene state."""
+    if not obj or obj.type != 'MESH':
+        raise ValueError("Topology proposal analysis requires a mesh object.")
+    owner_indices = _get_reconstruction_owner_indices(obj)
+    owner_source = _get_reconstruction_owner_source(obj)
+    if owner_indices is None and not obj.vertex_groups:
+        raise ValueError("Object has no vertex groups or owner cache to analyze.")
+    mesh_input = extract_rig_mesh_input(obj, owner_indices, owner_source)
+    analysis = analyze_rig_geometry(mesh_input)
+    settings = _topology_proposal_settings(obj, root_override_idx)
+    proposal = build_topology_rig_proposal(
+        analysis,
+        disconnected_policy=settings["disconnected_policy"],
+        root_override=settings["root_override"],
+        side_axis=settings["side_axis"],
+        side_inverted=settings["side_inverted"],
+        forced_edges=forced_edges,
+        rejected_edges=rejected_edges,
+    )
+    # The pure core owns geometry settings; the adapter records the Blender
+    # application settings as well so Apply cannot silently drift from Analyze.
+    proposal = replace(
+        proposal,
+        settings={**proposal.settings, **settings},
+    )
+    return proposal, mesh_analysis_checksum(mesh_input)
+
+
+def _topology_proposal_payload_hash(metadata):
+    """Return the SHA-256 digest of the exact serialized proposal payload."""
+    return hashlib.sha256(str(metadata).encode("utf-8")).hexdigest()
+
+
+def store_topology_proposal(obj, proposal, checksum, source_id=None):
+    """Persist the latest topology proposal in an owned Text datablock."""
+    if not obj or obj.type != 'MESH':
+        raise ValueError("Topology proposal requires a mesh object.")
+    mesh = obj.data
+    source_id = str(source_id or _ensure_reconstruction_source_id(obj, create=True))
+    if obj.get(RECONSTRUCTION_SOURCE_ID_PROPERTY) != source_id:
+        obj[RECONSTRUCTION_SOURCE_ID_PROPERTY] = source_id
+    # Membership arrays are already represented by the current mesh and are
+    # not needed to apply the stored geometry; omit them from persisted text.
+    metadata = rig_proposal_to_metadata(proposal, compact=True)
+    payload_hash = _topology_proposal_payload_hash(metadata)
+    _remove_stored_proposal_text(mesh)
+    text_name = f"Carnivores_Rig_Proposal_{source_id}"
+    text = bpy.data.texts.get(text_name)
+    if text is not None and not bool(text.get("carnivores_rig_proposal_text", False)):
+        text = None
+    if text is None:
+        text = bpy.data.texts.new(text_name)
+    text.clear()
+    text.write(metadata)
+    text["carnivores_rig_proposal_text"] = True
+    text["carnivores_rig_proposal_source_id"] = source_id
+    text["carnivores_rig_proposal_source_mesh"] = obj.name
+    text[TOPOLOGY_PROPOSAL_PAYLOAD_HASH_PROPERTY] = payload_hash
+    mesh["carnivores_rig_proposal_text"] = text.name
+    # Keep a small envelope for polling and backwards-compatible discovery;
+    # the potentially large proposal itself is no longer stored on the mesh.
+    mesh["carnivores_rig_proposal"] = json.dumps(
+        {
+            "payload_hash": payload_hash,
+            "storage": "TEXT",
+            "text_name": text.name,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    mesh[TOPOLOGY_PROPOSAL_PAYLOAD_HASH_PROPERTY] = payload_hash
+    mesh["carnivores_rig_proposal_checksum"] = str(checksum)
+    mesh["carnivores_rig_proposal_source_id"] = source_id
+    mesh["carnivores_rig_proposal_status"] = "ANALYZED"
+    return mesh["carnivores_rig_proposal"]
+
+
+def load_topology_proposal(obj):
+    """Load the stored proposal and reject stale or malformed source data."""
+    if not obj or obj.type != 'MESH':
+        raise ValueError("Topology proposal requires a mesh object.")
+    metadata = _proposal_metadata_from_mesh(obj.data)
+    if not metadata:
+        raise ValueError("No analyzed topology proposal is stored on this mesh.")
+    stored_payload_hash = str(
+        obj.data.get(TOPOLOGY_PROPOSAL_PAYLOAD_HASH_PROPERTY, "")
+    )
+    text_name = str(obj.data.get("carnivores_rig_proposal_text", ""))
+    if not text_name:
+        try:
+            envelope = json.loads(obj.data.get("carnivores_rig_proposal", ""))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            envelope = {}
+        if isinstance(envelope, dict) and envelope.get("storage") == "TEXT":
+            text_name = str(envelope.get("text_name", ""))
+    if text_name:
+        if not stored_payload_hash:
+            raise ValueError("Stored rig proposal payload hash is missing; analyze again.")
+        text = bpy.data.texts.get(text_name)
+        if text is None or not bool(text.get("carnivores_rig_proposal_text", False)):
+            raise ValueError("Stored rig proposal Text datablock is not owned by CarnivoresIO.")
+        text_payload_hash = str(text.get(TOPOLOGY_PROPOSAL_PAYLOAD_HASH_PROPERTY, ""))
+        if text_payload_hash != stored_payload_hash:
+            raise ValueError("Stored rig proposal Text hash metadata is inconsistent.")
+        actual_payload_hash = _topology_proposal_payload_hash(metadata)
+        if actual_payload_hash != stored_payload_hash:
+            raise ValueError("Stored rig proposal payload was modified; analyze again.")
+    elif stored_payload_hash and _topology_proposal_payload_hash(metadata) != stored_payload_hash:
+        raise ValueError("Stored rig proposal payload was modified; analyze again.")
+    try:
+        proposal = rig_proposal_from_metadata(metadata)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+    owners = _get_reconstruction_owner_indices(obj)
+    source = _get_reconstruction_owner_source(obj)
+    mesh_input = extract_rig_mesh_input(obj, owners, source)
+    current_checksum = mesh_analysis_checksum(mesh_input)
+    stored_checksum = str(obj.data.get("carnivores_rig_proposal_checksum", ""))
+    if not stored_checksum or stored_checksum != current_checksum:
+        raise ValueError("The analyzed topology proposal is stale; analyze the mesh again.")
+    stored_source_id = str(obj.data.get("carnivores_rig_proposal_source_id", ""))
+    current_source_id = _ensure_reconstruction_source_id(obj, create=False)
+    if stored_source_id and stored_source_id != current_source_id:
+        raise ValueError("The analyzed topology proposal belongs to a different source mesh.")
+    return proposal, current_checksum
+
+
+def clear_topology_proposal(obj):
+    """Remove only stored proposal metadata and its owned Text datablock."""
+    if not obj or obj.type != 'MESH':
+        return
+    _remove_stored_proposal_text(obj.data)
+    for key in (
+        "carnivores_rig_proposal",
+        "carnivores_rig_proposal_text",
+        "carnivores_rig_proposal_checksum",
+        "carnivores_rig_proposal_source_id",
+        TOPOLOGY_PROPOSAL_PAYLOAD_HASH_PROPERTY,
+        "carnivores_rig_proposal_status",
+        "carnivores_rig_preview_collection",
+    ):
+        if key in obj.data:
+            del obj.data[key]
+
+
+def _preview_color(kind):
+    return {
+        "CENTER": (0.08, 0.6, 1.0, 1.0),
+        "COMPONENT": (0.7, 0.7, 0.7, 1.0),
+        "ROOT": (0.1, 1.0, 0.2, 1.0),
+        "SKIPPED": (1.0, 0.0, 1.0, 1.0),
+        "ACCEPTED": (0.2, 0.8, 0.25, 1.0),
+        "LOW_CONFIDENCE": (1.0, 0.65, 0.05, 1.0),
+        "FORCED": (0.0, 0.9, 1.0, 1.0),
+        "REJECTED": (0.9, 0.1, 0.1, 1.0),
+    }[kind]
+
+
+def _preview_world_position(obj, position):
+    return obj.matrix_world @ Vector(tuple(float(value) for value in position))
+
+
+def _new_preview_empty(collection, name, position, kind, size=0.05):
+    marker = bpy.data.objects.new(name, None)
+    marker.empty_display_type = 'SPHERE'
+    marker.empty_display_size = size
+    marker.show_in_front = True
+    marker.location = position
+    marker.color = _preview_color(kind)
+    marker["carnivores_rig_preview"] = True
+    marker["carnivores_rig_preview_kind"] = kind
+    collection.objects.link(marker)
+    return marker
+
+
+def _new_preview_curve(collection, name, first, second, kind):
+    curve = bpy.data.curves.new(name, type='CURVE')
+    curve.dimensions = '3D'
+    curve.bevel_depth = 0.008
+    curve.bevel_resolution = 1
+    spline = curve.splines.new('POLY')
+    spline.points.add(1)
+    spline.points[0].co = (*first, 1.0)
+    spline.points[1].co = (*second, 1.0)
+    obj = bpy.data.objects.new(name, curve)
+    obj.color = _preview_color(kind)
+    obj["carnivores_rig_preview"] = True
+    obj["carnivores_rig_preview_kind"] = kind
+    collection.objects.link(obj)
+    return obj
+
+
+def _preview_source_matches(item, obj, source_id):
+    if obj is None:
+        return True
+    stored_id = item.get("carnivores_rig_preview_source_id")
+    if source_id and stored_id:
+        return str(stored_id) == str(source_id)
+    # Compatibility with previews created before stable source IDs were added.
+    return item.get("carnivores_rig_preview_source") == obj.name
+
+
+def clear_topology_preview(obj=None):
+    """Remove only tagged topology preview collections and objects."""
+    source_id = (
+        _ensure_reconstruction_source_id(obj, create=False)
+        if obj is not None else None
+    )
+    tagged_objects = [
+        item for item in bpy.data.objects
+        if bool(item.get("carnivores_rig_preview", False))
+        and _preview_source_matches(item, obj, source_id)
+    ]
+    for item in tagged_objects:
+        if item.name in bpy.data.objects:
+            data = item.data if item.type == 'CURVE' else None
+            bpy.data.objects.remove(item, do_unlink=True)
+            if data is not None and data.name in bpy.data.curves and data.users == 0:
+                bpy.data.curves.remove(data)
+
+    tagged_collections = [
+        collection for collection in bpy.data.collections
+        if bool(collection.get("carnivores_rig_preview", False))
+        and _preview_source_matches(collection, obj, source_id)
+    ]
+    for collection in tagged_collections:
+        if collection.name in bpy.data.collections:
+            # Remove children through the owned collection as a second line of
+            # defense if preview creation failed before tagging an object with
+            # the source ID.
+            for item in list(collection.objects):
+                if item.name in bpy.data.objects:
+                    data = item.data if item.type == 'CURVE' else None
+                    bpy.data.objects.remove(item, do_unlink=True)
+                    if data is not None and data.name in bpy.data.curves and data.users == 0:
+                        bpy.data.curves.remove(data)
+            bpy.data.collections.remove(collection, do_unlink=True)
+    if obj and obj.type == 'MESH' and "carnivores_rig_preview_collection" in obj.data:
+        del obj.data["carnivores_rig_preview_collection"]
+
+
+def create_topology_preview(obj, proposal):
+    """Create a tagged, non-selecting scene preview for a topology proposal."""
+    if not obj or obj.type != 'MESH':
+        raise ValueError("Topology preview requires a mesh object.")
+    source_id = _ensure_reconstruction_source_id(obj, create=True)
+    clear_topology_preview(obj)
+    collection = bpy.data.collections.new(f"{obj.name}_RigProposalPreview")
+    collection["carnivores_rig_preview"] = True
+    collection["carnivores_rig_preview_source"] = obj.name
+    collection["carnivores_rig_preview_source_id"] = source_id
+    bpy.context.scene.collection.children.link(collection)
+
+    group_by_id = {group.compact_id: group for group in proposal.groups}
+    component_by_group = {}
+    for component_index, component in enumerate(
+        proposal.settings.get("component_sizes", [])
+    ):
+        for compact_id in component.get("compact_ids", []):
+            component_by_group[int(compact_id)] = component_index
+    for group in proposal.groups:
+        marker = _new_preview_empty(
+            collection,
+            f"CIO_PREVIEW_CENTER_{group.compact_id}",
+            _preview_world_position(obj, group.median_center),
+            "SKIPPED" if group.compact_id in proposal.skipped_groups else "CENTER",
+        )
+        marker["carnivores_rig_preview_source"] = obj.name
+        marker["carnivores_rig_preview_source_id"] = source_id
+        marker["carnivores_rig_preview_component"] = component_by_group.get(
+            int(group.compact_id), -1
+        )
+    for component_index, component in enumerate(
+        proposal.settings.get("component_sizes", [])
+    ):
+        component_ids = [
+            int(compact_id) for compact_id in component.get("compact_ids", [])
+            if int(compact_id) in group_by_id
+        ]
+        if not component_ids:
+            continue
+        component_center = np.mean(
+            [group_by_id[compact_id].median_center for compact_id in component_ids],
+            axis=0,
+        )
+        component_marker = _new_preview_empty(
+            collection,
+            f"CIO_PREVIEW_COMPONENT_{component_index}",
+            _preview_world_position(obj, component_center),
+            "COMPONENT",
+            size=0.12,
+        )
+        component_marker["carnivores_rig_preview_source"] = obj.name
+        component_marker["carnivores_rig_preview_source_id"] = source_id
+        component_marker["carnivores_rig_preview_component"] = component_index
+        component_marker["carnivores_rig_preview_group_count"] = len(component_ids)
+
+    for root_id in proposal.root_groups:
+        root = _new_preview_empty(
+            collection,
+            f"CIO_PREVIEW_ROOT_{root_id}",
+            _preview_world_position(obj, proposal.head_by_group[root_id]),
+            "ROOT",
+            size=0.08,
+        )
+        root["carnivores_rig_preview_source"] = obj.name
+        root["carnivores_rig_preview_source_id"] = source_id
+        root["carnivores_rig_preview_component"] = component_by_group.get(
+            int(root_id), -1
+        )
+
+    forced = {
+        tuple(edge) for edge in proposal.settings.get("forced_edges", [])
+    }
+    rejected = {
+        tuple(edge) for edge in proposal.settings.get("rejected_edges", [])
+    }
+    accepted = {
+        tuple(sorted(edge)) for edge in proposal.accepted_edges
+    }
+    for edge in proposal.edge_candidates:
+        pair = tuple(sorted((edge.group_a, edge.group_b)))
+        kind = "FORCED" if pair in forced else (
+            "REJECTED" if pair in rejected or (
+                pair not in accepted and edge.confidence >= 0.35
+            ) else (
+                "LOW_CONFIDENCE" if edge.confidence < 0.35 else "ACCEPTED"
+            )
+        )
+        if pair not in accepted and kind == "ACCEPTED":
+            kind = "LOW_CONFIDENCE"
+        first = _preview_world_position(obj, edge.boundary_joint)
+        second = _preview_world_position(
+            obj,
+            group_by_id[edge.group_b].median_center
+            if edge.group_b in group_by_id else edge.boundary_joint,
+        )
+        curve = _new_preview_curve(
+            collection,
+            f"CIO_PREVIEW_EDGE_{edge.group_a}_{edge.group_b}",
+            tuple(first),
+            tuple(second),
+            kind,
+        )
+        curve["carnivores_rig_preview_source"] = obj.name
+        curve["carnivores_rig_preview_source_id"] = source_id
+        curve["carnivores_rig_preview_groups"] = f"{edge.group_a},{edge.group_b}"
+
+    obj.data["carnivores_rig_preview_collection"] = collection.name
+    return collection
+
+
+def validate_stored_topology_proposal(obj):
+    """Validate proposal freshness, armature structure, and owner reconciliation."""
+    proposal, checksum = load_topology_proposal(obj)
+    result = {
+        "valid": True,
+        "applied": False,
+        "checksum": checksum,
+        "errors": [],
+        "warnings": list(proposal.warnings),
+        "reconciliation": {},
+    }
+    group_count = len(proposal.groups)
+    skipped = set(proposal.skipped_groups)
+    active_ids = [group.compact_id for group in proposal.groups if group.compact_id not in skipped]
+    active_set = set(active_ids)
+    if any(
+        int(parent) >= 0 and int(parent) not in active_set
+        for parent in proposal.parent_by_group
+    ):
+        result["errors"].append("Proposal hierarchy references a skipped or missing parent group.")
+    if any(root not in active_set for root in proposal.root_groups):
+        result["errors"].append("Proposal roots contain a skipped or missing group.")
+    if any(int(proposal.parent_by_group[group_id]) == group_id for group_id in active_ids):
+        result["errors"].append("Proposal hierarchy contains a self-parenting group.")
+
+    armature = next(
+        (
+            modifier.object for modifier in obj.modifiers
+            if modifier.type == 'ARMATURE' and modifier.object
+        ),
+        obj.parent if obj.parent and obj.parent.type == 'ARMATURE' else None,
+    )
+    if armature is None:
+        result["warnings"].append("No armature is assigned; proposal has not been applied.")
+        result["valid"] = not result["errors"]
+        return result
+
+    result["applied"] = True
+    if armature.get("carnivores_rig_algorithm") != "TOPOLOGY":
+        result["errors"].append("Assigned armature was not generated by topology reconstruction.")
+    source_id = str(obj.get(RECONSTRUCTION_SOURCE_ID_PROPERTY, ""))
+    armature_source_id = str(armature.get(RECONSTRUCTION_SOURCE_ID_PROPERTY, ""))
+    if source_id and armature_source_id and source_id != armature_source_id:
+        result["errors"].append("Assigned armature belongs to a different reconstruction source.")
+    if not np.allclose(armature.matrix_world, obj.matrix_world, atol=1e-5):
+        result["errors"].append("Armature world transform differs from the analyzed mesh transform.")
+    if len(armature.data.bones) != len(active_ids):
+        result["errors"].append(
+            f"Armature has {len(armature.data.bones)} bones; proposal expects {len(active_ids)}."
+        )
+
+    bone_by_compact = {}
+    name_entries = []
+    try:
+        name_entries = json.loads(
+            armature.get("carnivores_reconstruct_bone_name_map", "[]")
+        )
+        if not isinstance(name_entries, list):
+            raise ValueError("bone name map is not a list")
+        for entry in name_entries:
+            if isinstance(entry, dict) and entry.get("compact_id") is not None:
+                compact_id = int(entry["compact_id"])
+                bone = armature.data.bones.get(str(entry.get("blender_name", "")))
+                if bone is not None:
+                    bone_by_compact[compact_id] = bone
+    except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
+        result["errors"].append("Generated armature bone-name metadata is invalid.")
+
+    for compact_id in active_ids:
+        bone = bone_by_compact.get(compact_id)
+        if bone is None:
+            result["errors"].append(f"No generated bone maps to proposal group {compact_id}.")
+            continue
+        if not np.allclose(bone.head_local, proposal.head_by_group[compact_id], atol=1e-5):
+            result["errors"].append(f"Bone '{bone.name}' head differs from proposal group {compact_id}.")
+        if not np.allclose(bone.tail_local, proposal.tail_by_group[compact_id], atol=1e-5):
+            result["errors"].append(f"Bone '{bone.name}' tail differs from proposal group {compact_id}.")
+        expected_parent = int(proposal.parent_by_group[compact_id])
+        actual_parent = None
+        if bone.parent is not None:
+            actual_parent = next(
+                (
+                    parent_compact
+                    for parent_compact, parent_bone in bone_by_compact.items()
+                    if parent_bone == bone.parent
+                ),
+                None,
+            )
+        if actual_parent != (expected_parent if expected_parent >= 0 else None):
+            result["errors"].append(f"Bone '{bone.name}' parent differs from proposal group {compact_id}.")
+
+    owner_indices = _get_reconstruction_owner_indices(obj)
+    if owner_indices is not None:
+        group_index_to_compact = {}
+        for entry in name_entries:
+            if not isinstance(entry, dict):
+                continue
+            vertex_group = obj.vertex_groups.get(str(entry.get("blender_name", "")))
+            if vertex_group is not None:
+                group_index_to_compact[vertex_group.index] = int(entry["compact_id"])
+        unowned = skipped_vertices = missing_deform = drift = matching = 0
+        for vertex_index, owner in enumerate(owner_indices):
+            owner = int(owner)
+            if owner < 0:
+                unowned += 1
+                continue
+            if owner in skipped:
+                skipped_vertices += 1
+            assignments = obj.data.vertices[vertex_index].groups
+            dominant = max(assignments, key=lambda item: item.weight, default=None)
+            dominant_compact = (
+                group_index_to_compact.get(dominant.group) if dominant is not None else None
+            )
+            if owner in active_set:
+                if dominant_compact is None:
+                    missing_deform += 1
+                elif dominant_compact == owner:
+                    matching += 1
+                else:
+                    drift += 1
+        result["reconciliation"] = {
+            "owned_vertices": int(len(owner_indices) - unowned),
+            "unowned_vertices": int(unowned),
+            "skipped_owner_vertices": int(skipped_vertices),
+            "dominant_matches": int(matching),
+            "dominant_drift": int(drift),
+            "missing_deform_assignments": int(missing_deform),
+        }
+        if skipped_vertices:
+            result["warnings"].append(
+                f"{skipped_vertices} vertices belong to skipped owner groups."
+            )
+        if drift:
+            result["warnings"].append(
+                f"{drift} vertices have a dominant deform group different from the canonical owner."
+            )
+        if missing_deform:
+            result["errors"].append(
+                f"{missing_deform} owned vertices have no generated deform assignment."
+            )
+    else:
+        result["warnings"].append("No canonical owner attribute is available for reconciliation.")
+
+    result["valid"] = not result["errors"]
+    return result
+
+
 @timed('calculate_vertex_group_centroids')
 def calculate_vertex_group_centroids(obj, owner_indices=None, group_count=None, return_weights=False):
     """
@@ -1731,22 +2338,31 @@ def _detect_disconnected_clusters(centroids, threshold_factor=2.0):
     return {i: int(labels[i]) for i in range(n)}
 
 
-def _apply_semantic_suffixes(obj, bone_names, centroids, center_x):
-    """
-    Appends _L and _R suffixes to generic bone names (like 'Bone_0') if they are lateral.
-    Also renames the corresponding vertex groups on the mesh in sync so that skinning is not lost!
+def _apply_semantic_suffixes(
+    obj, bone_names, centroids, center_x, side_axis=0, side_inverted=False
+):
+    """Append L/R suffixes using the selected bilateral axis.
+
+    ``center_x`` is retained as the positional argument used by Legacy mode;
+    for a non-X topology axis it is simply the center coordinate on that axis.
     """
     positions = np.asarray(centroids, dtype=np.float64)
     n = len(bone_names)
     if n == 0:
         return bone_names
+    try:
+        side_axis = int(side_axis)
+    except (TypeError, ValueError):
+        side_axis = {"X": 0, "Y": 1, "Z": 2}.get(str(side_axis).upper(), 0)
+    if side_axis not in (0, 1, 2):
+        side_axis = 0
 
-    # Bounding box along X axis for adaptive margin
-    ptp_x = float(np.ptp(positions[:, 0])) if n > 1 else 0.0
-    # 3% of overall width or at least 1cm
-    side_margin = max(ptp_x * 0.03, 0.01)
+    side_span = float(np.ptp(positions[:, side_axis])) if n > 1 else 0.0
+    side_margin = max(side_span * 0.03, 0.01)
+    relative = positions[:, side_axis] - float(center_x)
+    if side_inverted:
+        relative *= -1.0
 
-    rel_x = positions[:, 0] - center_x
     new_names = list(bone_names)
     renamed_any = False
 
@@ -1763,10 +2379,10 @@ def _apply_semantic_suffixes(obj, bone_names, centroids, center_x):
         if any(s in name_lower for s in [" left", " right"]):
             continue
 
-        if rel_x[i] > side_margin:
+        if relative[i] > side_margin:
             new_names[i] = f"{name}_L"
             renamed_any = True
-        elif rel_x[i] < -side_margin:
+        elif relative[i] < -side_margin:
             new_names[i] = f"{name}_R"
             renamed_any = True
 
@@ -1776,7 +2392,7 @@ def _apply_semantic_suffixes(obj, bone_names, centroids, center_x):
     return new_names
 
 
-def _reconstruct_armature_topology_impl(obj, root_override_idx=-1):
+def _reconstruct_armature_topology_impl(obj, root_override_idx=-1, proposal=None):
     """Apply a topology proposal while preserving compact/raw owner identities."""
     source_id = _ensure_reconstruction_source_id(obj, create=False)
     creation_policy = _resolve_reconstruction_policy(obj)
@@ -1796,14 +2412,19 @@ def _reconstruct_armature_topology_impl(obj, root_override_idx=-1):
     analysis = analyze_rig_geometry(
         extract_rig_mesh_input(obj, owner_indices, owner_source)
     )
-    policy = _get_reconstruction_setting(
-        obj, "carnivores_reconstruct_component_policy", "MULTI_ROOT"
-    )
-    proposal = build_topology_rig_proposal(
-        analysis,
-        disconnected_policy=policy,
-        root_override=root_override_idx,
-    )
+    if proposal is None:
+        settings = _topology_proposal_settings(obj, root_override_idx)
+        proposal = build_topology_rig_proposal(
+            analysis,
+            disconnected_policy=settings["disconnected_policy"],
+            root_override=settings["root_override"],
+            side_axis=settings["side_axis"],
+            side_inverted=settings["side_inverted"],
+        )
+    policy = str(proposal.settings.get(
+        "disconnected_policy",
+        _get_reconstruction_setting(obj, "carnivores_reconstruct_component_policy", "MULTI_ROOT"),
+    )).upper()
     for message in proposal.warnings:
         warn(f"Topology proposal: {message}")
 
@@ -1825,8 +2446,10 @@ def _reconstruct_armature_topology_impl(obj, root_override_idx=-1):
 
     # Topology always analyzes canonical imported owners, but its generated
     # deform groups may be rebuilt and smoothed non-cumulatively on request.
-    smooth_enabled = bool(_get_reconstruction_setting(
-        obj, "carnivores_reconstruct_smooth_weights", False
+    proposal_settings = proposal.settings if proposal is not None else {}
+    smooth_enabled = bool(proposal_settings.get(
+        "smooth_weights",
+        _get_reconstruction_setting(obj, "carnivores_reconstruct_smooth_weights", False),
     ))
     if smooth_enabled:
         for vertex_group in list(obj.vertex_groups):
@@ -1843,24 +2466,48 @@ def _reconstruct_armature_topology_impl(obj, root_override_idx=-1):
             owner_source=owner_source,
         )
 
-    semantic_enabled = bool(_get_reconstruction_setting(
-        obj, "carnivores_reconstruct_semantic_naming", True
+    semantic_enabled = bool(proposal_settings.get(
+        "semantic_naming",
+        _get_reconstruction_setting(obj, "carnivores_reconstruct_semantic_naming", True),
+    ))
+    side_axis = proposal_settings.get(
+        "side_axis",
+        _get_reconstruction_setting(obj, "carnivores_reconstruct_side_axis", "X"),
+    )
+    side_axis_index = {"X": 0, "Y": 1, "Z": 2}.get(str(side_axis).upper(), 0)
+    side_inverted = bool(proposal_settings.get(
+        "side_inverted",
+        _get_reconstruction_setting(obj, "carnivores_reconstruct_side_inverted", False),
     ))
     if semantic_enabled:
         active_centroids = [group_by_id[compact_id].centroid for compact_id in active_ids]
-        center_x = float(np.median(
-            analysis.mesh.vertices[analysis.mesh.compact_owners >= 0, 0]
-        ))
+        center_side = float(np.median(
+            analysis.mesh.vertices[analysis.mesh.compact_owners >= 0, side_axis_index]
+        )) if np.any(analysis.mesh.compact_owners >= 0) else 0.0
         bone_names = _apply_semantic_suffixes(
-            obj, bone_names, active_centroids, center_x
+            obj,
+            bone_names,
+            active_centroids,
+            center_side,
+            side_axis=side_axis_index,
+            side_inverted=side_inverted,
         )
 
     if smooth_enabled:
         io_utils.smooth_vertex_weights(
             obj,
-            iterations=int(getattr(obj, "carnivores_reconstruct_smooth_iterations", 3)),
-            factor=float(getattr(obj, "carnivores_reconstruct_smooth_factor", 0.5)),
-            joints_only=bool(getattr(obj, "carnivores_reconstruct_smooth_joints_only", True)),
+            iterations=int(proposal_settings.get(
+                "smooth_iterations",
+                _get_reconstruction_setting(obj, "carnivores_reconstruct_smooth_iterations", 3),
+            )),
+            factor=float(proposal_settings.get(
+                "smooth_factor",
+                _get_reconstruction_setting(obj, "carnivores_reconstruct_smooth_factor", 0.5),
+            )),
+            joints_only=bool(proposal_settings.get(
+                "smooth_joints_only",
+                _get_reconstruction_setting(obj, "carnivores_reconstruct_smooth_joints_only", True),
+            )),
         )
 
     bone_heads = [proposal.head_by_group[compact_id] for compact_id in active_ids]
@@ -1974,11 +2621,29 @@ def _reconstruct_armature_topology_impl(obj, root_override_idx=-1):
     arm_obj["carnivores_reconstruct_rig_policy"] = creation_policy
     arm_obj["carnivores_reconstruct_smoothing"] = smooth_enabled
     arm_obj["carnivores_reconstruct_semantic_naming"] = semantic_enabled
+    arm_obj["carnivores_reconstruct_side_axis"] = str(side_axis).upper()
+    arm_obj["carnivores_reconstruct_side_inverted"] = side_inverted
+    arm_obj["carnivores_reconstruct_proposal_checksum"] = str(
+        obj.data.get("carnivores_rig_proposal_checksum", "")
+    )
+    arm_obj["carnivores_reconstruct_proposal_settings"] = json.dumps(
+        proposal.settings, separators=(",", ":"), sort_keys=True, default=str
+    )
+    arm_obj["carnivores_reconstruct_component_sizes"] = json.dumps(
+        proposal.settings.get("component_sizes", []),
+        separators=(",", ":"),
+        sort_keys=True,
+    )
     arm_obj["carnivores_reconstruct_mirror_pair_count"] = int(
         proposal.settings.get("mirror_pair_count", 0)
     )
     arm_obj["carnivores_reconstruct_mirror_pairs"] = json.dumps(
         proposal.settings.get("mirror_pairs", []), separators=(",", ":")
+    )
+    arm_obj["carnivores_reconstruct_mirror_pair_details"] = json.dumps(
+        proposal.settings.get("mirror_pair_details", []),
+        separators=(",", ":"),
+        sort_keys=True,
     )
     arm_obj["carnivores_reconstruct_central_group_count"] = int(
         proposal.settings.get("central_group_count", 0)
@@ -2001,14 +2666,30 @@ def _reconstruct_armature_topology_impl(obj, root_override_idx=-1):
         edge = min(matching, key=lambda candidate: candidate.total_cost)
         accepted_details.append(edge)
     accepted_confidence = [edge.confidence for edge in accepted_details]
+    forced_pairs = {
+        tuple(proposal_edge_key(*edge))
+        for edge in proposal.settings.get("forced_edges", [])
+    }
     arm_obj["carnivores_reconstruct_edge_details"] = json.dumps(
         [
             {
                 "owners": [int(raw_by_compact[edge.group_a]), int(raw_by_compact[edge.group_b])],
+                "compact_ids": [int(edge.group_a), int(edge.group_b)],
                 "reason": list(edge.reason_codes),
+                "joint_source": "+".join(edge.reason_codes),
                 "boundary_edges": int(edge.boundary_edge_count),
+                "nearest_distance": round(float(edge.nearest_distance), 6),
                 "cost": round(float(edge.total_cost), 6),
+                "cost_terms": {
+                    str(key): round(float(value), 6)
+                    for key, value in edge.cost_terms.items()
+                },
                 "confidence": round(float(edge.confidence), 6),
+                "decision": (
+                    "FORCED"
+                    if tuple(sorted((edge.group_a, edge.group_b))) in forced_pairs
+                    else "AUTO"
+                ),
             }
             for edge in accepted_details
         ],
@@ -2046,12 +2727,16 @@ def _reconstruct_armature_topology_impl(obj, root_override_idx=-1):
     return arm_obj
 
 
-def _reconstruct_armature_topology(obj, root_override_idx=-1):
+def _reconstruct_armature_topology(obj, root_override_idx=-1, proposal=None):
     snapshot = _snapshot_reconstruction_state(obj)
     context_snapshot = io_utils._capture_blender_context()
     existing_object_names = {armature.name for armature in bpy.data.objects}
     try:
-        return _reconstruct_armature_topology_impl(obj, root_override_idx=root_override_idx)
+        return _reconstruct_armature_topology_impl(
+            obj,
+            root_override_idx=root_override_idx,
+            proposal=proposal,
+        )
     except Exception:
         _discard_new_reconstruction_objects(obj, existing_object_names)
         _restore_reconstruction_state(obj, snapshot)
@@ -2380,6 +3065,29 @@ def _reconstruct_armature_impl(obj, root_override_idx=-1):
 
     info("Rig reconstruction complete.")
     return arm_obj
+
+
+def apply_topology_proposal(obj, proposal):
+    """Apply a validated topology proposal transactionally."""
+    if not topology_proposal_settings_match(obj, proposal):
+        raise ValueError(
+            "Topology proposal settings changed; analyze the mesh again before applying."
+        )
+    return _reconstruct_armature_topology(
+        obj,
+        root_override_idx=int(proposal.settings.get("root_override", -1)),
+        proposal=proposal,
+    )
+
+
+def apply_stored_topology_proposal(obj):
+    """Apply the current stored topology proposal after freshness validation."""
+    proposal, _checksum = load_topology_proposal(obj)
+    if not topology_proposal_settings_match(obj, proposal):
+        raise ValueError(
+            "Topology proposal settings changed; analyze the mesh again before applying."
+        )
+    return apply_topology_proposal(obj, proposal)
 
 
 def reconstruct_armature(obj, root_override_idx=-1):
