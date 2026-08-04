@@ -701,6 +701,8 @@ Avoid Unicode-only status characters if console/text portability becomes an issu
 
 ## 12. Phase 7 — True Round-Trip Reconciliation
 
+**Implementation status:** Implemented in the current working tree. The read-only export mapping, structured reconciliation levels, generated-weight checksums, and validation/report integrations are covered by the Blender test suite; real-asset export/re-import parity remains follow-up work.
+
 The existing dominant-group divergence report is retained as one diagnostic, but it is not sufficient.
 
 ### 12.1 Dry-run export mapping

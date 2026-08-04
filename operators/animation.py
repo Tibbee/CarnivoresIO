@@ -1532,13 +1532,20 @@ class CARNIVORES_OT_validate_rig_round_trip(bpy.types.Operator):
         except Exception as exc:
             self.report({'ERROR'}, f"Proposal validation failed: {exc}")
             return {'CANCELLED'}
-        status = "VALID" if result['valid'] else "FAILED"
+        phase7_level = result.get("phase7_level", "UNAVAILABLE")
+        has_warnings = bool(result.get("warnings")) or phase7_level == "WARNING"
+        status = "FAILED" if not result['valid'] else (
+            "VALID WITH WARNINGS" if has_warnings else "VALID"
+        )
         if result['valid'] and not result.get('applied'):
             status = "VALID PROPOSAL / NOT APPLIED"
+            if has_warnings:
+                status += " WITH WARNINGS"
         lines = [
             f"RIG PROPOSAL VALIDATION: {obj.name}",
             "=" * 40,
             f"Status: {status}",
+            f"Phase 7 reconciliation: {phase7_level}",
             f"Applied: {'YES' if result.get('applied') else 'NO'}",
             f"Checksum: {result['checksum']}",
         ]
@@ -1557,9 +1564,10 @@ class CARNIVORES_OT_validate_rig_round_trip(bpy.types.Operator):
         text = bpy.data.texts.get(text_name) or bpy.data.texts.new(text_name)
         text.clear()
         text.write("\n".join(lines) + "\n")
+        report_ok = result['valid'] and not has_warnings
         self.report(
-            {'INFO' if result['valid'] else 'WARNING'},
-            f"Rig proposal validation {'passed' if result['valid'] else 'found issues'}; report written to {text_name}.",
+            {'INFO' if report_ok else 'WARNING'},
+            f"Rig proposal validation {'passed' if report_ok else 'found issues'}; report written to {text_name}.",
         )
         return {'FINISHED'}
 
@@ -1969,6 +1977,55 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
                     lines.append(f"  WARNING: {message}")
             except Exception as exc:
                 lines.append(f"\nPROPOSAL RECONCILIATION: unavailable ({exc})")
+
+        if arm and arm.get("carnivores_rig_algorithm") in {"LEGACY", "TOPOLOGY", "MOTION"}:
+            lines.append("\nTRUE ROUND-TRIP RECONCILIATION:")
+            try:
+                owner_values = anim_utils._get_reconstruction_owner_indices(obj)
+                if owner_values is not None:
+                    raw_by_compact = anim_utils.raw_ids_from_metadata(
+                        obj.data.get(anim_utils.OWNER_MAPPING_PROPERTY)
+                    )
+                    if raw_by_compact is None:
+                        source_values = anim_utils._get_reconstruction_owner_source(obj)
+                        source_ids = (
+                            np.unique(source_values[source_values >= 0])
+                            if source_values is not None else np.empty(0, dtype=np.int32)
+                        )
+                        group_count = int(np.max(owner_values, initial=-1)) + 1
+                        raw_by_compact = source_ids if source_ids.size == group_count else np.arange(group_count, dtype=np.int32)
+                    raw_skipped = str(arm.get("carnivores_reconstruct_skipped", ""))
+                    skipped = set()
+                    if raw_skipped:
+                        skipped_raw = {int(value) for value in raw_skipped.split(",") if value.strip()}
+                        skipped = {
+                            compact_id for compact_id, raw_id in enumerate(raw_by_compact)
+                            if int(raw_id) in skipped_raw
+                        }
+                    reconciliation = anim_utils._build_rig_export_reconciliation(
+                        obj, arm, owner_values, raw_by_compact, skipped_groups=skipped
+                    )
+                    lines.append(f"  Level: {reconciliation.level}")
+                    lines.append(f"  Counts: {json.dumps(reconciliation.counts, sort_keys=True)}")
+                    for bone in reconciliation.export_mapping.bones if reconciliation.export_mapping else ():
+                        lines.append(
+                            f"  Export bone {bone.export_index}: raw={bone.raw_owner_id} compact={bone.compact_id} "
+                            f"Blender='{bone.blender_name}' Export='{bone.export_name}' parent={bone.parent_export_index}"
+                        )
+                    for message in reconciliation.errors:
+                        lines.append(f"  ERROR: {message}")
+                    for message in reconciliation.warnings:
+                        lines.append(f"  WARNING: {message}")
+                    lines.append(
+                        f"  Generated weight checksum: {reconciliation.generated_weight_checksum or 'unavailable'}"
+                    )
+                    lines.append(
+                        f"  Stored weight checksum: {reconciliation.expected_weight_checksum or 'unavailable'}"
+                    )
+                else:
+                    lines.append("  Canonical owner attribute unavailable.")
+            except Exception as exc:
+                lines.append(f"  ERROR: reconciliation unavailable ({exc})")
 
         # Write to Text Editor
         txt_name = "Carnivores_Rig_Debug"

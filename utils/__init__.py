@@ -4,6 +4,7 @@ from .io import (
     handle_car_owners,
     triangulated_mesh_copy,
     collect_bones_and_owners,
+    collect_export_mapping,
     find_texture_image,
     image_to_argb1555,
     apply_import_matrix,

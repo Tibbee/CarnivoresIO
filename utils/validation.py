@@ -587,6 +587,76 @@ def _check_skeleton(report, obj, target):
         else:
             _add(report, "PASS", "Rig / owners", "Every vertex has at least one matching exported owner group.")
 
+    if armature and armature.get("carnivores_rig_algorithm") in {"LEGACY", "TOPOLOGY", "MOTION"}:
+        owner_attr = obj.data.attributes.get("carnivores_owner_index")
+        if owner_attr and owner_attr.domain == 'POINT' and len(owner_attr.data) == len(obj.data.vertices):
+            try:
+                from . import animation as animation_utils
+                from .rig_reconstruction import OWNER_MAPPING_PROPERTY, raw_ids_from_metadata
+
+                compact_owners = animation_utils._get_reconstruction_owner_indices(obj)
+                if compact_owners is None:
+                    raise ValueError("Canonical owner attribute is unavailable or malformed.")
+                raw_by_compact = raw_ids_from_metadata(obj.data.get(OWNER_MAPPING_PROPERTY))
+                if raw_by_compact is None:
+                    source = animation_utils._get_reconstruction_owner_source(obj)
+                    source_ids = (
+                        np.unique(source[source >= 0])
+                        if source is not None else np.empty(0, dtype=np.int32)
+                    )
+                    group_count = int(np.max(compact_owners, initial=-1)) + 1
+                    raw_by_compact = (
+                        source_ids if source_ids.size == group_count
+                        else np.arange(group_count, dtype=np.int32)
+                    )
+                skipped = set()
+                raw_skipped = str(armature.get("carnivores_reconstruct_skipped", ""))
+                if raw_skipped:
+                    skipped_raw = {int(value) for value in raw_skipped.split(",") if value.strip()}
+                    skipped = {
+                        compact_id for compact_id, raw_id in enumerate(raw_by_compact)
+                        if int(raw_id) in skipped_raw
+                    }
+                reconciliation = animation_utils._build_rig_export_reconciliation(
+                    obj,
+                    armature,
+                    compact_owners,
+                    raw_by_compact,
+                    skipped_groups=skipped,
+                )
+                level = reconciliation.level
+                if level == "ERROR":
+                    for message in reconciliation.errors:
+                        _add(report, "ERROR", "Rig Reconciliation", message)
+                    for message in reconciliation.warnings:
+                        _add(report, "WARNING", "Rig Reconciliation", message)
+                elif level == "WARNING":
+                    for message in reconciliation.warnings:
+                        _add(report, "WARNING", "Rig Reconciliation", message)
+                elif level == "EXPECTED_DRIFT":
+                    _add(
+                        report,
+                        "INFO",
+                        "Rig Reconciliation",
+                        "Generated smoothing changed dominant/export owner assignments; the drift is explicitly attributed to smoothing.",
+                    )
+                else:
+                    _add(report, "PASS", "Rig Reconciliation", "Canonical owners reconcile with generated deform and export owners.")
+                _add(
+                    report,
+                    "INFO",
+                    "Rig Reconciliation",
+                    f"Result level: {level}; counts: {reconciliation.counts}.",
+                )
+            except Exception as exc:
+                _add(
+                    report,
+                    "ERROR",
+                    "Rig Reconciliation",
+                    f"Could not run generated-rig export reconciliation: {exc}",
+                    suggested_action="Run Generate Rig Report and repair the generated owner mapping.",
+                )
+
 
 def _frame_range(action):
     try:

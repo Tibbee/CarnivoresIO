@@ -22,6 +22,7 @@ from .rig_reconstruction import (
     build_mesh_analysis_input,
     build_topology_rig_proposal,
     mesh_analysis_checksum,
+    reconcile_rig_export,
     rig_proposal_from_metadata,
     rig_proposal_to_metadata,
     proposal_edge_key,
@@ -770,6 +771,201 @@ RECONSTRUCTION_POLICIES = {
     "CANCEL_IF_RIGGED",
 }
 GENERATED_RIG_ALGORITHMS = {"LEGACY", "TOPOLOGY", "MOTION"}
+GENERATED_WEIGHT_CHECKSUM_PROPERTY = "carnivores_reconstruct_generated_weight_checksum"
+GENERATED_WEIGHT_CHECKSUM_VERSION_PROPERTY = "carnivores_reconstruct_generated_weight_checksum_version"
+GENERATED_WEIGHT_CHECKSUM_VERSION = 2
+
+
+def generated_weight_checksum(obj):
+    """Return a stable checksum for the current deform vertex-group weights."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    digest.update(str(len(obj.data.vertices)).encode("ascii"))
+    digest.update(b"\0")
+    groups = sorted(
+        ((int(group.index), str(group.name)) for group in obj.vertex_groups),
+        key=lambda item: item[0],
+    )
+    for index, name in groups:
+        encoded = name.encode("utf-8")
+        digest.update(index.to_bytes(4, "little", signed=True))
+        digest.update(len(encoded).to_bytes(4, "little"))
+        digest.update(encoded)
+    for vertex in obj.data.vertices:
+        assignments = sorted(
+            (
+                int(assignment.group),
+                np.float32(assignment.weight).tobytes(),
+            )
+            for assignment in vertex.groups
+        )
+        digest.update(int(vertex.index).to_bytes(4, "little", signed=False))
+        digest.update(len(assignments).to_bytes(4, "little"))
+        for group_index, weight_bytes in assignments:
+            digest.update(group_index.to_bytes(4, "little", signed=True))
+            digest.update(weight_bytes)
+    return digest.hexdigest()
+
+
+def store_generated_weight_checksum(armature, obj):
+    checksum = generated_weight_checksum(obj)
+    armature[GENERATED_WEIGHT_CHECKSUM_PROPERTY] = checksum
+    armature[GENERATED_WEIGHT_CHECKSUM_VERSION_PROPERTY] = GENERATED_WEIGHT_CHECKSUM_VERSION
+    return checksum
+
+
+def _dominant_deform_owners(obj, name_entries=None, strict_metadata=False):
+    """Return compact generated-owner IDs and vertices with no deform groups."""
+    vertex_count = len(obj.data.vertices)
+    group_index_to_compact = {}
+    if name_entries:
+        for entry in name_entries:
+            if not isinstance(entry, dict):
+                continue
+            blender_name = str(entry.get("blender_name", ""))
+            group = obj.vertex_groups.get(blender_name) if blender_name else None
+            if group is not None and entry.get("compact_id") is not None:
+                try:
+                    group_index_to_compact[group.index] = int(entry["compact_id"])
+                except (TypeError, ValueError):
+                    continue
+    if not group_index_to_compact and not strict_metadata:
+        group_index_to_compact = {
+            int(group.index): int(group.index) for group in obj.vertex_groups
+        }
+    dominant = np.full(vertex_count, -1, dtype=np.int32)
+    no_deform = []
+    for vertex in obj.data.vertices:
+        winning = max(vertex.groups, key=lambda assignment: assignment.weight, default=None)
+        if winning is None or winning.group not in group_index_to_compact:
+            no_deform.append(vertex.index)
+            continue
+        dominant[vertex.index] = group_index_to_compact[winning.group]
+    return dominant, tuple(no_deform)
+
+
+def _load_armature_name_entries(armature):
+    raw = armature.get("carnivores_reconstruct_bone_name_map", "[]")
+    try:
+        value = json.loads(raw) if raw else []
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+def _source_group_names(obj, group_count):
+    """Return the complete source-name list when the mesh mapping provides it."""
+    raw = obj.data.get(OWNER_MAPPING_PROPERTY, "")
+    try:
+        payload = json.loads(raw) if raw else {}
+        names = payload.get("bone_names", []) if isinstance(payload, dict) else []
+        names = [str(name) for name in names]
+        if len(names) == int(group_count):
+            return names
+    except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def _reconciliation_export_bones(mapping):
+    return tuple(mapping.bones) if mapping is not None else ()
+
+
+def _build_rig_export_reconciliation(obj, armature, canonical_compact, canonical_raw_by_compact, skipped_groups=(), proposal=None):
+    """Build Phase 7 reconciliation from the actual exporter mapping."""
+    export_mapping = io_utils.collect_export_mapping(obj, np.identity(4, dtype=np.float64))
+    name_entries = _load_armature_name_entries(armature) if armature else []
+    strict_name_metadata = bool(
+        armature
+        and armature.get("carnivores_reconstruct_bone_name_map", "")
+    )
+    dominant, no_deform = _dominant_deform_owners(
+        obj,
+        name_entries,
+        strict_metadata=strict_name_metadata and not name_entries,
+    )
+
+    additional_warnings = []
+    additional_errors = []
+    proposal_settings = proposal.settings if proposal is not None else {}
+    if proposal is None and armature:
+        raw_settings = armature.get("carnivores_reconstruct_proposal_settings", "")
+        if raw_settings:
+            try:
+                stored_settings = json.loads(raw_settings)
+                if not isinstance(stored_settings, dict):
+                    raise ValueError("stored proposal settings must be an object")
+                proposal_settings = stored_settings
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                additional_errors.append(
+                    f"Stored reconstruction proposal settings are invalid: {exc}"
+                )
+
+    forced_diagnostics = []
+    if proposal_settings:
+        forced_diagnostics.extend(
+            {"type": "FORCED_EDGE", "edge": list(edge)}
+            for edge in proposal_settings.get("forced_edges", [])
+        )
+        forced_diagnostics.extend(
+            {"type": "REJECTED_EDGE", "edge": list(edge)}
+            for edge in proposal_settings.get("rejected_edges", [])
+        )
+    smoothing_enabled = bool(
+        proposal_settings.get(
+            "smooth_weights",
+            armature.get("carnivores_reconstruct_smoothing", False) if armature else False,
+        )
+    )
+    expected_checksum = (
+        armature.get(GENERATED_WEIGHT_CHECKSUM_PROPERTY) if armature else None
+    )
+    if armature and expected_checksum is None:
+        additional_warnings.append(
+            "Stored generated-weight checksum is unavailable; current weights cannot be verified against the generated snapshot."
+        )
+    elif armature:
+        checksum_version = armature.get(GENERATED_WEIGHT_CHECKSUM_VERSION_PROPERTY)
+        try:
+            unsupported_version = (
+                checksum_version is not None
+                and int(checksum_version) != GENERATED_WEIGHT_CHECKSUM_VERSION
+            )
+        except (TypeError, ValueError):
+            unsupported_version = True
+        if unsupported_version:
+            additional_warnings.append(
+                "Stored generated-weight checksum uses an unsupported version; current weights cannot be compared reliably."
+            )
+            expected_checksum = None
+    actual_checksum = generated_weight_checksum(obj)
+    source_names = _source_group_names(obj, len(canonical_raw_by_compact))
+    if source_names is None:
+        source_names = [
+            str(entry.get("source_name", ""))
+            for entry in name_entries
+            if isinstance(entry, dict)
+        ]
+        if len(source_names) != len(canonical_raw_by_compact):
+            source_names = None
+    return reconcile_rig_export(
+        canonical_compact_owners=canonical_compact,
+        canonical_raw_by_compact=canonical_raw_by_compact,
+        generated_dominant_owners=dominant,
+        export_owner_by_vertex=export_mapping.vertex_owners,
+        export_bones=_reconciliation_export_bones(export_mapping),
+        skipped_groups=skipped_groups,
+        source_group_names=source_names,
+        no_deform_vertices=no_deform,
+        export_mapping=export_mapping,
+        smoothing_enabled=smoothing_enabled,
+        generated_weight_checksum=actual_checksum,
+        expected_weight_checksum=expected_checksum,
+        forced_edge_diagnostics=forced_diagnostics,
+        additional_warnings=additional_warnings,
+        additional_errors=additional_errors,
+    )
 
 
 def _get_reconstruction_setting(obj, name, default):
@@ -1884,55 +2080,40 @@ def validate_stored_topology_proposal(obj):
 
     owner_indices = _get_reconstruction_owner_indices(obj)
     if owner_indices is not None:
-        group_index_to_compact = {}
-        for entry in name_entries:
-            if not isinstance(entry, dict):
-                continue
-            vertex_group = obj.vertex_groups.get(str(entry.get("blender_name", "")))
-            if vertex_group is not None:
-                group_index_to_compact[vertex_group.index] = int(entry["compact_id"])
-        unowned = skipped_vertices = missing_deform = drift = matching = 0
-        for vertex_index, owner in enumerate(owner_indices):
-            owner = int(owner)
-            if owner < 0:
-                unowned += 1
-                continue
-            if owner in skipped:
-                skipped_vertices += 1
-            assignments = obj.data.vertices[vertex_index].groups
-            dominant = max(assignments, key=lambda item: item.weight, default=None)
-            dominant_compact = (
-                group_index_to_compact.get(dominant.group) if dominant is not None else None
-            )
-            if owner in active_set:
-                if dominant_compact is None:
-                    missing_deform += 1
-                elif dominant_compact == owner:
-                    matching += 1
-                else:
-                    drift += 1
-        result["reconciliation"] = {
-            "owned_vertices": int(len(owner_indices) - unowned),
-            "unowned_vertices": int(unowned),
-            "skipped_owner_vertices": int(skipped_vertices),
-            "dominant_matches": int(matching),
-            "dominant_drift": int(drift),
-            "missing_deform_assignments": int(missing_deform),
-        }
-        if skipped_vertices:
-            result["warnings"].append(
-                f"{skipped_vertices} vertices belong to skipped owner groups."
-            )
-        if drift:
-            result["warnings"].append(
-                f"{drift} vertices have a dominant deform group different from the canonical owner."
-            )
-        if missing_deform:
-            result["errors"].append(
-                f"{missing_deform} owned vertices have no generated deform assignment."
-            )
+        raw_by_compact = raw_ids_from_metadata(obj.data.get(OWNER_MAPPING_PROPERTY))
+        if raw_by_compact is None:
+            owner_source = _get_reconstruction_owner_source(obj)
+            source_ids = np.unique(owner_source[owner_source >= 0]) if owner_source is not None else np.array([], dtype=np.int32)
+            raw_by_compact = source_ids if source_ids.size == int(np.max(owner_indices, initial=-1)) + 1 else np.arange(int(np.max(owner_indices, initial=-1)) + 1, dtype=np.int32)
+        reconciliation = _build_rig_export_reconciliation(
+            obj,
+            armature,
+            owner_indices,
+            raw_by_compact,
+            skipped_groups=skipped,
+            proposal=proposal,
+        )
+        result["reconciliation"] = reconciliation.to_dict(include_vertex_owners=False)
+        result["reconciliation"].update({
+            "owned_vertices": reconciliation.counts["owned_vertices"],
+            "unowned_vertices": reconciliation.counts["unowned_vertices"],
+            "skipped_owner_vertices": reconciliation.counts["skipped_owner_vertices"],
+            "dominant_matches": reconciliation.counts["dominant_matches"],
+            "dominant_drift": reconciliation.counts["dominant_drift"],
+            "missing_deform_assignments": reconciliation.counts["missing_deform_assignments"],
+        })
+        result["phase7_level"] = reconciliation.level
+        result["phase7_valid"] = reconciliation.valid
+        result["warnings"].extend(reconciliation.warnings)
+        result["errors"].extend(reconciliation.errors)
     else:
+        result["phase7_level"] = "ERROR"
+        result["phase7_valid"] = False
         result["warnings"].append("No canonical owner attribute is available for reconciliation.")
+        result["reconciliation"] = {
+            "phase7_level": "ERROR",
+            "counts": {},
+        }
 
     result["valid"] = not result["errors"]
     return result
@@ -2710,6 +2891,7 @@ def _reconstruct_armature_topology_impl(obj, root_override_idx=-1, proposal=None
         blender_bone_names,
         export_bone_names,
     )
+    store_generated_weight_checksum(arm_obj, obj)
 
     try:
         io_utils.assign_armature_modifier(obj, arm_obj)
@@ -3052,6 +3234,7 @@ def _reconstruct_armature_impl(obj, root_override_idx=-1):
         blender_bone_names,
         export_bone_names,
     )
+    store_generated_weight_checksum(arm_obj, obj)
 
     try:
         io_utils.assign_armature_modifier(obj, arm_obj)

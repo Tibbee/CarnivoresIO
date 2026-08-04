@@ -139,7 +139,7 @@ Combined from `dev_notes.md` and `future_changes.md`.
 
 Improve the `.car` rig reconstruction pipeline for faithfulness, stability, and determinism. Current algorithm documentation is in [Systems: Skeleton Reconstruction](SYSTEMS.md#skeleton-reconstruction-car-models); the complete staged redesign is in [Rig Reconstruction Implementation Plan](RIG_RECONSTRUCTION_PLAN.md).
 
-**Current baseline (Phases 0-4 implemented, committed):**
+**Current baseline (Phases 0-7 implemented in the working tree):**
 - Preserve imported owner indices on the mesh for reconstruction use
 - Degeneracy pruning (empty groups → filtered out, not mesh_mean)
 - Diagnostic disconnected-cluster detection via BFS; destructive largest-cluster filtering is an explicit Legacy option and disabled by default
@@ -153,13 +153,15 @@ Improve the `.car` rig reconstruction pipeline for faithfulness, stability, and 
 - Signed, lossless raw/compact CAR owner mapping with always-on structural validation
 - Pure mesh-analysis input, characteristic-scale normalization, group PCA/bounds, and topology-island diagnostics
 - Experimental anatomy-constrained topology graph with robust boundary joints, bilateral limb isolation, a proximity-completed central backbone, deterministic `RigProposal`, explicit tails/roll references, and disconnected-component policies
+- Analyze → Apply proposal storage, payload integrity checks, stale-source/settings rejection, scoped previews, and transactional generated-rig lifecycle handling
+- Shared non-writing export-owner dry run used by `.3DF`, `.CAR`, and `.3DN` mapping, with explicit fuzzy/fallback/skipped/name-collision diagnostics
+- True reconciliation of canonical raw/compact owners, generated dominant deform groups, final export owners, source groups, hierarchy, and generated-weight checksums
+- Structured `PASS`, `EXPECTED_DRIFT`, `WARNING`, and `ERROR` levels in rig validation, reports, and model/export preflight
 
 **Planned redesign (remaining phases):**
-- Add scored body/symmetry axes and refine topology root/hierarchy costs against real assets
-- Replace legacy cumulative smoothing with idempotent generated deform weights
-- Add scale-invariant hierarchy scoring, component policies, consistent roll, and safe rig lifecycle handling
-- Add proposal preview, manual confirmation, and true dry-run export reconciliation
-- Add optional animation-assisted rigid-transform and shared-pivot fitting, followed separately by experimental skeletal animation conversion
+- Add scored body/symmetry axes and refine topology root/hierarchy costs against a broader real-asset matrix
+- Add optional animation-assisted rigid-transform and shared-pivot fitting
+- Follow separately with experimental skeletal animation conversion
 
 Milestones, acceptance criteria, tests, risks, and file touch points are maintained in [Rig Reconstruction Implementation Plan](RIG_RECONSTRUCTION_PLAN.md). The current committed implementation state and copyable fresh-session prompt are maintained in [Rig Reconstruction Session Handoff](RIG_RECONSTRUCTION_HANDOFF.md).
 

@@ -28,6 +28,8 @@ paths_exclude_pattern = [
     "/public_repo/",
     "/my_extension_repo/",
     "/.gemini/",
+    "/.commandcode/",
+    "/tests/",
     "/*.patch",
     "/doc/",
     "/index.html",

@@ -9,7 +9,13 @@ from ..core.constants import TEXTURE_WIDTH
 from .common import timed
 from .flags import assign_face_flag_int
 from .logger import info, warn, error
-from .rig_reconstruction import build_owner_mapping
+from .rig_reconstruction import (
+    ExportBoneRecord,
+    ExportMapping,
+    OWNER_MAPPING_PROPERTY,
+    build_owner_mapping,
+    raw_ids_from_metadata,
+)
 
 # UPDATE_GENERATED swaps a new armature data block into an existing object. Keep
 # the previous data alive until the reconstruction adapter has committed all
@@ -967,169 +973,418 @@ def image_to_argb1555(image):
     packed = (a << 15) | (r << 10) | (g << 5) | b
     return packed.astype('<u2')
 
+_OWNER_ATTR_NAME = "carnivores_owner_index"
+
+
+def _clean_export_name(name):
+    clean = name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', name) else name
+    return clean.encode("ascii", "ignore")[:31].decode("ascii")
+
+
+def _export_name_diagnostics(final_names, warnings, errors):
+    names_by_export = {}
+    for index, export_name in enumerate(final_names):
+        if not export_name:
+            errors.append(f"Export bone {index} has an empty serialized name.")
+        names_by_export.setdefault(export_name, []).append(index)
+    collisions = []
+    for export_name, indices in sorted(names_by_export.items()):
+        if len(indices) > 1:
+            collisions.append({"export_name": export_name, "export_indices": indices})
+            warnings.append(
+                f"Final export bone name '{export_name}' is used by {len(indices)} bones."
+            )
+    return tuple(collisions)
+
+
+def _read_unowned_vertices(obj):
+    """Read the canonical compact-owner attribute without changing it."""
+    try:
+        attribute = obj.data.attributes.get(_OWNER_ATTR_NAME)
+        if (
+            attribute is None
+            or attribute.domain != 'POINT'
+            or len(attribute.data) != len(obj.data.vertices)
+        ):
+            return ()
+        values = np.empty(len(obj.data.vertices), dtype=np.int32)
+        attribute.data.foreach_get("value", values)
+        if raw_ids_from_metadata(obj.data.get(OWNER_MAPPING_PROPERTY)) is None:
+            values[values == 65535] = -1
+        return tuple(int(index) for index in np.flatnonzero(values < 0))
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return ()
+
+
+def _read_reconstruction_name_map(armature, bone_names, warnings, errors):
+    raw_value = armature.get("carnivores_reconstruct_bone_name_map", "")
+    if not raw_value:
+        return {}, {}, {}
+    try:
+        entries = json.loads(raw_value)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        errors.append(f"Generated bone-name metadata is invalid JSON: {exc}")
+        return {}, {}, {}
+    if not isinstance(entries, list) or len(entries) != len(bone_names):
+        errors.append("Generated bone-name metadata has an incomplete entry list.")
+        return {}, {}, {}
+
+    by_blender = {}
+    by_compact = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            errors.append("Generated bone-name metadata contains a non-object entry.")
+            continue
+        blender_name = str(entry.get("blender_name", ""))
+        export_name = str(entry.get("export_name", ""))
+        if not blender_name or not export_name:
+            errors.append("Generated bone-name metadata contains an incomplete name entry.")
+            continue
+        if blender_name in by_blender:
+            errors.append(f"Generated bone-name metadata duplicates Blender bone '{blender_name}'.")
+            continue
+        by_blender[blender_name] = export_name
+        if entry.get("compact_id") is not None:
+            try:
+                compact_id = int(entry["compact_id"])
+            except (TypeError, ValueError):
+                errors.append("Generated bone-name metadata contains an invalid compact ID.")
+                continue
+            if compact_id < 0 or compact_id in by_compact:
+                errors.append("Generated bone-name metadata contains duplicate or negative compact IDs.")
+            else:
+                by_compact[compact_id] = entry
+
+    if set(by_blender) != set(bone_names):
+        errors.append("Generated bone-name metadata does not cover the final armature bones.")
+    if errors:
+        return {}, {}, {}
+
+    raw_by_compact = {}
+    mapping_value = armature.get("carnivores_reconstruct_owner_mapping", "")
+    if mapping_value:
+        try:
+            mapping_payload = json.loads(mapping_value)
+            if not isinstance(mapping_payload, dict):
+                raise ValueError("owner mapping must be an object")
+            raw_values = [int(value) for value in mapping_payload.get("raw_by_compact", [])]
+            if any(value < 0 for value in raw_values) or len(set(raw_values)) != len(raw_values):
+                raise ValueError("raw owner IDs must be unique and non-negative")
+            raw_by_compact = {
+                int(index): int(raw_id)
+                for index, raw_id in enumerate(raw_values)
+            }
+            for compact_id, entry in by_compact.items():
+                if compact_id >= len(raw_values):
+                    errors.append(
+                        f"Generated bone-name metadata compact ID {compact_id} has no raw owner mapping."
+                    )
+                elif entry.get("raw_owner_id") is not None and int(entry["raw_owner_id"]) != raw_values[compact_id]:
+                    errors.append(
+                        f"Generated bone-name metadata raw owner for compact ID {compact_id} disagrees with the owner mapping."
+                    )
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            errors.append(f"Generated owner mapping is invalid: {exc}")
+    return by_blender, by_compact, raw_by_compact
+
+
+def _mapping_bone_records(bone_names, bone_parents, name_map, compact_entries, raw_by_compact):
+    records = []
+    entry_by_blender = {
+        str(entry.get("blender_name")): entry
+        for entry in compact_entries.values()
+        if isinstance(entry, dict) and entry.get("blender_name")
+    }
+    for export_index, blender_name in enumerate(bone_names):
+        entry = entry_by_blender.get(blender_name, {})
+        compact_id = entry.get("compact_id")
+        raw_owner_id = entry.get("raw_owner_id")
+        if compact_id is not None:
+            try:
+                compact_id = int(compact_id)
+            except (TypeError, ValueError):
+                compact_id = None
+        if raw_owner_id is None and compact_id is not None:
+            raw_owner_id = raw_by_compact.get(compact_id)
+        if raw_owner_id is not None:
+            try:
+                raw_owner_id = int(raw_owner_id)
+            except (TypeError, ValueError):
+                raw_owner_id = None
+        records.append(
+            ExportBoneRecord(
+                export_index=export_index,
+                compact_id=compact_id,
+                raw_owner_id=raw_owner_id,
+                source_name=str(entry.get("source_name", blender_name)),
+                blender_name=str(blender_name),
+                export_name=str(name_map.get(blender_name, _clean_export_name(blender_name))),
+                parent_export_index=int(bone_parents[export_index]),
+            )
+        )
+    return tuple(records)
+
+
+def _collect_armature_export_mapping(obj, export_matrix):
+    arm = obj.parent
+    vertex_count = len(obj.data.vertices)
+    warnings = []
+    errors = []
+    bone_names = []
+    bone_parents = []
+    bone_pos_array = np.empty((len(arm.data.bones), 3), dtype=np.float32)
+    exact_name_map = {}
+    clean_name_map = {}
+    for index, bone in enumerate(arm.data.bones):
+        bone_names.append(bone.name)
+        bone_pos_array[index] = bone.head_local
+        parent_index = arm.data.bones.find(bone.parent.name) if bone.parent else -1
+        bone_parents.append(parent_index)
+        exact_name_map[bone.name] = index
+        clean_name = bone.name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', bone.name) else bone.name
+        clean_name_map.setdefault(clean_name, []).append(index)
+
+    bone_positions = apply_import_matrix(bone_pos_array, export_matrix).tolist()
+    name_map, compact_entries, raw_by_compact = _read_reconstruction_name_map(
+        arm, bone_names, warnings, errors
+    )
+    final_names = [
+        str(name_map.get(name, _clean_export_name(name))).encode("ascii", "ignore")[:31].decode("ascii")
+        for name in bone_names
+    ]
+    name_collisions = _export_name_diagnostics(final_names, warnings, errors)
+
+    group_target_indices = {}
+    unmatched_groups = []
+    fuzzy_matches = []
+    has_explicit_owner_metadata = bool(compact_entries)
+    for vertex_group in obj.vertex_groups:
+        group_name = vertex_group.name
+        target_index = exact_name_map.get(group_name, -1)
+        if target_index < 0 and not has_explicit_owner_metadata:
+            clean_name = group_name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', group_name) else group_name
+            candidates = clean_name_map.get(clean_name, ())
+            if len(candidates) > 1:
+                errors.append(
+                    f"Vertex group '{group_name}' has ambiguous fuzzy bone matches."
+                )
+                target_index = -1
+            else:
+                target_index = candidates[0] if candidates else -1
+                if target_index >= 0:
+                    fuzzy_matches.append({
+                        "vertex_group": group_name,
+                        "bone_name": bone_names[target_index],
+                        "candidate_count": len(candidates),
+                    })
+        group_target_indices[vertex_group.index] = target_index
+        if target_index < 0:
+            unmatched_groups.append({"vertex_group_index": int(vertex_group.index), "name": group_name})
+
+    vertex_owners = np.zeros(vertex_count, dtype=np.int16)
+    unmatched_vertices = []
+    no_group_vertices = []
+    unowned_vertices = _read_unowned_vertices(obj)
+    for vertex in obj.data.vertices:
+        winning_index = -1
+        highest_weight = -1.0
+        for assignment in vertex.groups:
+            target_index = group_target_indices.get(assignment.group, -1)
+            if target_index >= 0 and assignment.weight > highest_weight:
+                highest_weight = assignment.weight
+                winning_index = target_index
+        if winning_index >= 0:
+            vertex_owners[vertex.index] = winning_index
+        elif vertex.groups:
+            unmatched_vertices.append(vertex.index)
+            vertex_owners[vertex.index] = 0
+        else:
+            no_group_vertices.append(vertex.index)
+            vertex_owners[vertex.index] = 0
+
+    if unmatched_vertices:
+        warnings.append(
+            f"{len(unmatched_vertices)} vertices assigned to root bone (no matching bone found)."
+        )
+    if no_group_vertices:
+        warnings.append(
+            f"{len(no_group_vertices)} vertices have no vertex groups and use root owner 0."
+        )
+    if unowned_vertices:
+        warnings.append(
+            f"{len(unowned_vertices)} vertices are marked unowned by the canonical owner attribute."
+        )
+    records = _mapping_bone_records(
+        bone_names,
+        bone_parents,
+        dict(zip(bone_names, final_names)),
+        compact_entries,
+        raw_by_compact,
+    )
+    return ExportMapping(
+        source="ARMATURE",
+        bones=records,
+        bone_positions=tuple(tuple(float(value) for value in position) for position in bone_positions),
+        vertex_owners=vertex_owners,
+        unmatched_generated_groups=tuple(unmatched_groups),
+        unmatched_vertices=tuple(unmatched_vertices),
+        no_group_vertices=tuple(no_group_vertices),
+        unowned_vertices=tuple(unowned_vertices),
+        fuzzy_matches=tuple(fuzzy_matches),
+        fallback_to_root_vertices=tuple(sorted(set(unmatched_vertices + no_group_vertices))),
+        name_collisions=tuple(name_collisions),
+        warnings=tuple(warnings),
+        errors=tuple(errors),
+    )
+
+
+def _collect_hook_export_mapping(obj, export_matrix, hook_mods):
+    temp_list = []
+    bone_pos_array = []
+    world_to_obj = obj.matrix_world.inverted()
+    for modifier in hook_mods:
+        hook_obj = modifier.object
+        local_pos = world_to_obj @ hook_obj.matrix_world.translation
+        bone_pos_array.append(local_pos)
+        temp_list.append((hook_obj.name, hook_obj))
+    bone_pos_array = np.asarray(bone_pos_array, dtype=np.float32)
+    bone_positions = apply_import_matrix(bone_pos_array, export_matrix).tolist()
+    bone_names = [name for name, _hook in temp_list]
+    bone_index_map = {name: index for index, name in enumerate(bone_names)}
+    bone_parents = [
+        bone_index_map.get(hook.parent.name, -1) if hook.parent else -1
+        for _name, hook in temp_list
+    ]
+    group_target_indices = {
+        vertex_group.index: bone_index_map.get(vertex_group.name, -1)
+        for vertex_group in obj.vertex_groups
+    }
+    vertex_owners = np.zeros(len(obj.data.vertices), dtype=np.int16)
+    unmatched_vertices = []
+    no_group_vertices = []
+    unowned_vertices = _read_unowned_vertices(obj)
+    for vertex in obj.data.vertices:
+        winning_index = -1
+        highest_weight = -1.0
+        for assignment in vertex.groups:
+            target_index = group_target_indices.get(assignment.group, -1)
+            if target_index >= 0 and assignment.weight > highest_weight:
+                highest_weight = assignment.weight
+                winning_index = target_index
+        if winning_index >= 0:
+            vertex_owners[vertex.index] = winning_index
+        elif vertex.groups:
+            unmatched_vertices.append(vertex.index)
+        else:
+            no_group_vertices.append(vertex.index)
+    final_names = [_clean_export_name(name) for name in bone_names]
+    warnings = []
+    errors = []
+    name_collisions = _export_name_diagnostics(final_names, warnings, errors)
+    records = _mapping_bone_records(
+        bone_names,
+        bone_parents,
+        dict(zip(bone_names, final_names)),
+        {},
+        {},
+    )
+    if unmatched_vertices:
+        warnings.append(
+            f"{len(unmatched_vertices)} hook vertices have no matching hook group and use root owner 0."
+        )
+    if no_group_vertices:
+        warnings.append(
+            f"{len(no_group_vertices)} hook vertices have no groups and use root owner 0."
+        )
+    if unowned_vertices:
+        warnings.append(
+            f"{len(unowned_vertices)} vertices are marked unowned by the canonical owner attribute."
+        )
+    unmatched_groups = tuple(
+        {
+            "vertex_group_index": int(vertex_group.index),
+            "name": str(vertex_group.name),
+        }
+        for vertex_group in obj.vertex_groups
+        if group_target_indices.get(vertex_group.index, -1) < 0
+    )
+    return ExportMapping(
+        source="HOOKS",
+        bones=records,
+        bone_positions=tuple(tuple(float(value) for value in position) for position in bone_positions),
+        vertex_owners=vertex_owners,
+        unmatched_generated_groups=unmatched_groups,
+        unmatched_vertices=tuple(unmatched_vertices),
+        no_group_vertices=tuple(no_group_vertices),
+        unowned_vertices=tuple(unowned_vertices),
+        fallback_to_root_vertices=tuple(sorted(set(unmatched_vertices + no_group_vertices))),
+        name_collisions=tuple(name_collisions),
+        warnings=tuple(warnings),
+        errors=tuple(errors),
+    )
+
+
+def _collect_default_export_mapping(obj):
+    vertex_count = len(obj.data.vertices)
+    owners = np.zeros(vertex_count, dtype=np.int16)
+    no_group_vertices = tuple(
+        vertex.index for vertex in obj.data.vertices if not vertex.groups
+    )
+    unmatched_vertices = tuple(
+        vertex.index for vertex in obj.data.vertices if vertex.groups
+    )
+    unowned_vertices = _read_unowned_vertices(obj)
+    unmatched_groups = tuple(
+        {
+            "vertex_group_index": int(vertex_group.index),
+            "name": str(vertex_group.name),
+        }
+        for vertex_group in obj.vertex_groups
+    )
+    return ExportMapping(
+        source="DEFAULT",
+        bones=(ExportBoneRecord(0, None, None, "Default", "Default", "Default", -1),),
+        bone_positions=((0.0, 0.0, 0.0),),
+        vertex_owners=owners,
+        unmatched_generated_groups=unmatched_groups,
+        unmatched_vertices=unmatched_vertices,
+        no_group_vertices=no_group_vertices,
+        unowned_vertices=unowned_vertices,
+        fallback_to_root_vertices=tuple(range(vertex_count)),
+        warnings=(
+            "No armature or hooks were found; all vertices use implicit Default owner 0.",
+        ),
+    )
+
+
+@timed("collect_export_mapping")
+def collect_export_mapping(obj, export_matrix):
+    """Perform the exact export owner mapping without writing or mutating data."""
+    if obj.parent and obj.parent.type == 'ARMATURE':
+        return _collect_armature_export_mapping(obj, export_matrix)
+    hook_mods = [
+        modifier for modifier in obj.modifiers
+        if modifier.type == 'HOOK' and modifier.object and modifier.vertex_group
+    ]
+    if obj.parent is None and hook_mods:
+        return _collect_hook_export_mapping(obj, export_matrix, hook_mods)
+    return _collect_default_export_mapping(obj)
+
+
 @timed("collect_bones_and_owners")
 def collect_bones_and_owners(obj, export_matrix):
-    bone_names = []
-    bone_positions = []
-    bone_parents = []
-    vertex_owners = np.zeros(len(obj.data.vertices), dtype=np.int16)
-    bone_index_map = {} # Maps Blender Name -> Integer Index
-    clean_name_map = {} # Maps Clean Name -> List of Indices
-
-    if obj.parent and obj.parent.type == 'ARMATURE':
-        try:
-            arm = obj.parent
-            bone_pos_array = np.empty((len(arm.data.bones), 3), dtype=np.float32)
-            
-            # 1. Collect Bones and Unique Positions (Armature-Space)
-            for i, bone in enumerate(arm.data.bones):
-                name = bone.name
-                bone_names.append(name)
-                
-                # Use bones in their own local space (relative to Armature origin)
-                bone_pos_array[i] = bone.head_local
-                
-                # Setup hierarchy
-                parent_idx = arm.data.bones.find(bone.parent.name) if bone.parent else -1
-                bone_parents.append(parent_idx)
-                
-                # Map for vertex ownership (Fuzzy matching support)
-                bone_index_map[name] = i
-                clean = name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', name) else name
-                if clean not in clean_name_map:
-                    clean_name_map[clean] = []
-                clean_name_map[clean].append(i)
-
-            # Transform all bone positions at once into the final export space (Scale/Axis)
-            bone_positions = apply_import_matrix(bone_pos_array, export_matrix).tolist()
-
-            # 2. Resolve each vertex-group name once, then assign dominant owners.
-            group_target_indices = {}
-            for vertex_group in obj.vertex_groups:
-                vg_name = vertex_group.name
-                target_idx = bone_index_map.get(vg_name, -1)
-                if target_idx == -1:
-                    vg_clean = vg_name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', vg_name) else vg_name
-                    candidates = clean_name_map.get(vg_clean)
-                    if candidates:
-                        target_idx = candidates[0]
-                group_target_indices[vertex_group.index] = target_idx
-
-            unmatched_vertices = []
-            for v in obj.data.vertices:
-                winning_bone_idx = -1
-                highest_weight = -1.0
-
-                for g in v.groups:
-                    target_idx = group_target_indices.get(g.group, -1)
-                    if target_idx != -1 and g.weight > highest_weight:
-                        highest_weight = g.weight
-                        winning_bone_idx = target_idx
-                
-                if winning_bone_idx != -1:
-                    vertex_owners[v.index] = winning_bone_idx
-                elif v.groups:
-                    unmatched_vertices.append(v.index)
-
-            if unmatched_vertices:
-                warn(f"{len(unmatched_vertices)} vertices assigned to root bone (no matching bone found).")
-                vertex_owners[unmatched_vertices] = 0
-
-            # 3. Use the reconstruction mapping when available. Generated
-            # duplicate names such as ``.1`` are intentional and must not be
-            # stripped as if they were Blender's legacy ``.001`` recycling.
-            name_map = {}
-            try:
-                entries = json.loads(arm.get("carnivores_reconstruct_bone_name_map", "[]"))
-                if isinstance(entries, list) and len(entries) == len(bone_names):
-                    candidate_map = {
-                        str(entry["blender_name"]): str(entry["export_name"])
-                        for entry in entries
-                        if (
-                            isinstance(entry, dict)
-                            and entry.get("blender_name")
-                            and entry.get("export_name")
-                        )
-                    }
-                    if set(candidate_map) == set(bone_names):
-                        name_map = candidate_map
-            except (TypeError, ValueError, KeyError):
-                name_map = {}
-
-            final_names = []
-            for name in bone_names:
-                if name in name_map:
-                    export_name = name_map[name]
-                    final_names.append(export_name.encode("ascii", "ignore")[:31].decode("ascii"))
-                else:
-                    clean = name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', name) else name
-                    final_names.append(clean.encode("ascii", "ignore")[:31].decode("ascii"))
-
-            return final_names, bone_positions, bone_parents, vertex_owners
-
-        except Exception as e:
-            error(f"Armature processing failed: {e}")
-            return None
-
-    elif obj.parent is None:  # Hooks case
-        hook_mods = [m for m in obj.modifiers if m.type == 'HOOK' and m.object and m.vertex_group]
-        if hook_mods:
-            temp_list = []
-            bone_pos_array = []
-            
-            # Use mesh's world matrix to bring hooks into local space
-            world_to_obj = obj.matrix_world.inverted()
-            
-            for mod in hook_mods:
-                hook_obj = mod.object
-                name = hook_obj.name
-                
-                # Transform hook world position into mesh local space
-                local_pos = world_to_obj @ hook_obj.matrix_world.translation
-                bone_pos_array.append(local_pos)
-                temp_list.append((name, hook_obj))
-                
-            bone_pos_array = np.array(bone_pos_array, dtype=np.float32)
-            bone_positions = apply_import_matrix(bone_pos_array, export_matrix).tolist()
-
-            bone_names = []
-            bone_parents = [-1] * len(temp_list)
-            vertex_owners = np.zeros(len(obj.data.vertices), dtype=np.int16)
-            bone_index_map = {}
-
-            for i, (name, hook_obj) in enumerate(temp_list):
-                bone_names.append(name)
-                bone_index_map[name] = i
-
-            for i, (name, hook_obj) in enumerate(temp_list):
-                if hook_obj.parent:
-                    p_name = hook_obj.parent.name
-                    if p_name in bone_index_map:
-                        bone_parents[i] = bone_index_map[p_name]
-
-            group_target_indices = {
-                vertex_group.index: bone_index_map.get(vertex_group.name, -1)
-                for vertex_group in obj.vertex_groups
-            }
-            for v in obj.data.vertices:
-                winning_idx = 0
-                max_w = -1.0
-                for g in v.groups:
-                    target_idx = group_target_indices.get(g.group, -1)
-                    if target_idx != -1 and g.weight > max_w:
-                        max_w = g.weight
-                        winning_idx = target_idx
-                vertex_owners[v.index] = winning_idx
-
-            final_names = [n.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', n) else n for n in bone_names]
-            return final_names, bone_positions, bone_parents, vertex_owners
-
-    # Fallback for carbones / no bones
-    bone_names = ["Default"]
-    bone_positions = [(0.0, 0.0, 0.0)]
-    bone_parents = [-1]
-    vertex_owners[:] = 0
-    return bone_names, bone_positions, bone_parents, vertex_owners
+    """Return the legacy exporter tuple from the shared read-only mapper."""
+    mapping = collect_export_mapping(obj, export_matrix)
+    for message in mapping.warnings:
+        warn(f"Export owner mapping: {message}")
+    for message in mapping.errors:
+        error(f"Export owner mapping: {message}")
+    return (
+        [bone.export_name for bone in mapping.bones],
+        [list(position) for position in mapping.bone_positions],
+        [bone.parent_export_index for bone in mapping.bones],
+        mapping.vertex_owners.copy(),
+    )
 
 def handle_car_owners(vertices, context):
     """Build a lossless raw-to-compact CAR owner mapping.

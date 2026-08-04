@@ -1814,3 +1814,533 @@ def raw_ids_from_metadata(value):
     if np.any(raw_ids < 0) or np.unique(raw_ids).size != raw_ids.size:
         return None
     return raw_ids
+
+
+EXPORT_MAPPING_SCHEMA_VERSION = 1
+RECONCILIATION_SCHEMA_VERSION = 1
+RECONCILIATION_LEVELS = ("PASS", "EXPECTED_DRIFT", "WARNING", "ERROR")
+
+
+@dataclass(frozen=True)
+class ExportBoneRecord:
+    """One final export bone and its source-owner identity, when known."""
+
+    export_index: int
+    compact_id: int | None
+    raw_owner_id: int | None
+    source_name: str
+    blender_name: str
+    export_name: str
+    parent_export_index: int
+
+
+@dataclass(frozen=True)
+class ExportMapping:
+    """Read-only owner mapping produced by the actual export rules."""
+
+    source: str
+    bones: tuple[ExportBoneRecord, ...]
+    bone_positions: tuple[tuple[float, float, float], ...]
+    vertex_owners: np.ndarray
+    unmatched_generated_groups: tuple[dict, ...] = ()
+    unmatched_vertices: tuple[int, ...] = ()
+    no_group_vertices: tuple[int, ...] = ()
+    unowned_vertices: tuple[int, ...] = ()
+    fuzzy_matches: tuple[dict, ...] = ()
+    fallback_to_root_vertices: tuple[int, ...] = ()
+    name_collisions: tuple[dict, ...] = ()
+    warnings: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        owners = np.asarray(self.vertex_owners, dtype=np.int32).reshape(-1).copy()
+        owners.flags.writeable = False
+        object.__setattr__(self, "vertex_owners", owners)
+
+
+@dataclass(frozen=True)
+class ReconciliationResult:
+    """Structured comparison of canonical, deform, and export owner domains."""
+
+    level: str
+    valid: bool
+    export_mapping: ExportMapping | None
+    canonical_compact_vs_dominant: dict
+    canonical_raw_vs_export: dict
+    source_groups: dict
+    skipped_groups: tuple[dict, ...]
+    unmatched_owned_vertices: tuple[int, ...]
+    warnings: tuple[str, ...]
+    errors: tuple[str, ...]
+    counts: dict
+    generated_weight_checksum: str | None = None
+    expected_weight_checksum: str | None = None
+
+    def to_dict(self, include_vertex_owners=True):
+        payload = {
+            "schema_version": RECONCILIATION_SCHEMA_VERSION,
+            "level": self.level,
+            "valid": bool(self.valid),
+            "canonical_compact_vs_dominant": _json_safe(self.canonical_compact_vs_dominant),
+            "canonical_raw_vs_export": _json_safe(self.canonical_raw_vs_export),
+            "source_groups": _json_safe(self.source_groups),
+            "skipped_groups": _json_safe(self.skipped_groups),
+            "unmatched_owned_vertices": [int(index) for index in self.unmatched_owned_vertices],
+            "warnings": [str(message) for message in self.warnings],
+            "errors": [str(message) for message in self.errors],
+            "counts": _json_safe(self.counts),
+            "generated_weight_checksum": self.generated_weight_checksum,
+            "expected_weight_checksum": self.expected_weight_checksum,
+        }
+        if self.export_mapping is not None:
+            payload["export_mapping"] = export_mapping_to_dict(
+                self.export_mapping,
+                include_vertex_owners=include_vertex_owners,
+            )
+        else:
+            payload["export_mapping"] = None
+        return payload
+
+
+def _json_safe(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, (np.integer, np.floating, np.bool_)):
+        return value.item()
+    return value
+
+
+def export_mapping_to_dict(mapping, include_vertex_owners=True):
+    """Return a deterministic JSON-safe export mapping diagnostic."""
+    payload = {
+        "schema_version": EXPORT_MAPPING_SCHEMA_VERSION,
+        "source": str(mapping.source),
+        "bone_positions": [
+            [float(value) for value in position]
+            for position in mapping.bone_positions
+        ],
+        "bones": [
+            {
+                "export_index": int(bone.export_index),
+                "compact_id": bone.compact_id,
+                "raw_owner_id": bone.raw_owner_id,
+                "source_name": str(bone.source_name),
+                "blender_name": str(bone.blender_name),
+                "export_name": str(bone.export_name),
+                "parent_export_index": int(bone.parent_export_index),
+            }
+            for bone in mapping.bones
+        ],
+        "unmatched_generated_groups": _json_safe(mapping.unmatched_generated_groups),
+        "unmatched_vertices": [int(index) for index in mapping.unmatched_vertices],
+        "no_group_vertices": [int(index) for index in mapping.no_group_vertices],
+        "unowned_vertices": [int(index) for index in mapping.unowned_vertices],
+        "fuzzy_matches": _json_safe(mapping.fuzzy_matches),
+        "fallback_to_root_vertices": [
+            int(index) for index in mapping.fallback_to_root_vertices
+        ],
+        "name_collisions": _json_safe(mapping.name_collisions),
+        "warnings": [str(message) for message in mapping.warnings],
+        "errors": [str(message) for message in mapping.errors],
+    }
+    if include_vertex_owners:
+        payload["vertex_owners"] = mapping.vertex_owners.tolist()
+    return payload
+
+
+def export_mapping_to_metadata(mapping, include_vertex_owners=True):
+    """Serialize an export mapping diagnostic deterministically."""
+    return json.dumps(
+        export_mapping_to_dict(mapping, include_vertex_owners=include_vertex_owners),
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _validate_owner_vector(values, name, vertex_count=None):
+    array = np.asarray(values, dtype=np.int32).reshape(-1)
+    if vertex_count is not None and array.size != vertex_count:
+        raise ValueError(
+            f"{name} count {array.size} does not match vertex count {vertex_count}."
+        )
+    return array
+
+
+def _bone_record_by_export_index(export_bones):
+    records = {}
+    errors = []
+    for bone in export_bones or ():
+        try:
+            index = int(bone.export_index)
+        except (AttributeError, TypeError, ValueError):
+            errors.append("Export mapping contains a bone with an invalid export index.")
+            continue
+        if index < 0:
+            errors.append(f"Export mapping contains negative export index {index}.")
+            continue
+        if index in records:
+            errors.append(f"Export mapping contains duplicate export index {index}.")
+            continue
+        records[index] = bone
+    if records and set(records) != set(range(max(records) + 1)):
+        errors.append("Export mapping export indices are incomplete.")
+    return records, errors
+
+
+def _validate_export_hierarchy(export_bones):
+    records, errors = _bone_record_by_export_index(export_bones)
+    for index, bone in records.items():
+        parent = int(bone.parent_export_index)
+        if parent < -1 or (parent >= 0 and parent not in records) or parent == index:
+            errors.append(f"Export bone {index} has invalid parent index {parent}.")
+            continue
+        seen = set()
+        current = index
+        while current >= 0:
+            if current not in records:
+                errors.append(f"Export hierarchy references missing bone {current}.")
+                break
+            if current in seen:
+                errors.append(f"Export hierarchy contains a cycle at bone {current}.")
+                break
+            seen.add(current)
+            current = int(records[current].parent_export_index)
+    return records, errors
+
+
+def reconcile_rig_export(
+    *,
+    canonical_compact_owners,
+    canonical_raw_by_compact,
+    generated_dominant_owners,
+    export_owner_by_vertex,
+    export_bones=(),
+    skipped_groups=(),
+    source_group_names=None,
+    no_deform_vertices=(),
+    export_mapping=None,
+    smoothing_enabled=False,
+    generated_weight_checksum=None,
+    expected_weight_checksum=None,
+    forced_edge_diagnostics=(),
+    additional_warnings=(),
+    additional_errors=(),
+):
+    """Reconcile canonical owners, generated deform groups, and export owners.
+
+    Owner arrays use compact group IDs, while ``export_owner_by_vertex`` uses
+    final export-bone indices. Negative values mean that no owner was produced.
+    """
+    errors = [str(message) for message in additional_errors]
+    warnings = []
+    raw_by_compact = np.asarray(canonical_raw_by_compact, dtype=np.int32).reshape(-1)
+    canonical = _validate_owner_vector(canonical_compact_owners, "Canonical owner")
+    dominant = _validate_owner_vector(
+        generated_dominant_owners, "Generated dominant owner", canonical.size
+    )
+    exported = _validate_owner_vector(
+        export_owner_by_vertex, "Export owner", canonical.size
+    )
+    if np.any(raw_by_compact < 0) or np.unique(raw_by_compact).size != raw_by_compact.size:
+        errors.append("Canonical raw-owner mapping is not unique and non-negative.")
+    if np.any(canonical < -1) or np.any(canonical >= raw_by_compact.size):
+        errors.append("Canonical compact owners contain an out-of-range value.")
+    if np.any(dominant < -1) or np.any(dominant >= raw_by_compact.size):
+        errors.append("Generated dominant owners contain an out-of-range value.")
+
+    export_bones = tuple(export_bones or ())
+    records, hierarchy_errors = _validate_export_hierarchy(export_bones)
+    errors.extend(hierarchy_errors)
+    if np.any(exported < -1):
+        errors.append("Export owners contain an invalid negative value.")
+    if exported.size and np.any(exported >= max(len(records), 1)):
+        errors.append("Export owners reference a missing export bone.")
+
+    skipped = {int(group_id) for group_id in (skipped_groups or ())}
+    invalid_skipped = sorted(
+        group_id for group_id in skipped
+        if group_id < 0 or group_id >= raw_by_compact.size
+    )
+    if invalid_skipped:
+        errors.append(
+            "Skipped groups contain invalid compact IDs: "
+            + ", ".join(str(group_id) for group_id in invalid_skipped)
+            + "."
+        )
+    active_groups = set(range(raw_by_compact.size)) - skipped
+    compact_ids = [
+        int(bone.compact_id)
+        for bone in export_bones or ()
+        if bone.compact_id is not None
+    ]
+    if len(compact_ids) != len(set(compact_ids)):
+        errors.append("Export mapping contains duplicate generated compact IDs.")
+    raw_ids = [
+        int(bone.raw_owner_id)
+        for bone in export_bones or ()
+        if bone.raw_owner_id is not None
+    ]
+    if len(raw_ids) != len(set(raw_ids)):
+        errors.append("Export mapping contains duplicate generated raw owner IDs.")
+    if any(group_id < 0 or group_id >= raw_by_compact.size for group_id in compact_ids):
+        errors.append("Export mapping contains a generated compact ID outside the canonical owner mapping.")
+    if any(raw_id < 0 for raw_id in raw_ids):
+        errors.append("Export mapping contains a negative generated raw owner ID.")
+    for bone in export_bones or ():
+        if bone.compact_id is None or bone.raw_owner_id is None:
+            continue
+        compact_id = int(bone.compact_id)
+        if 0 <= compact_id < raw_by_compact.size:
+            if int(bone.raw_owner_id) != int(raw_by_compact[compact_id]):
+                errors.append(
+                    f"Export bone {bone.export_index} raw owner does not match compact group {compact_id}."
+                )
+    generated_groups = set(compact_ids)
+    missing_groups = sorted(active_groups - generated_groups)
+    extra_groups = sorted(generated_groups - set(range(raw_by_compact.size)))
+    if missing_groups:
+        errors.append(
+            "Missing generated deform bones for compact groups: "
+            + ", ".join(str(group_id) for group_id in missing_groups)
+            + "."
+        )
+    if extra_groups:
+        errors.append(
+            "Generated bones reference unknown compact groups: "
+            + ", ".join(str(group_id) for group_id in extra_groups)
+            + "."
+        )
+
+    source_names = tuple(source_group_names or ())
+    if source_group_names is not None and len(source_names) != raw_by_compact.size:
+        errors.append("Source group-name count does not match the raw-owner mapping.")
+    source_groups = {
+        "raw_by_compact": [int(value) for value in raw_by_compact],
+        "names": [str(value) for value in source_names],
+        "active_compact_ids": sorted(active_groups),
+        "skipped_compact_ids": sorted(skipped),
+        "generated_compact_ids": sorted(generated_groups),
+        "missing_compact_ids": missing_groups,
+        "extra_compact_ids": extra_groups,
+    }
+
+    unowned_indices = np.flatnonzero(canonical < 0).astype(np.int32)
+    canonical_owned = canonical >= 0
+    no_deform = set(int(index) for index in no_deform_vertices)
+    no_deform.update(int(index) for index in np.flatnonzero(dominant < 0))
+    no_deform_indices = tuple(sorted(index for index in no_deform if 0 <= index < canonical.size))
+    skipped_indices = tuple(
+        int(index) for index in np.flatnonzero(np.isin(canonical, list(skipped)))
+    ) if skipped else ()
+
+    dominant_matches = []
+    dominant_drift = []
+    missing_deform = []
+    for index in np.flatnonzero(canonical_owned):
+        vertex_index = int(index)
+        owner = int(canonical[index])
+        if owner in skipped:
+            continue
+        generated = int(dominant[index])
+        if generated < 0:
+            missing_deform.append(vertex_index)
+        elif generated == owner:
+            dominant_matches.append(vertex_index)
+        else:
+            dominant_drift.append(vertex_index)
+
+    export_matches = []
+    export_drift = []
+    unmatched_owned = []
+    skipped_export_drift = []
+    exported_raw_by_vertex = {}
+    explicit_unmatched = set(
+        int(index)
+        for index in (
+            export_mapping.unmatched_vertices
+            if export_mapping is not None else ()
+        )
+    )
+    for index in np.flatnonzero(canonical_owned):
+        vertex_index = int(index)
+        owner = int(canonical[index])
+        if vertex_index in explicit_unmatched:
+            unmatched_owned.append(vertex_index)
+            continue
+        export_index = int(exported[index])
+        bone = records.get(export_index)
+        if bone is None or bone.raw_owner_id is None:
+            unmatched_owned.append(vertex_index)
+            continue
+        exported_raw = int(bone.raw_owner_id)
+        exported_raw_by_vertex[vertex_index] = exported_raw
+        expected_raw = int(raw_by_compact[owner])
+        if owner in skipped:
+            if exported_raw != expected_raw:
+                skipped_export_drift.append(vertex_index)
+        elif exported_raw == expected_raw:
+            export_matches.append(vertex_index)
+        else:
+            export_drift.append(vertex_index)
+
+    fallback_indices = set(
+        int(index)
+        for index in (
+            export_mapping.fallback_to_root_vertices
+            if export_mapping is not None else ()
+        )
+    )
+    fallback_indices = {
+        index for index in fallback_indices if 0 <= index < canonical.size
+    }
+    skipped_fallback = tuple(sorted(index for index in fallback_indices if int(canonical[index]) in skipped))
+    if skipped_fallback:
+        errors.append(
+            f"{len(skipped_fallback)} vertices from skipped owner groups fall back to export root 0."
+        )
+    elif fallback_indices:
+        warnings.append(
+            f"{len(fallback_indices)} vertices fall back to export root 0."
+        )
+    if skipped_export_drift:
+        warnings.append(
+            f"{len(skipped_export_drift)} vertices from skipped owner groups do not map to their original export owner."
+        )
+
+    for index in missing_deform:
+        errors.append(f"Owned vertex {index} has no generated deform assignment.")
+    if unmatched_owned:
+        errors.append(
+            f"{len(unmatched_owned)} canonical-owned vertices have no export owner mapping."
+        )
+    if export_drift and not smoothing_enabled:
+        warnings.append(
+            f"{len(export_drift)} canonical-owned vertices drift in the CAR export mapping."
+        )
+    if dominant_drift and not smoothing_enabled:
+        warnings.append(
+            f"{len(dominant_drift)} vertices have unexpected dominant deform drift."
+        )
+
+    mapping_warnings = [] if export_mapping is None else list(export_mapping.warnings)
+    mapping_errors = [] if export_mapping is None else list(export_mapping.errors)
+    warnings.extend(str(message) for message in mapping_warnings)
+    errors.extend(str(message) for message in mapping_errors)
+    if export_mapping is not None and export_mapping.unmatched_generated_groups:
+        warnings.append(
+            f"{len(export_mapping.unmatched_generated_groups)} generated vertex group(s) do not map to export bones."
+        )
+    mapping_no_group = () if export_mapping is None else export_mapping.no_group_vertices
+    mapping_unowned = () if export_mapping is None else export_mapping.unowned_vertices
+    valid_no_group = tuple(
+        sorted({int(index) for index in mapping_no_group if 0 <= int(index) < canonical.size})
+    )
+    valid_mapping_unowned = tuple(
+        sorted({int(index) for index in mapping_unowned if 0 <= int(index) < canonical.size})
+    )
+    if valid_no_group:
+        warnings.append(f"{len(valid_no_group)} vertices have no vertex groups in the export mapping.")
+    if valid_mapping_unowned:
+        warnings.append(f"{len(valid_mapping_unowned)} export-mapped vertices are canonically unowned.")
+    fuzzy_matches = () if export_mapping is None else export_mapping.fuzzy_matches
+    if fuzzy_matches:
+        warnings.append(f"{len(fuzzy_matches)} export group matches used fuzzy name resolution.")
+    collisions = () if export_mapping is None else export_mapping.name_collisions
+    if collisions:
+        warnings.append(f"{len(collisions)} final export bone-name collisions were detected.")
+    forced = tuple(forced_edge_diagnostics or ())
+    if forced:
+        warnings.append(f"{len(forced)} forced or explicit edge decision(s) affect the proposal.")
+
+    if expected_weight_checksum is not None:
+        if generated_weight_checksum is None:
+            warnings.append("Generated-weight checksum is unavailable.")
+        elif str(generated_weight_checksum) != str(expected_weight_checksum):
+            errors.append("Generated-weight checksum does not match the stored checksum.")
+
+    skipped_details = tuple(
+        {
+            "compact_id": int(group_id),
+            "raw_owner_id": int(raw_by_compact[group_id])
+            if 0 <= group_id < raw_by_compact.size else None,
+            "vertex_count": int(np.count_nonzero(canonical == group_id)),
+            "export_fallback_vertex_count": int(
+                sum(int(canonical[index]) == group_id for index in fallback_indices)
+            ),
+        }
+        for group_id in sorted(skipped)
+    )
+    if skipped_details:
+        warnings.append(f"{len(skipped_details)} canonical owner group(s) were skipped from the generated armature.")
+    if unowned_indices.size:
+        warnings.append(f"{int(unowned_indices.size)} canonical vertices are unowned.")
+    warnings.extend(str(message) for message in additional_warnings)
+
+    counts = {
+        "vertices": int(canonical.size),
+        "owned_vertices": int(np.count_nonzero(canonical_owned)),
+        "unowned_vertices": int(unowned_indices.size),
+        "no_deform_vertices": int(len(no_deform_indices)),
+        "skipped_owner_vertices": int(len(skipped_indices)),
+        "dominant_matches": int(len(dominant_matches)),
+        "dominant_drift": int(len(dominant_drift)),
+        "missing_deform_assignments": int(len(missing_deform)),
+        "export_matches": int(len(export_matches)),
+        "export_drift": int(len(export_drift)),
+        "skipped_export_drift": int(len(skipped_export_drift)),
+        "unmatched_owned_vertices": int(len(unmatched_owned)),
+        "fallback_to_root_vertices": int(len(fallback_indices)),
+        "skipped_fallback_to_root_vertices": int(len(skipped_fallback)),
+        "fuzzy_matches": int(len(fuzzy_matches)),
+        "name_collisions": int(len(collisions)),
+        "missing_generated_groups": int(len(missing_groups)),
+        "unmatched_generated_groups": int(
+            0 if export_mapping is None
+            else len(export_mapping.unmatched_generated_groups)
+        ),
+        "no_group_vertices": int(len(valid_no_group)),
+        "export_mapping_unowned_vertices": int(len(valid_mapping_unowned)),
+    }
+
+    if errors:
+        level = "ERROR"
+    elif warnings:
+        level = "WARNING"
+    elif dominant_drift and smoothing_enabled:
+        level = "EXPECTED_DRIFT"
+    else:
+        level = "PASS"
+
+    return ReconciliationResult(
+        level=level,
+        valid=level != "ERROR",
+        export_mapping=export_mapping,
+        canonical_compact_vs_dominant={
+            "matching_vertices": dominant_matches,
+            "drift_vertices": dominant_drift,
+            "missing_deform_vertices": missing_deform,
+        },
+        canonical_raw_vs_export={
+            "matching_vertices": export_matches,
+            "drift_vertices": export_drift,
+            "skipped_drift_vertices": skipped_export_drift,
+            "unmatched_owned_vertices": unmatched_owned,
+            "exported_raw_by_vertex": exported_raw_by_vertex,
+        },
+        source_groups=source_groups,
+        skipped_groups=skipped_details,
+        unmatched_owned_vertices=tuple(unmatched_owned),
+        warnings=tuple(dict.fromkeys(warnings)),
+        errors=tuple(dict.fromkeys(errors)),
+        counts=counts,
+        generated_weight_checksum=(
+            None if generated_weight_checksum is None else str(generated_weight_checksum)
+        ),
+        expected_weight_checksum=(
+            None if expected_weight_checksum is None else str(expected_weight_checksum)
+        ),
+    )

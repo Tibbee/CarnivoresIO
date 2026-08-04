@@ -67,6 +67,19 @@ Check at least one model for each applicable case:
 - translated, rotated, or unapplied-scale mesh;
 - repeated reconstruction with identical settings.
 
+## Phase 7 Round-Trip Reconciliation
+
+1. Run **Validate Rig Proposal** after applying a generated rig and record the explicit result level: `PASS`, `EXPECTED_DRIFT`, `WARNING`, or `ERROR`.
+2. Confirm the report separates canonical compact-owner versus dominant deform drift from canonical raw-owner versus dry-run CAR export drift.
+3. Confirm final export bone order, Blender names, export names, raw IDs, compact IDs, parent indices, and affected vertex counts are present in the structured report.
+4. With exact one-hot generated groups, confirm `PASS` and zero unexpected export drift.
+5. Enable smoothing and confirm dominant deform changes are quantified separately; smoothing-only drift is `EXPECTED_DRIFT` when no mapping failure is present.
+6. Create a skipped detached owner component and confirm affected vertices are counted. Any skipped vertices that would fall back to export root `0` must be reported as `ERROR`, never silently accepted.
+7. Include unowned vertices and vertices with no deform groups in the report; confirm they are counted separately from unmatched owned vertices.
+8. Rename generated bones or create ASCII/truncation collisions and confirm explicit generated metadata is preferred, collisions are reported, and owner weights remain attached to their compact IDs.
+9. Confirm `.001` fuzzy matches, forced/rejected edge decisions, proximity attachments, fallback assignments, and generated-weight checksum status are visible in the report.
+10. Run a temporary CAR export/parity check and confirm the dry-run owner array and final bone names/order match the serialized CAR records.
+
 ## Known Experimental Limitations
 
 - Topology supplies explicit heads, tails, and PCA roll references, but final roll quality still requires broader visual testing.

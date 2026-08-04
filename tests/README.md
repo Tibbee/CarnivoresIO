@@ -7,7 +7,7 @@ From the repository root in Git Bash:
 ```bash
 WINPWD=$(pwd -W)
 ../../../../blender.exe --background --factory-startup --python-expr \
-  "import sys,unittest; p=r'$WINPWD\\tests'; sys.path.insert(0,p); result=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.discover(p)); raise SystemExit(0 if result.wasSuccessful() else 1)"
+  "import sys,unittest; sys.path.insert(0,r'$WINPWD\\..'); import carnivores_io; carnivores_io.register(); p=r'$WINPWD'; sys.path.insert(0,p); result=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.discover(p)); carnivores_io.unregister(); raise SystemExit(0 if result.wasSuccessful() else 1)"
 ```
 
-The tests import the addon modules but do not register the addon or modify Blender user preferences.
+The suite registers the addon because several operator tests call `bpy.ops.carnivores.*`. It does not modify Blender user preferences.

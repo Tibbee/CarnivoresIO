@@ -82,6 +82,20 @@ The experimental `TOPOLOGY` algorithm builds a `RigProposal` from this analysis:
 
 `LEGACY` remains the default. Select **Topology (Experimental)** in the **Carnivores Rig** panel for manual testing. Generated armatures record algorithm version, accepted raw-owner edges with reasons and confidence, roots, skipped groups, component policy, parent map, smoothing state, and semantic-naming state.
 
+### 3. True Round-Trip Reconciliation
+
+Phase 7 keeps three owner domains separate:
+
+- **Canonical source owners**: compact IDs used for reconstruction and raw IDs preserved from the CAR file.
+- **Generated deform owners**: dominant vertex-group assignments after optional generated smoothing.
+- **Export owners**: final bone indices produced by the same read-only mapping used by `.3DF`, `.CAR`, and `.3DN` export.
+
+`utils/io.py::collect_export_mapping()` performs the exporter mapping without writing files or changing Blender state. It reports final bone order and names, source/group matches, fuzzy `.001` matches, unmatched groups and vertices, no-group/unowned vertices, root fallbacks, name collisions, and mapping errors. `collect_bones_and_owners()` remains the compatibility tuple wrapper used by existing exporters.
+
+Rig validation compares compact canonical owners with dominant deform owners separately from raw canonical owners with dry-run export owners. Generated deform weights receive a deterministic checksum; missing checksums on older generated rigs are reported as unavailable. Result levels are `PASS`, `EXPECTED_DRIFT` for owner drift explicitly attributable to enabled smoothing, `WARNING` for reported uncertainty or intentional fallback, and `ERROR` for missing/ambiguous mappings, invalid hierarchies, unmatched owned vertices, checksum mismatch, or skipped vertices falling back to export root `0`.
+
+The exporter still preserves its compatibility root-fallback behavior, but Phase 7 never treats that fallback as silent success. Validation and preflight include affected vertex counts, and generated-rig reconciliation is included in Validate Rig Proposal and Generate Rig Report.
+
 ---
 
 ### 3. Generated Weight Smoothing (Optional)

@@ -923,6 +923,283 @@ class RigAdapterTests(unittest.TestCase):
             if mesh.name in bpy.data.meshes:
                 bpy.data.meshes.remove(mesh)
 
+    def test_phase7_hook_mapping_reports_no_group_fallback(self):
+        mesh = bpy.data.meshes.new("Phase7HookMesh")
+        mesh.from_pydata([(0, 0, 0), (1, 0, 0), (2, 0, 0)], [(0, 1), (1, 2)], [])
+        obj = bpy.data.objects.new("Phase7HookObject", mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        hook = bpy.data.objects.new("Phase7Hook", None)
+        bpy.context.scene.collection.objects.link(hook)
+        group = obj.vertex_groups.new(name="Phase7Hook")
+        group.add([0], 1.0, 'REPLACE')
+        modifier = obj.modifiers.new("Phase7HookModifier", type='HOOK')
+        modifier.object = hook
+        modifier.vertex_group = group.name
+        try:
+            mapping = animation.io_utils.collect_export_mapping(obj, np.identity(4))
+            self.assertEqual(mapping.source, "HOOKS")
+            np.testing.assert_array_equal(mapping.vertex_owners, [0, 0, 0])
+            self.assertEqual(mapping.no_group_vertices, (1, 2))
+            self.assertEqual(mapping.fallback_to_root_vertices, (1, 2))
+            self.assertFalse(mapping.errors)
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if hook.name in bpy.data.objects:
+                bpy.data.objects.remove(hook, do_unlink=True)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_phase7_dry_run_matches_legacy_export_tuple(self):
+        obj, mesh = self._make_phase6_topology_object("Phase7DryRunObject")
+        armature = None
+        armature_data = None
+        try:
+            armature = animation._reconstruct_armature_topology(obj)
+            armature_data = armature.data
+            before_groups = [group.name for group in obj.vertex_groups]
+            before_checksum = animation.generated_weight_checksum(obj)
+            dry_run = animation.io_utils.collect_export_mapping(obj, np.identity(4))
+            legacy = animation.io_utils.collect_bones_and_owners(obj, np.identity(4))
+            self.assertEqual([bone.export_name for bone in dry_run.bones], legacy[0])
+            np.testing.assert_array_equal(dry_run.vertex_owners, legacy[3])
+            self.assertEqual(before_groups, [group.name for group in obj.vertex_groups])
+            self.assertEqual(before_checksum, animation.generated_weight_checksum(obj))
+            self.assertTrue(all("fallback" not in warning.lower() for warning in dry_run.warnings))
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data is not None and armature_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(armature_data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_phase7_reconciliation_reports_exact_one_hot_pass(self):
+        obj, mesh = self._make_phase6_topology_object("Phase7PassObject")
+        armature = None
+        armature_data = None
+        try:
+            armature = animation._reconstruct_armature_topology(obj)
+            armature_data = armature.data
+            owners = np.empty(len(mesh.vertices), dtype=np.int32)
+            mesh.attributes[animation.OWNER_ATTR_NAME].data.foreach_get("value", owners)
+            raw_ids = np.array([0, 4, 9], dtype=np.int32)
+            result = animation._build_rig_export_reconciliation(
+                obj, armature, owners, raw_ids
+            )
+            self.assertEqual(result.level, "PASS")
+            self.assertEqual(result.counts["export_drift"], 0)
+            self.assertEqual(result.counts["dominant_drift"], 0)
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data is not None and armature_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(armature_data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_phase7_smoothing_drift_is_expected_when_export_is_exact(self):
+        obj, mesh = self._make_phase6_topology_object("Phase7SmoothObject")
+        armature = None
+        armature_data = None
+        try:
+            obj["carnivores_reconstruct_smooth_weights"] = True
+            armature = animation._reconstruct_armature_topology(obj)
+            armature_data = armature.data
+            source_group = obj.vertex_groups.get("CarBone_4")
+            self.assertIsNotNone(source_group)
+            source_group.add([0], 2.0, 'REPLACE')
+            armature[animation.GENERATED_WEIGHT_CHECKSUM_PROPERTY] = animation.generated_weight_checksum(obj)
+            owners = np.empty(len(mesh.vertices), dtype=np.int32)
+            mesh.attributes[animation.OWNER_ATTR_NAME].data.foreach_get("value", owners)
+            raw_ids = np.array([0, 4, 9], dtype=np.int32)
+            result = animation._build_rig_export_reconciliation(
+                obj, armature, owners, raw_ids
+            )
+            self.assertEqual(result.level, "EXPECTED_DRIFT")
+            self.assertGreater(result.counts["dominant_drift"], 0)
+            self.assertGreater(result.counts["export_drift"], 0)
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data is not None and armature_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(armature_data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_phase7_skipped_group_fallback_has_vertex_count(self):
+        mesh = bpy.data.meshes.new("Phase7SkippedMesh")
+        mesh.from_pydata(
+            [(0, 0, 0), (1, 0, 0), (10, 0, 0), (11, 0, 0)],
+            [(0, 1), (2, 3)],
+            [],
+        )
+        obj = bpy.data.objects.new("Phase7SkippedObject", mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        mapping = build_owner_mapping([0, 0, 4, 4])
+        owner_attr = mesh.attributes.new(name=animation.OWNER_ATTR_NAME, type='INT', domain='POINT')
+        owner_attr.data.foreach_set("value", mapping.compact_per_vertex)
+        source_attr = mesh.attributes.new(name=animation.OWNER_SOURCE_ATTR_NAME, type='INT', domain='POINT')
+        source_attr.data.foreach_set("value", mapping.raw_per_vertex)
+        mesh[OWNER_MAPPING_PROPERTY] = owner_mapping_to_metadata(mapping)
+        obj["carnivores_reconstruct_algorithm"] = "TOPOLOGY"
+        obj["carnivores_reconstruct_component_policy"] = "SKIP"
+        obj["carnivores_reconstruct_semantic_naming"] = False
+        armature = None
+        armature_data = None
+        try:
+            proposal, _checksum = animation.analyze_topology_proposal(obj)
+            self.assertEqual(proposal.skipped_groups, (1,))
+            armature = animation._reconstruct_armature_topology(obj, proposal=proposal)
+            armature_data = armature.data
+            owners = np.empty(len(mesh.vertices), dtype=np.int32)
+            owner_attr.data.foreach_get("value", owners)
+            result = animation._build_rig_export_reconciliation(
+                obj, armature, owners, mapping.raw_by_compact,
+                skipped_groups=proposal.skipped_groups, proposal=proposal,
+            )
+            self.assertEqual(result.level, "ERROR")
+            self.assertEqual(result.counts["skipped_owner_vertices"], 2)
+            self.assertEqual(result.counts["skipped_fallback_to_root_vertices"], 2)
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data is not None and armature_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(armature_data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_phase7_missing_deform_group_is_error(self):
+        obj, mesh = self._make_phase6_topology_object("Phase7MissingDeformObject")
+        armature = None
+        armature_data = None
+        try:
+            armature = animation._reconstruct_armature_topology(obj)
+            armature_data = armature.data
+            removed = obj.vertex_groups.get("CarBone_4")
+            self.assertIsNotNone(removed)
+            obj.vertex_groups.remove(removed)
+            owners = np.empty(len(mesh.vertices), dtype=np.int32)
+            mesh.attributes[animation.OWNER_ATTR_NAME].data.foreach_get("value", owners)
+            result = animation._build_rig_export_reconciliation(
+                obj, armature, owners, np.array([0, 4, 9], dtype=np.int32)
+            )
+            self.assertEqual(result.level, "ERROR")
+            self.assertGreater(result.counts["missing_deform_assignments"], 0)
+            self.assertGreater(result.counts["no_deform_vertices"], 0)
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data is not None and armature_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(armature_data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_phase7_explicit_metadata_disables_fuzzy_group_matching(self):
+        obj, mesh = self._make_phase6_topology_object("Phase7ExplicitMetadataObject")
+        armature = None
+        armature_data = None
+        try:
+            armature = animation._reconstruct_armature_topology(obj)
+            armature_data = armature.data
+            group = obj.vertex_groups.get("CarBone_0")
+            self.assertIsNotNone(group)
+            group.name = "CarBone_0.001"
+            mapping = animation.io_utils.collect_export_mapping(obj, np.identity(4))
+            self.assertFalse(mapping.fuzzy_matches)
+            self.assertTrue(mapping.unmatched_generated_groups)
+            self.assertTrue(mapping.unmatched_vertices)
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data is not None and armature_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(armature_data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_phase7_malformed_generated_name_map_is_error(self):
+        obj, mesh = self._make_phase6_topology_object("Phase7MalformedMapObject")
+        armature = None
+        armature_data = None
+        try:
+            armature = animation._reconstruct_armature_topology(obj)
+            armature_data = armature.data
+            armature["carnivores_reconstruct_bone_name_map"] = "not-json"
+            mapping = animation.io_utils.collect_export_mapping(obj, np.identity(4))
+            self.assertTrue(mapping.errors)
+            self.assertEqual(mapping.vertex_owners.shape[0], len(mesh.vertices))
+            self.assertEqual(
+                animation.io_utils.collect_bones_and_owners(obj, np.identity(4))[0],
+                [bone.export_name for bone in mapping.bones],
+            )
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data is not None and armature_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(armature_data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_phase7_export_name_collision_is_reported(self):
+        obj, mesh = self._make_phase6_topology_object("Phase7CollisionObject")
+        armature = None
+        armature_data = None
+        try:
+            armature = animation._reconstruct_armature_topology(obj)
+            armature_data = armature.data
+            entries = json.loads(armature["carnivores_reconstruct_bone_name_map"])
+            for entry in entries:
+                entry["export_name"] = "Duplicate"
+            armature["carnivores_reconstruct_bone_name_map"] = json.dumps(entries)
+            owners = np.empty(len(mesh.vertices), dtype=np.int32)
+            mesh.attributes[animation.OWNER_ATTR_NAME].data.foreach_get("value", owners)
+            result = animation._build_rig_export_reconciliation(
+                obj, armature, owners, np.array([0, 4, 9], dtype=np.int32)
+            )
+            self.assertEqual(result.level, "WARNING")
+            self.assertGreater(result.counts["name_collisions"], 0)
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data is not None and armature_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(armature_data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_phase7_forced_edge_is_reported_in_reconciliation(self):
+        obj, mesh = self._make_phase6_topology_object("Phase7ForcedEdgeObject")
+        armature = None
+        armature_data = None
+        try:
+            proposal, _checksum = animation.analyze_topology_proposal(
+                obj, forced_edges=[(0, 2)]
+            )
+            armature = animation._reconstruct_armature_topology(obj, proposal=proposal)
+            armature_data = armature.data
+            owners = np.empty(len(mesh.vertices), dtype=np.int32)
+            mesh.attributes[animation.OWNER_ATTR_NAME].data.foreach_get("value", owners)
+            result = animation._build_rig_export_reconciliation(
+                obj, armature, owners, np.array([0, 4, 9], dtype=np.int32),
+                proposal=proposal,
+            )
+            self.assertIn(result.level, {"WARNING", "ERROR"})
+            self.assertTrue(any("forced" in warning.lower() for warning in result.warnings))
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data is not None and armature_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(armature_data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
     def test_non_generated_armature_is_not_replaced(self):
         mesh = bpy.data.meshes.new("UserRigMesh")
         mesh.from_pydata([(0, 0, 0), (1, 0, 0)], [(0, 1)], [])
