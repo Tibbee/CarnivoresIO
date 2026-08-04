@@ -112,6 +112,43 @@ class RigGeometryTests(unittest.TestCase):
         self.assertEqual(analysis.normalized_group_centroids.shape, (0, 3))
         self.assertTrue(any("no nonempty" in warning.lower() for warning in analysis.warnings))
 
+    def test_tiny_owner_sets_get_finite_roll_references(self):
+        for vertices in ([[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0], [1e-9, 0.0, 0.0]]):
+            mesh = rig.build_mesh_analysis_input(vertices, [0] * len(vertices), [42])
+            proposal = rig.build_topology_rig_proposal(rig.analyze_rig_geometry(mesh))
+            self.assertEqual(len(proposal.groups), 1)
+            reference = proposal.roll_reference_by_group[0]
+            self.assertTrue(np.isfinite(reference).all())
+            self.assertGreater(np.linalg.norm(reference), 1e-8)
+
+    def test_roll_references_are_deterministic_and_mirrored(self):
+        # Two lateral limbs mirrored across X: the proposal should give them
+        # lateral roll references with opposite X signs so rolls mirror.
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0], [0.2, 0.0, 0.0],      # central spine
+                [-1.0, 0.0, 0.0], [-1.2, 0.0, 0.0],     # left limb
+                [1.0, 0.0, 0.0], [1.2, 0.0, 0.0],       # right limb
+            ],
+            dtype=np.float64,
+        )
+        mesh = rig.build_mesh_analysis_input(
+            vertices,
+            [0, 0, 1, 1, 2, 2],
+            [0, 1, 2],
+            edges=[[0, 1], [1, 2], [1, 3], [1, 4], [1, 5]],
+        )
+        proposal = rig.build_topology_rig_proposal(rig.analyze_rig_geometry(mesh))
+
+        # All references must be finite and non-degenerate.
+        for reference in proposal.roll_reference_by_group:
+            self.assertTrue(np.isfinite(reference).all())
+            self.assertGreater(np.linalg.norm(reference), 1e-8)
+        # Mirrored limbs should have opposite lateral (X) roll components.
+        left_x = proposal.roll_reference_by_group[1][0]
+        right_x = proposal.roll_reference_by_group[2][0]
+        self.assertLess(left_x * right_x, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

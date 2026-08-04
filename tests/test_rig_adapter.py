@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sys
 import unittest
 
@@ -197,6 +198,571 @@ class RigAdapterTests(unittest.TestCase):
             self.assertEqual(analysis.mesh.edges.shape, (5, 2))
         finally:
             bpy.data.objects.remove(obj, do_unlink=True)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_topology_armature_shares_transformed_mesh_world_matrix(self):
+        """Phase 5 10.5: armature matches the mesh's world transform, bones stay local."""
+        mesh = bpy.data.meshes.new("TransformMesh")
+        mesh.from_pydata(
+            [(0, 0, 0), (0.8, 0, 0), (1, 0, 0), (1.8, 0, 0), (2, 0, 0), (2.8, 0, 0)],
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
+            [],
+        )
+        obj = bpy.data.objects.new("TransformObject", mesh)
+        obj.location = (10, -3, 2)
+        obj.rotation_euler = (0.1, 0.2, 0.3)
+        obj.scale = (2, 3, 4)
+        bpy.context.scene.collection.objects.link(obj)
+        mapping = build_owner_mapping([0, 0, 4, 4, 9, 9])
+        owner_attr = mesh.attributes.new(
+            name=animation.OWNER_ATTR_NAME, type='INT', domain='POINT'
+        )
+        owner_attr.data.foreach_set("value", mapping.compact_per_vertex)
+        source_attr = mesh.attributes.new(
+            name=animation.OWNER_SOURCE_ATTR_NAME, type='INT', domain='POINT'
+        )
+        source_attr.data.foreach_set("value", mapping.raw_per_vertex)
+        mesh[OWNER_MAPPING_PROPERTY] = owner_mapping_to_metadata(mapping)
+        obj["carnivores_reconstruct_semantic_naming"] = False
+
+        armature = None
+        armature_data = None
+        try:
+            armature = animation._reconstruct_armature_topology(obj)
+            self.assertIsNotNone(armature)
+            armature_data = armature.data
+            # Armature world transform equals the mesh's (bones authored in local space).
+            for row_a, row_b in zip(armature.matrix_world, obj.matrix_world):
+                for value_a, value_b in zip(row_a, row_b):
+                    self.assertAlmostEqual(value_a, value_b, places=4)
+            # Bone heads stay in mesh-local space (not world).
+            self.assertTrue(np.isfinite([
+                animation.io_utils.get_bone_roll(bone) for bone in armature.data.bones
+            ]).all())
+            first_bone = armature.data.bones["CarBone_0"]
+            self.assertAlmostEqual(first_bone.head_local.x, 0.9, places=4)
+            self.assertAlmostEqual(first_bone.head_local.y, 0.0, places=4)
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data is not None and armature_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(armature_data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_armature_construction_failure_leaves_no_partial_object(self):
+        before = {object_.name for object_ in bpy.data.objects}
+        with self.assertRaises(ValueError):
+            animation.io_utils.create_armature(
+                ["Broken"],
+                [(0.0, 0.0, 0.0)],
+                [4],
+                "TransactionalFailure",
+                bpy.context.scene.collection,
+            )
+        after = {object_.name for object_ in bpy.data.objects}
+        self.assertEqual(before, after)
+
+    def test_parented_nonuniform_mesh_preserves_world_matrix(self):
+        mesh = bpy.data.meshes.new("ParentTransformMesh")
+        mesh.from_pydata(
+            [(0, 0, 0), (0.8, 0, 0), (1, 0, 0), (1.8, 0, 0), (2, 0, 0), (2.8, 0, 0)],
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
+            [],
+        )
+        parent = bpy.data.objects.new("ParentTransformParent", None)
+        parent.location = (100, 5, -2)
+        bpy.context.scene.collection.objects.link(parent)
+        obj = bpy.data.objects.new("ParentTransformObject", mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        obj.location = (10, -3, 2)
+        obj.rotation_euler = (0.1, 0.2, 0.3)
+        obj.scale = (2, 3, 4)
+        obj.parent = parent
+        obj.matrix_parent_inverse = parent.matrix_world.inverted()
+        mapping = build_owner_mapping([0, 0, 4, 4, 9, 9])
+        owner_attr = mesh.attributes.new(name=animation.OWNER_ATTR_NAME, type='INT', domain='POINT')
+        owner_attr.data.foreach_set("value", mapping.compact_per_vertex)
+        source_attr = mesh.attributes.new(name=animation.OWNER_SOURCE_ATTR_NAME, type='INT', domain='POINT')
+        source_attr.data.foreach_set("value", mapping.raw_per_vertex)
+        mesh[OWNER_MAPPING_PROPERTY] = owner_mapping_to_metadata(mapping)
+        obj["carnivores_reconstruct_semantic_naming"] = False
+
+        armature = None
+        armature_data = None
+        try:
+            bpy.context.view_layer.update()
+            before = obj.matrix_world.copy()
+            armature = animation._reconstruct_armature_topology(obj)
+            armature_data = armature.data
+            bpy.context.view_layer.update()
+            np.testing.assert_allclose(np.asarray(obj.matrix_world), np.asarray(before), atol=1e-4)
+            self.assertIs(obj.parent, armature)
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            bpy.data.objects.remove(parent, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data is not None and armature_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(armature_data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_name_safety_truncates_and_dedupes_bone_names(self):
+        """Phase 5 10.4: ASCII cleaning, 32-byte limit, and duplicate resolution."""
+        resolved = animation._resolve_generated_bone_names(
+            ["A" * 40, "A" * 40, "B" * 20, "name_with_under", "😀emoji"]
+        )
+        self.assertEqual(len(resolved), 5)
+        self.assertEqual(len(set(resolved)), 5)
+        for name in resolved:
+            self.assertLessEqual(len(name.encode("utf-8", "ignore")), 31)
+        # The emoji (non-ASCII) should be stripped, and long names truncated.
+        self.assertIn("B" * 20, resolved)
+        self.assertTrue(any(name.startswith("A") for name in resolved))
+        self.assertTrue(any(name.endswith(".1") for name in resolved))
+        blender_names = animation._resolve_blender_bone_names(["A" * 63, "A" * 63])
+        self.assertEqual(len(set(blender_names)), 2)
+        self.assertLessEqual(max(len(name.encode("utf-8")) for name in blender_names), 63)
+
+    def test_name_collision_keeps_owner_weights_by_compact_id(self):
+        mesh = bpy.data.meshes.new("NameCollisionMesh")
+        mesh.from_pydata(
+            [(0, 0, 0), (0.1, 0, 0), (1, 0, 0), (1.1, 0, 0)],
+            [(0, 1), (1, 2), (2, 3)],
+            [],
+        )
+        obj = bpy.data.objects.new("NameCollisionObject", mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        mapping = build_owner_mapping([10, 10, 20, 20])
+        owner_attr = mesh.attributes.new(name=animation.OWNER_ATTR_NAME, type='INT', domain='POINT')
+        owner_attr.data.foreach_set("value", mapping.compact_per_vertex)
+        source_attr = mesh.attributes.new(name=animation.OWNER_SOURCE_ATTR_NAME, type='INT', domain='POINT')
+        source_attr.data.foreach_set("value", mapping.raw_per_vertex)
+        mesh[OWNER_MAPPING_PROPERTY] = owner_mapping_to_metadata(mapping)
+        first_group = obj.vertex_groups.new(name="A😀")
+        second_group = obj.vertex_groups.new(name="A")
+        first_group.add([0, 1], 1.0, 'REPLACE')
+        second_group.add([2, 3], 1.0, 'REPLACE')
+        obj["carnivores_reconstruct_semantic_naming"] = False
+
+        armature = None
+        armature_data = None
+        try:
+            armature = animation._reconstruct_armature_topology(obj)
+            self.assertEqual([bone.name for bone in armature.data.bones], ["A😀", "A"])
+            self.assertEqual([group.name for group in obj.vertex_groups], ["A😀", "A"])
+            self.assertIn("\"export_name\":\"A\"", armature["carnivores_reconstruct_bone_name_map"])
+            exported = animation.io_utils.collect_bones_and_owners(obj, np.identity(4))
+            self.assertEqual(exported[0], ["A", "A.1"])
+            armature.data.bones[0].name = "Renamed"
+            obj.vertex_groups[0].name = "Renamed"
+            renamed_export = animation.io_utils.collect_bones_and_owners(obj, np.identity(4))
+            self.assertEqual(renamed_export[0], ["Renamed", "A"])
+            self.assertEqual(mesh.vertices[0].groups[0].group, 0)
+            self.assertEqual(mesh.vertices[2].groups[0].group, 1)
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data is not None and armature_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(armature_data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_explicit_cleanup_removes_only_recorded_skipped_groups(self):
+        mesh = bpy.data.meshes.new("CleanupSkippedMesh")
+        mesh.from_pydata(
+            [(0, 0, 0), (0.8, 0, 0), (1, 0, 0), (1.8, 0, 0)],
+            [(0, 1), (1, 2), (2, 3)],
+            [],
+        )
+        obj = bpy.data.objects.new("CleanupSkippedObject", mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        mapping = build_owner_mapping([0, 0, 1, 1])
+        owner_attr = mesh.attributes.new(name=animation.OWNER_ATTR_NAME, type='INT', domain='POINT')
+        owner_attr.data.foreach_set("value", mapping.compact_per_vertex)
+        mesh[OWNER_MAPPING_PROPERTY] = owner_mapping_to_metadata(mapping)
+        obj["carnivores_reconstruct_semantic_naming"] = False
+
+        armature = None
+        armature_data = None
+        try:
+            armature = animation._reconstruct_armature_topology(obj)
+            armature_data = armature.data
+            skipped = obj.vertex_groups.new(name="SkippedOwner")
+            skipped.add([0], 0.25, 'REPLACE')
+            armature["carnivores_reconstruct_skipped"] = "77"
+            armature["carnivores_reconstruct_skipped_count"] = 1
+            armature["carnivores_reconstruct_skipped_details"] = json.dumps([
+                {
+                    "compact_id": 2,
+                    "raw_owner_id": 77,
+                    "reason": "EXPLICIT_TEST",
+                    "blender_name": "SkippedOwner",
+                    "vertex_count": 1,
+                }
+            ])
+            bpy.context.view_layer.objects.active = obj
+            obj.select_set(True)
+            result = bpy.ops.carnivores.cleanup_skipped_groups()
+            self.assertEqual(result, {'FINISHED'})
+            self.assertIsNone(obj.vertex_groups.get("SkippedOwner"))
+            self.assertEqual(armature.get("carnivores_reconstruct_skipped_count"), 0)
+            self.assertEqual(armature.get("carnivores_reconstruct_skipped_details"), "[]")
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data is not None and armature_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(armature_data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_rig_policy_create_new_keeps_existing_generated_rig(self):
+        """Phase 5 10.7: CREATE_NEW preserves an existing generated armature."""
+        mesh = bpy.data.meshes.new("PolicyMesh")
+        mesh.from_pydata(
+            [(0, 0, 0), (0.8, 0, 0), (1, 0, 0), (1.8, 0, 0), (2, 0, 0), (2.8, 0, 0)],
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
+            [],
+        )
+        obj = bpy.data.objects.new("PolicyObject", mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        mapping = build_owner_mapping([0, 0, 4, 4, 9, 9])
+        owner_attr = mesh.attributes.new(
+            name=animation.OWNER_ATTR_NAME, type='INT', domain='POINT'
+        )
+        owner_attr.data.foreach_set("value", mapping.compact_per_vertex)
+        source_attr = mesh.attributes.new(
+            name=animation.OWNER_SOURCE_ATTR_NAME, type='INT', domain='POINT'
+        )
+        source_attr.data.foreach_set("value", mapping.raw_per_vertex)
+        mesh[OWNER_MAPPING_PROPERTY] = owner_mapping_to_metadata(mapping)
+        obj["carnivores_reconstruct_semantic_naming"] = False
+
+        first_arm = None
+        second_arm = None
+        first_data = None
+        second_data = None
+        try:
+            first_arm = animation._reconstruct_armature_topology(obj)
+            self.assertIsNotNone(first_arm)
+            first_data = first_arm.data
+            # Default policy is CREATE_NEW: second run creates a new armature.
+            second_arm = animation._reconstruct_armature_topology(obj)
+            self.assertIsNotNone(second_arm)
+            second_data = second_arm.data
+            self.assertNotEqual(first_arm.name, second_arm.name)
+            self.assertEqual(
+                obj.get("carnivores_reconstruct_rig_policy", "CREATE_NEW"), "CREATE_NEW"
+            )
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            for armature in (first_arm, second_arm):
+                if armature is not None and armature.name in bpy.data.objects:
+                    bpy.data.objects.remove(armature, do_unlink=True)
+            for data in (first_data, second_data):
+                if data is not None and data.name in bpy.data.armatures:
+                    bpy.data.armatures.remove(data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_rig_policy_replace_generated_removes_old_and_creates_new(self):
+        """Phase 5 10.7: REPLACE_GENERATED removes the old generated rig."""
+        mesh = bpy.data.meshes.new("ReplacePolicyMesh")
+        mesh.from_pydata(
+            [(0, 0, 0), (0.8, 0, 0), (1, 0, 0), (1.8, 0, 0), (2, 0, 0), (2.8, 0, 0)],
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
+            [],
+        )
+        obj = bpy.data.objects.new("ReplacePolicyObject", mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        mapping = build_owner_mapping([0, 0, 4, 4, 9, 9])
+        owner_attr = mesh.attributes.new(
+            name=animation.OWNER_ATTR_NAME, type='INT', domain='POINT'
+        )
+        owner_attr.data.foreach_set("value", mapping.compact_per_vertex)
+        source_attr = mesh.attributes.new(
+            name=animation.OWNER_SOURCE_ATTR_NAME, type='INT', domain='POINT'
+        )
+        source_attr.data.foreach_set("value", mapping.raw_per_vertex)
+        mesh[OWNER_MAPPING_PROPERTY] = owner_mapping_to_metadata(mapping)
+        obj["carnivores_reconstruct_semantic_naming"] = False
+
+        first_arm = None
+        second_arm = None
+        first_data = None
+        second_data = None
+        try:
+            first_arm = animation._reconstruct_armature_topology(obj)
+            self.assertIsNotNone(first_arm)
+            first_data = first_arm.data
+
+            obj["carnivores_reconstruct_rig_policy"] = "REPLACE_GENERATED"
+            second_arm = animation._reconstruct_armature_topology(obj)
+            self.assertIsNotNone(second_arm)
+            second_data = second_arm.data
+            # The old generated armature object was removed; Blender recycles the
+            # name, so verify the old object identity is invalid, not the name.
+            self.assertIsNot(second_arm, first_arm)
+            try:
+                first_removed = first_arm.name not in bpy.data.objects
+            except ReferenceError:
+                first_removed = True
+            self.assertTrue(first_removed)
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            for armature in (first_arm, second_arm):
+                if armature is None:
+                    continue
+                try:
+                    still_present = armature.name in bpy.data.objects
+                except ReferenceError:
+                    still_present = False
+                if still_present:
+                    bpy.data.objects.remove(armature, do_unlink=True)
+            for data in (first_data, second_data):
+                if data is None:
+                    continue
+                try:
+                    still_present = data.name in bpy.data.armatures
+                except ReferenceError:
+                    still_present = False
+                if still_present:
+                    bpy.data.armatures.remove(data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_rig_policy_cancel_if_rigged_refuses_second_reconstruction(self):
+        """Phase 5 10.7: CANCEL_IF_RIGGED returns None when a rig already exists."""
+        mesh = bpy.data.meshes.new("CancelPolicyMesh")
+        mesh.from_pydata(
+            [(0, 0, 0), (0.8, 0, 0), (1, 0, 0), (1.8, 0, 0), (2, 0, 0), (2.8, 0, 0)],
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
+            [],
+        )
+        obj = bpy.data.objects.new("CancelPolicyObject", mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        mapping = build_owner_mapping([0, 0, 4, 4, 9, 9])
+        owner_attr = mesh.attributes.new(
+            name=animation.OWNER_ATTR_NAME, type='INT', domain='POINT'
+        )
+        owner_attr.data.foreach_set("value", mapping.compact_per_vertex)
+        source_attr = mesh.attributes.new(
+            name=animation.OWNER_SOURCE_ATTR_NAME, type='INT', domain='POINT'
+        )
+        source_attr.data.foreach_set("value", mapping.raw_per_vertex)
+        mesh[OWNER_MAPPING_PROPERTY] = owner_mapping_to_metadata(mapping)
+        obj["carnivores_reconstruct_semantic_naming"] = False
+
+        armature = None
+        armature_data = None
+        try:
+            armature = animation._reconstruct_armature_topology(obj)
+            self.assertIsNotNone(armature)
+            armature_data = armature.data
+            obj["carnivores_reconstruct_rig_policy"] = "CANCEL_IF_RIGGED"
+            self.assertIsNone(animation._reconstruct_armature_topology(obj))
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data is not None and armature_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(armature_data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_update_reuses_modifier_clears_action_and_restores_context(self):
+        mesh = bpy.data.meshes.new("UpdatePolicyMesh")
+        mesh.from_pydata(
+            [(0, 0, 0), (0.8, 0, 0), (1, 0, 0), (1.8, 0, 0), (2, 0, 0), (2.8, 0, 0)],
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
+            [],
+        )
+        obj = bpy.data.objects.new("UpdatePolicyObject", mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        mapping = build_owner_mapping([0, 0, 4, 4, 9, 9])
+        owner_attr = mesh.attributes.new(name=animation.OWNER_ATTR_NAME, type='INT', domain='POINT')
+        owner_attr.data.foreach_set("value", mapping.compact_per_vertex)
+        source_attr = mesh.attributes.new(name=animation.OWNER_SOURCE_ATTR_NAME, type='INT', domain='POINT')
+        source_attr.data.foreach_set("value", mapping.raw_per_vertex)
+        mesh[OWNER_MAPPING_PROPERTY] = owner_mapping_to_metadata(mapping)
+        obj["carnivores_reconstruct_semantic_naming"] = False
+
+        armature = None
+        armature_data = None
+        action = None
+        try:
+            bpy.ops.object.select_all(action='DESELECT')
+            obj.select_set(True)
+            bpy.context.view_layer.objects.active = obj
+            armature = animation._reconstruct_armature_topology(obj)
+            armature_data = armature.data
+            action = bpy.data.actions.new("StaleRigAction")
+            armature.animation_data_create().action = action
+            obj["carnivores_reconstruct_rig_policy"] = "UPDATE_GENERATED"
+
+            updated = animation._reconstruct_armature_topology(obj)
+            self.assertIs(updated, armature)
+            self.assertEqual(
+                len([modifier for modifier in obj.modifiers if modifier.type == 'ARMATURE']),
+                1,
+            )
+            self.assertIsNone(armature.animation_data)
+            self.assertIs(bpy.context.view_layer.objects.active, obj)
+            self.assertTrue(obj.select_get())
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data is not None:
+                try:
+                    if armature_data.name in bpy.data.armatures:
+                        bpy.data.armatures.remove(armature_data)
+                except ReferenceError:
+                    pass
+            if action is not None and action.name in bpy.data.actions:
+                bpy.data.actions.remove(action)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_update_refuses_shared_generated_armature(self):
+        mesh = bpy.data.meshes.new("SharedUpdateMesh")
+        mesh.from_pydata(
+            [(0, 0, 0), (0.8, 0, 0), (1, 0, 0), (1.8, 0, 0), (2, 0, 0), (2.8, 0, 0)],
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
+            [],
+        )
+        obj = bpy.data.objects.new("SharedUpdateObject", mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        mapping = build_owner_mapping([0, 0, 4, 4, 9, 9])
+        owner_attr = mesh.attributes.new(name=animation.OWNER_ATTR_NAME, type='INT', domain='POINT')
+        owner_attr.data.foreach_set("value", mapping.compact_per_vertex)
+        mesh[OWNER_MAPPING_PROPERTY] = owner_mapping_to_metadata(mapping)
+        obj["carnivores_reconstruct_semantic_naming"] = False
+
+        shared_mesh = bpy.data.meshes.new("SharedUpdateUserMesh")
+        shared_mesh.from_pydata([(0, 0, 0), (1, 0, 0)], [(0, 1)], [])
+        shared_obj = bpy.data.objects.new("SharedUpdateUserObject", shared_mesh)
+        bpy.context.scene.collection.objects.link(shared_obj)
+        armature = None
+        armature_data = None
+        try:
+            armature = animation._reconstruct_armature_topology(obj)
+            armature_data = armature.data
+            shared_modifier = shared_obj.modifiers.new("SharedArmature", type='ARMATURE')
+            shared_modifier.object = armature
+            obj["carnivores_reconstruct_rig_policy"] = "UPDATE_GENERATED"
+            self.assertIsNone(animation._reconstruct_armature_topology(obj))
+            self.assertIs(armature.data, armature_data)
+            self.assertIs(shared_modifier.object, armature)
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            bpy.data.objects.remove(shared_obj, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data is not None and armature_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(armature_data)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+            if shared_mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(shared_mesh)
+
+    def test_update_failure_restores_old_data_action_and_constraints(self):
+        mesh = bpy.data.meshes.new("UpdateFailureMesh")
+        mesh.from_pydata(
+            [(0, 0, 0), (0.8, 0, 0), (1, 0, 0), (1.8, 0, 0), (2, 0, 0), (2.8, 0, 0)],
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
+            [],
+        )
+        obj = bpy.data.objects.new("UpdateFailureObject", mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        mapping = build_owner_mapping([0, 0, 4, 4, 9, 9])
+        owner_attr = mesh.attributes.new(name=animation.OWNER_ATTR_NAME, type='INT', domain='POINT')
+        owner_attr.data.foreach_set("value", mapping.compact_per_vertex)
+        mesh[OWNER_MAPPING_PROPERTY] = owner_mapping_to_metadata(mapping)
+        obj["carnivores_reconstruct_semantic_naming"] = False
+
+        armature = None
+        old_data = None
+        action = None
+        original_assign = animation.io_utils.assign_armature_modifier
+        try:
+            armature = animation._reconstruct_armature_topology(obj)
+            old_data = armature.data
+            old_bone_names = [bone.name for bone in old_data.bones]
+            action = bpy.data.actions.new("UpdateFailureAction")
+            armature.animation_data_create().action = action
+            armature.constraints.new(type='LIMIT_ROTATION')
+            old_metadata = armature.get("carnivores_rig_algorithm")
+            obj["carnivores_reconstruct_rig_policy"] = "UPDATE_GENERATED"
+
+            def fail_assignment(*_args, **_kwargs):
+                raise RuntimeError("injected modifier failure")
+
+            animation.io_utils.assign_armature_modifier = fail_assignment
+            with self.assertRaisesRegex(RuntimeError, "injected modifier failure"):
+                animation._reconstruct_armature_topology(obj)
+
+            self.assertIs(armature.data, old_data)
+            self.assertEqual([bone.name for bone in armature.data.bones], old_bone_names)
+            self.assertIsNotNone(armature.animation_data)
+            self.assertIs(armature.animation_data.action, action)
+            self.assertEqual(len(armature.constraints), 1)
+            self.assertEqual(armature.get("carnivores_rig_algorithm"), old_metadata)
+            self.assertTrue(any(
+                modifier.type == 'ARMATURE' and modifier.object == armature
+                for modifier in obj.modifiers
+            ))
+        finally:
+            animation.io_utils.assign_armature_modifier = original_assign
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if armature is not None and armature.name in bpy.data.objects:
+                bpy.data.objects.remove(armature, do_unlink=True)
+            if old_data is not None and old_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(old_data)
+            if action is not None and action.name in bpy.data.actions:
+                bpy.data.actions.remove(action)
+            if mesh.name in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+
+    def test_non_generated_armature_is_not_replaced(self):
+        mesh = bpy.data.meshes.new("UserRigMesh")
+        mesh.from_pydata([(0, 0, 0), (1, 0, 0)], [(0, 1)], [])
+        obj = bpy.data.objects.new("UserRigMeshObject", mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        mapping = build_owner_mapping([0, 0])
+        owner_attr = mesh.attributes.new(name=animation.OWNER_ATTR_NAME, type='INT', domain='POINT')
+        owner_attr.data.foreach_set("value", mapping.compact_per_vertex)
+        mesh[OWNER_MAPPING_PROPERTY] = owner_mapping_to_metadata(mapping)
+
+        user_data = bpy.data.armatures.new("UserRigData")
+        user_armature = bpy.data.objects.new("UserRigObject", user_data)
+        bpy.context.scene.collection.objects.link(user_armature)
+        bpy.context.view_layer.objects.active = user_armature
+        user_armature.select_set(True)
+        bpy.ops.object.mode_set(mode='EDIT')
+        user_bone = user_data.edit_bones.new("UserBone")
+        user_bone.head = (0, 0, 0)
+        user_bone.tail = (0, 1, 0)
+        bpy.ops.object.mode_set(mode='OBJECT')
+        modifier = obj.modifiers.new("UserArmature", type='ARMATURE')
+        modifier.object = user_armature
+        obj["carnivores_reconstruct_rig_policy"] = "REPLACE_GENERATED"
+
+        try:
+            self.assertIsNone(animation._reconstruct_armature_topology(obj))
+            self.assertIn(user_armature.name, bpy.data.objects)
+            self.assertIn(modifier.name, obj.modifiers)
+        finally:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if user_armature.name in bpy.data.objects:
+                bpy.data.objects.remove(user_armature, do_unlink=True)
+            if user_data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(user_data)
             if mesh.name in bpy.data.meshes:
                 bpy.data.meshes.remove(mesh)
 

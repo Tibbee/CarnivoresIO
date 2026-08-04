@@ -560,6 +560,37 @@ def _proximity_candidates_for_components(analysis, components):
     return tuple(candidates)
 
 
+def _deterministic_roll_reference(analysis):
+    """Return a stable lateral (X-dominant) roll reference.
+
+    Uses the eigenvector with the smallest spread of the owned vertices as the
+    model's thin axis, then forces a dominant positive X component so that
+    mirroring the X sign across the mid-plane yields mirrored rolls. Falls back
+    to pure +X when the point set is too small or degenerate.
+    """
+    owned = analysis.mesh.vertices[analysis.mesh.compact_owners >= 0]
+    # ``len`` counts points; ``ndarray.size`` counts scalar coordinates.
+    if len(owned) < 3:
+        return np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    centered = owned - np.mean(owned, axis=0)
+    try:
+        _, _, axes = np.linalg.svd(centered, full_matrices=False)
+        thin = np.asarray(axes[-1], dtype=np.float64)
+    except np.linalg.LinAlgError:
+        return np.array([1.0, 0.0, 0.0], dtype=np.float64)
+
+    norm = float(np.linalg.norm(thin))
+    if not np.isfinite(norm) or norm <= np.finfo(np.float64).eps:
+        return np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    thin /= norm
+    # Force X-dominance so the reference is lateral and mirrors cleanly.
+    if abs(thin[0]) < max(abs(thin[1]), abs(thin[2])):
+        thin = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    if thin[0] < 0.0:
+        thin *= -1.0
+    return thin
+
+
 def _mirror_partner_map(analysis, group_ids):
     """Return deterministic bilateral pairs around the imported X mid-plane."""
     if len(group_ids) < 2:
@@ -961,7 +992,10 @@ def build_topology_rig_proposal(
             children[parent_id].append(group_id)
             heads[group_id] = edge_by_pair[(parent_id, group_id)].boundary_joint
         else:
-            heads[group_id] = group_by_id[group_id].centroid
+            # A median/MAD-filtered center is less sensitive to detached
+            # vertices than either the ordinary centroid or a raw median.
+            root_points = analysis.mesh.vertices[group_by_id[group_id].vertex_indices]
+            heads[group_id], _ = _robust_joint(root_points)
 
     owned_vertices = analysis.mesh.vertices[analysis.mesh.compact_owners >= 0]
     center_x = float(np.median(owned_vertices[:, 0])) if owned_vertices.size else 0.0
@@ -975,18 +1009,61 @@ def build_topology_rig_proposal(
             ancestor = parents[ancestor]
         root_by_group[group_id] = ancestor
 
+    active_positions = np.asarray(
+        [group_by_id[group_id].median_center for group_id in active_ids],
+        dtype=np.float64,
+    )
+    body_axes, _, _ = _stable_principal_axes(active_positions)
+    body_axis = np.asarray(body_axes[0], dtype=np.float64)
+    body_axis_norm = float(np.linalg.norm(body_axis))
+    if body_axis_norm <= np.finfo(np.float64).eps:
+        body_axis = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    else:
+        body_axis /= body_axis_norm
+    centrality_scale = max(analysis.characteristic_scale, np.finfo(np.float64).eps)
+
+    # Deterministic global lateral roll reference (the model's thinnest axis),
+    # used for every group so mirrored limbs receive mirrored rolls. Per-group
+    # secondary PCA axes are unreliable for small/degenerate groups.
+    global_roll_reference = _deterministic_roll_reference(analysis)
     for group_id in active_ids:
         group = group_by_id[group_id]
-        roll_references[group_id] = group.principal_axes[1]
+        reference = global_roll_reference.copy()
+        # Mirror the lateral component for groups on the negative X side so
+        # bilateral partners get mirrored rolls.
+        if group.centroid[0] < analysis.normalization_origin[0]:
+            reference[0] *= -1.0
+        roll_references[group_id] = reference
         if children[group_id]:
-            continuation = min(
-                children[group_id],
-                key=lambda child: (
-                    0 if child in central_ids else 1,
-                    -edge_by_pair[(group_id, child)].confidence,
-                    group_by_id[child].raw_owner_id,
-                ),
-            )
+            parent_center = group_by_id[group_id].median_center
+
+            def continuation_key(child):
+                child_group = group_by_id[child]
+                child_direction = child_group.median_center - parent_center
+                child_length = float(np.linalg.norm(child_direction))
+                axis_alignment = (
+                    abs(float(np.dot(child_direction, body_axis)) / child_length)
+                    if child_length > np.finfo(np.float64).eps else 0.0
+                )
+                centrality = 1.0 - min(
+                    abs(float(child_group.median_center[0] - center_x)) / centrality_scale,
+                    1.0,
+                )
+                name = child_group.name.lower()
+                semantic_backbone = 1.0 if any(
+                    token in name for token in ("root", "pelvis", "hip", "spine", "torso", "body", "neck", "head")
+                ) else 0.0
+                confidence = float(edge_by_pair[(group_id, child)].confidence)
+                score = (
+                    axis_alignment * 0.40
+                    + centrality * 0.25
+                    + confidence * 0.25
+                    + semantic_backbone * 0.10
+                    + (0.05 if child in central_ids else 0.0)
+                )
+                return (-score, child_group.raw_owner_id)
+
+            continuation = min(children[group_id], key=continuation_key)
             tails[group_id] = heads[continuation]
         else:
             direction = group.principal_axes[0].copy()

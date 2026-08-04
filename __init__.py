@@ -277,6 +277,17 @@ def register():
         description="Legacy compatibility option that discards every centroid cluster except the one with the most groups; may remove valid limb chains",
         default=False,
     )
+    bpy.types.Object.carnivores_reconstruct_rig_policy = bpy.props.EnumProperty(
+        name="Existing Rig Policy",
+        description="How reconstruction handles an armature that was previously generated for this mesh",
+        items=[
+            ('CREATE_NEW', "Create New", "Always create a fresh armature, keeping any previous generated rig"),
+            ('REPLACE_GENERATED', "Replace Generated", "Remove the previously generated armature (marked by carnivores_rig_algorithm) before creating a new one"),
+            ('UPDATE_GENERATED', "Update Generated", "Reuse the existing generated armature object and replace its bones in place"),
+            ('CANCEL_IF_RIGGED', "Cancel if Rigged", "Refuse reconstruction when the mesh already has a generated armature"),
+        ],
+        default='CREATE_NEW',
+    )
     bpy.types.Object.carnivores_reconstruct_smooth_weights = bpy.props.BoolProperty(
         name="Smooth Weights",
         description="Generate smoothed deform weights from imported owners; Legacy also uses them for centroid inference while Topology keeps canonical boundaries for structure",
@@ -393,6 +404,7 @@ def unregister():
     del bpy.types.Object.carnivores_reconstruct_root_override
     del bpy.types.Object.carnivores_reconstruct_semantic_naming
     del bpy.types.Object.carnivores_reconstruct_legacy_filter_clusters
+    del bpy.types.Object.carnivores_reconstruct_rig_policy
     del bpy.types.Object.carnivores_reconstruct_smooth_weights
     del bpy.types.Object.carnivores_reconstruct_smooth_iterations
     del bpy.types.Object.carnivores_reconstruct_smooth_factor

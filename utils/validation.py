@@ -7,6 +7,7 @@ operators.
 """
 
 import os
+import json
 from collections import Counter
 
 import bmesh
@@ -472,7 +473,18 @@ def _check_skeleton(report, obj, target):
         if not bones:
             _add(report, "ERROR", "Rig / owners", "The parent armature contains no bones.", suggested_action="Add bones or remove the invalid armature parent.")
             return
-        names = [bone.name for bone in bones]
+        matching_names = [bone.name for bone in bones]
+        names = list(matching_names)
+        try:
+            name_entries = json.loads(armature.get("carnivores_reconstruct_bone_name_map", "[]"))
+            if (
+                isinstance(name_entries, list)
+                and len(name_entries) == len(bones)
+                and all(entry.get("blender_name") == bone.name for entry, bone in zip(name_entries, bones))
+            ):
+                names = [str(entry.get("export_name", bone.name)) for entry, bone in zip(name_entries, bones)]
+        except (TypeError, ValueError, AttributeError):
+            pass
         parent_indices = []
         index_by_name = {bone.name: index for index, bone in enumerate(bones)}
         for bone in bones:
@@ -483,11 +495,13 @@ def _check_skeleton(report, obj, target):
     elif hook_modifiers:
         hook_objects = [modifier.object for modifier in hook_modifiers]
         names = [hook.name for hook in hook_objects]
+        matching_names = list(names)
         index_by_name = {name: index for index, name in enumerate(names)}
         parent_indices = [index_by_name.get(hook.parent.name, -1) if hook.parent else -1 for hook in hook_objects]
         source = f"{len(hook_objects)} hook object(s)"
     else:
         names = ["Default"]
+        matching_names = list(names)
         parent_indices = [-1]
         source = "implicit Default owner"
         if obj.vertex_groups:
@@ -546,7 +560,10 @@ def _check_skeleton(report, obj, target):
             node = parent_indices[node]
 
     if armature or hook_modifiers:
-        known_names = {_clean_bone_name(name): index for index, name in enumerate(names)}
+        known_names = {
+            _clean_bone_name(name): index
+            for index, name in enumerate(names + matching_names)
+        }
         unmatched = 0
         for vertex in obj.data.vertices:
             mapped = False

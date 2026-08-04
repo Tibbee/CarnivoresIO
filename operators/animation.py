@@ -1,5 +1,7 @@
 import bpy
 import bpy_extras.io_utils
+import ast
+import json
 import aud
 import math
 import os
@@ -1349,11 +1351,43 @@ class CARNIVORES_OT_reconstruct_armature(bpy.types.Operator):
                 self.report({'ERROR'}, "Reconstruction produced no armature. See the system console for details.")
                 return {'CANCELLED'}
             self.report({'INFO'}, "Armature reconstructed and assigned.")
+            skipped = armature.get("carnivores_reconstruct_skipped", "")
+            if skipped:
+                details = []
+                try:
+                    raw_details = json.loads(
+                        armature.get("carnivores_reconstruct_skipped_details", "[]")
+                    )
+                    details = [
+                        f"{entry.get('reason', 'unknown')}:{int(entry.get('vertex_count', 0))} verts"
+                        for entry in raw_details
+                        if isinstance(entry, dict)
+                    ]
+                except (TypeError, ValueError, AttributeError):
+                    pass
+                suffix = f" ({', '.join(details)})" if details else ""
+                self.report(
+                    {'WARNING'},
+                    f"Skipped {armature.get('carnivores_reconstruct_skipped_count', 0)} groups: {skipped}{suffix}",
+                )
             return {'FINISHED'}
         except Exception as exc:
             self.report({'ERROR'}, f"Reconstruction failed: {exc}")
             error(f"Rig reconstruction failed for '{obj.name}': {exc}")
             return {'CANCELLED'}
+
+def _find_mesh_armature(obj):
+    if obj.parent and obj.parent.type == 'ARMATURE':
+        return obj.parent
+    for modifier in obj.modifiers:
+        if (
+            modifier.type == 'ARMATURE'
+            and modifier.object
+            and modifier.object.type == 'ARMATURE'
+        ):
+            return modifier.object
+    return None
+
 
 class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
     """Write detailed skeletal diagnostics to a persistent text report."""
@@ -1430,7 +1464,8 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
                 lines.append(f"Bone: {bone.name:<20} | Parent: {p_name:<20}")
                 lines.append(f"      Head: ({h.x:7.3f}, {h.y:7.3f}, {h.z:7.3f})")
                 lines.append(f"      Tail: ({t.x:7.3f}, {t.y:7.3f}, {t.z:7.3f})")
-                lines.append(f"      Length: {(t-h).length:7.3f}")
+                roll = io_utils.get_bone_roll(bone)
+                lines.append(f"      Length: {(t-h).length:7.3f} | Roll: {roll:7.3f}")
         else:
             lines.append("\nNO ARMATURE FOUND.")
 
@@ -1440,8 +1475,10 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
             root_name = arm.get("carnivores_reconstruct_root", "N/A")
             root_idx = arm.get("carnivores_reconstruct_root_idx", "N/A")
             skipped_str = arm.get("carnivores_reconstruct_skipped", "")
+            skipped_details = arm.get("carnivores_reconstruct_skipped_details", "")
             cluster_count = arm.get("carnivores_reconstruct_cluster_count", 1)
             parent_map = arm.get("carnivores_reconstruct_parent_map", "")
+            name_map = arm.get("carnivores_reconstruct_bone_name_map", "")
             algorithm = arm.get("carnivores_rig_algorithm", "LEGACY")
             confidence = arm.get("carnivores_reconstruct_confidence", None)
             edge_details = arm.get("carnivores_reconstruct_edge_details", "")
@@ -1464,12 +1501,39 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
             lines.append(f"Selected Root: {root_name} (orig idx: {root_idx})")
             lines.append(f"Clusters Detected: {cluster_count}")
             if skipped_str:
-                lines.append(f"Skipped Groups: {skipped_str}")
+                lines.append(f"Skipped Groups (raw IDs): {skipped_str}")
+                if arm.get("carnivores_reconstruct_skipped_cleanup"):
+                    lines.append(
+                        f"Skipped-group cleanup: {arm.get('carnivores_reconstruct_skipped_cleanup')}"
+                    )
+                try:
+                    decoded_skipped = json.loads(skipped_details) if skipped_details else []
+                    for entry in decoded_skipped:
+                        lines.append(
+                            f"  [{entry.get('raw_owner_id', '?')}] "
+                            f"compact={entry.get('compact_id', '?')} | "
+                            f"{entry.get('reason', 'unknown')} | "
+                            f"verts={entry.get('vertex_count', 0)} | "
+                            f"group='{entry.get('blender_name', '')}'"
+                        )
+                except (TypeError, ValueError, AttributeError):
+                    lines.append("  (could not decode skipped-group details)")
             else:
                 lines.append("Skipped Groups: none")
+            if name_map:
+                try:
+                    decoded_names = json.loads(name_map)
+                    lines.append(f"Bone Name Map ({len(decoded_names)}):")
+                    for entry in decoded_names:
+                        lines.append(
+                            f"  raw={entry.get('raw_owner_id', '?')} -> "
+                            f"Blender='{entry.get('blender_name', '?')}' / "
+                            f"Export='{entry.get('export_name', '?')}'"
+                        )
+                except (TypeError, ValueError, AttributeError):
+                    lines.append("Bone Name Map: (could not decode)")
             if edge_details:
                 try:
-                    import json
                     decoded_edges = json.loads(edge_details)
                     lines.append(f"Accepted Edges ({len(decoded_edges)}):")
                     for edge in decoded_edges:
@@ -1482,10 +1546,13 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
                         )
                 except (TypeError, ValueError):
                     lines.append("Accepted Edges: (could not decode)")
-            # Decode and display parent map
+            # Decode and display the versioned JSON parent map.
             try:
-                import ast
-                pm = ast.literal_eval(parent_map) if parent_map else {}
+                try:
+                    pm = json.loads(parent_map) if parent_map else {}
+                except (TypeError, ValueError):
+                    # Read Legacy metadata written by pre-Phase-5 builds.
+                    pm = ast.literal_eval(parent_map) if parent_map else {}
                 if pm:
                     lines.append(f"Hierarchy ({len(pm)} nodes):")
                     for child, parent in sorted(pm.items(), key=lambda x: int(x[0])):
@@ -1545,6 +1612,98 @@ class CARNIVORES_OT_debug_rig_info(bpy.types.Operator):
         # Switch area to Text Editor if possible, or just report
         self.report({'INFO'}, f"Debug info written to text datablock: {txt_name}")
         return {'FINISHED'}
+
+class CARNIVORES_OT_cleanup_skipped_groups(bpy.types.Operator):
+    """Explicitly remove vertex groups retained because reconstruction skipped them."""
+    bl_idname = "carnivores.cleanup_skipped_groups"
+    bl_label = "Remove Skipped Owner Groups"
+    bl_description = "Explicitly remove vertex groups reported as skipped by the last rig reconstruction. This can discard their weights."
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = getattr(context, "active_object", None)
+        armature = _find_mesh_armature(obj) if obj and obj.type == 'MESH' else None
+        if not armature:
+            return _poll_message(cls, "Select a reconstructed mesh with skipped owner groups.")
+        raw_details = armature.get("carnivores_reconstruct_skipped_details", "")
+        try:
+            has_skipped = bool(json.loads(raw_details)) if raw_details else False
+        except (TypeError, ValueError):
+            has_skipped = False
+        if not has_skipped:
+            return _poll_message(cls, "The active mesh has no recorded skipped owner groups.")
+        return True
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            self.report({'ERROR'}, "Select a mesh object.")
+            return {'CANCELLED'}
+        armature = _find_mesh_armature(obj)
+        if not armature:
+            self.report({'ERROR'}, "No armature is assigned to the active mesh.")
+            return {'CANCELLED'}
+
+        raw_details = armature.get("carnivores_reconstruct_skipped_details", "")
+        try:
+            details = json.loads(raw_details) if raw_details else []
+        except (TypeError, ValueError):
+            self.report({'ERROR'}, "Skipped-group metadata is not valid JSON.")
+            return {'CANCELLED'}
+        if not isinstance(details, list):
+            self.report({'ERROR'}, "Skipped-group metadata has an invalid structure.")
+            return {'CANCELLED'}
+
+        bone_names = {bone.name for bone in armature.data.bones}
+        removals = []
+        remaining = []
+        for entry in details:
+            if not isinstance(entry, dict):
+                remaining.append(entry)
+                continue
+            group_name = str(entry.get("blender_name", ""))
+            group = obj.vertex_groups.get(group_name) if group_name else None
+            # Never delete a group currently used by a bone. Missing/renamed
+            # groups remain reported instead of being guessed by compact ID.
+            if group is None or group_name in bone_names:
+                remaining.append(entry)
+                continue
+            assignment_count = sum(
+                1
+                for vertex in obj.data.vertices
+                if any(assignment.group == group.index for assignment in vertex.groups)
+            )
+            removals.append((group_name, assignment_count))
+
+        for group_name, _assignment_count in removals:
+            group = obj.vertex_groups.get(group_name)
+            if group is not None:
+                obj.vertex_groups.remove(group)
+
+        remaining_raw_ids = [
+            str(entry.get("raw_owner_id"))
+            for entry in remaining
+            if isinstance(entry, dict) and entry.get("raw_owner_id") is not None
+        ]
+        armature["carnivores_reconstruct_skipped"] = ",".join(remaining_raw_ids)
+        armature["carnivores_reconstruct_skipped_count"] = len(remaining)
+        armature["carnivores_reconstruct_skipped_details"] = json.dumps(
+            remaining, separators=(",", ":"), sort_keys=True
+        )
+        armature["carnivores_reconstruct_skipped_cleanup"] = "EXPLICIT"
+
+        if not removals:
+            self.report({'WARNING'}, "No recorded skipped groups could be safely matched; nothing was removed.")
+            return {'CANCELLED'}
+        assignment_count = sum(count for _name, count in removals)
+        suffix = f"; {len(remaining)} remain reported" if remaining else ""
+        self.report(
+            {'WARNING'} if assignment_count else {'INFO'},
+            f"Removed {len(removals)} skipped owner group(s) ({assignment_count} vertex assignments){suffix}.",
+        )
+        return {'FINISHED'}
+
 
 class CARNIVORES_OT_reset_to_imported_owners(bpy.types.Operator):
     """Recreate vertex groups from the cached carnivores_owner_index attribute."""
@@ -1693,6 +1852,7 @@ class VIEW3D_PT_carnivores_rig(bpy.types.Panel):
             experimental.prop(obj, 'carnivores_reconstruct_component_policy', text='Components')
         else:
             reconstruction.prop(obj, 'carnivores_reconstruct_legacy_filter_clusters', text='Filter Detached Clusters')
+        reconstruction.prop(obj, 'carnivores_reconstruct_rig_policy', text='Existing Rig')
 
         weights = reconstruction.box()
         weights.label(text="Generated Deform Weights", icon='MOD_SMOOTH')
@@ -1710,6 +1870,7 @@ class VIEW3D_PT_carnivores_rig(bpy.types.Panel):
 
         actions = layout.column(align=True)
         actions.operator(CARNIVORES_OT_reconstruct_armature.bl_idname, text='Reconstruct Rig', icon='BONE_DATA')
+        actions.operator(CARNIVORES_OT_cleanup_skipped_groups.bl_idname, text='Remove Skipped Groups', icon='X')
         actions.operator(CARNIVORES_OT_reset_to_imported_owners.bl_idname, text='Reset to Imported Owners', icon='FILE_REFRESH')
         row = actions.row(align=True)
         row.operator(CARNIVORES_OT_debug_rig_info.bl_idname, text='Generate Rig Report', icon='TEXT')

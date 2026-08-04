@@ -3,12 +3,19 @@ import mathutils
 import numpy as np
 import os
 import re
+import json
 import bmesh
 from ..core.constants import TEXTURE_WIDTH
 from .common import timed
 from .flags import assign_face_flag_int
 from .logger import info, warn, error
 from .rig_reconstruction import build_owner_mapping
+
+# UPDATE_GENERATED swaps a new armature data block into an existing object. Keep
+# the previous data alive until the reconstruction adapter has committed all
+# later metadata, weight, and modifier operations.
+_PENDING_ARMATURE_UPDATES = {}
+
 
 @timed("create_mesh_object")
 def create_mesh_object(mesh_name, verticesTransformedPos, faces, object_name, smooth_faces, face_flags):
@@ -209,19 +216,149 @@ def _calculate_pca_direction(verts, fallback_dir):
     except Exception:
         return fallback_dir
 
+def _capture_blender_context():
+    active = bpy.context.view_layer.objects.active
+    return {
+        "active": active,
+        "active_selected": active.select_get() if active else False,
+        "selected": tuple(bpy.context.selected_objects),
+        "mode": active.mode if active else "OBJECT",
+    }
+
+
+def _restore_blender_context(snapshot):
+    """Best-effort restoration of selection, active object, and mode."""
+    try:
+        current_active = bpy.context.view_layer.objects.active
+        if current_active and current_active.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        for selected in list(bpy.context.selected_objects):
+            selected.select_set(False)
+        valid_selected = [
+            obj for obj in snapshot["selected"]
+            if obj and obj.name in bpy.data.objects
+        ]
+        for selected in valid_selected:
+            selected.select_set(True)
+
+        active = snapshot["active"]
+        if active and active.name in bpy.data.objects:
+            active.select_set(True)
+            bpy.context.view_layer.objects.active = active
+            if snapshot["mode"] != 'OBJECT' and active.mode == 'OBJECT':
+                bpy.ops.object.mode_set(mode=snapshot["mode"])
+            if not snapshot["active_selected"]:
+                active.select_set(False)
+        else:
+            bpy.context.view_layer.objects.active = None
+    except Exception as exc:
+        warn(f"Could not fully restore Blender context after armature construction: {exc}")
+
+
+def _activate_armature_for_edit(arm_obj):
+    active = bpy.context.view_layer.objects.active
+    if active and active.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    for selected in list(bpy.context.selected_objects):
+        selected.select_set(False)
+    arm_obj.select_set(True)
+    bpy.context.view_layer.objects.active = arm_obj
+    bpy.ops.object.mode_set(mode='EDIT')
+
+
+def _commit_pending_armature_update(armature_obj):
+    """Discard the old data block after an UPDATE_GENERATED commit."""
+    pending = _PENDING_ARMATURE_UPDATES.pop(armature_obj.as_pointer(), None)
+    if not pending:
+        return
+    old_data, _new_data, _old_matrix = pending
+    if old_data and old_data.name in bpy.data.armatures and old_data.users == 0:
+        bpy.data.armatures.remove(old_data)
+
+
+def rollback_pending_armature_update(armature_obj, original_data=None, original_matrix=None):
+    """Restore an UPDATE_GENERATED object after a later adapter failure."""
+    pending = _PENDING_ARMATURE_UPDATES.pop(armature_obj.as_pointer(), None)
+    if pending:
+        old_data, new_data, old_matrix = pending
+        if armature_obj.name in bpy.data.objects and armature_obj.data == new_data:
+            armature_obj.data = old_data
+        if new_data and new_data.name in bpy.data.armatures and new_data.users == 0:
+            bpy.data.armatures.remove(new_data)
+        original_data = old_data
+        original_matrix = old_matrix
+    if (
+        original_data is not None
+        and armature_obj.name in bpy.data.objects
+        and armature_obj.data != original_data
+    ):
+        armature_obj.data = original_data
+    if original_matrix is not None and armature_obj.name in bpy.data.objects:
+        armature_obj.matrix_world = original_matrix
+
+
+def _remove_armature_object(arm_obj):
+    """Remove a partially-created armature without touching shared data."""
+    if not arm_obj or arm_obj.name not in bpy.data.objects:
+        return
+    arm_data = arm_obj.data if arm_obj.type == 'ARMATURE' else None
+    if bpy.context.view_layer.objects.active == arm_obj and arm_obj.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.data.objects.remove(arm_obj, do_unlink=True)
+    if arm_data and arm_data.name in bpy.data.armatures and arm_data.users == 0:
+        bpy.data.armatures.remove(arm_data)
+
+
 @timed("create_armature")
-def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name, target_coll,
+def _create_armature_impl(bone_names, bonesTransformedPos, parent_indices, object_name, target_coll,
                     verticesTransformedPos=None, vertex_owners=None,
-                    explicit_tail_positions=None, roll_reference_vectors=None):
+                    explicit_tail_positions=None, roll_reference_vectors=None,
+                    creation_policy="CREATE_NEW", existing_armature=None,
+                    world_matrix=None):
+    """Create an armature object with optional explicit tails and roll references.
+
+    ``creation_policy`` selects how an existing generated armature is handled:
+    - ``CREATE_NEW``: always create a fresh armature (default, preserves any old rig).
+    - ``REPLACE_GENERATED``: build a replacement for a previously generated
+      armature; the adapter removes the old object only after assignment succeeds.
+    - ``UPDATE_GENERATED``: rebuild a temporary data block and swap it into the
+      existing generated armature object after construction succeeds.
+    - ``CANCEL_IF_RIGGED``: refuse creation when the mesh already has a generated armature.
+
+    ``world_matrix`` sets the armature's world transform; bones are authored in the
+    mesh's local space (matching ``bonesTransformedPos``), so the armature must share
+    the mesh's world matrix for the resulting pose to match the mesh in world space.
+    """
+    if creation_policy == "CANCEL_IF_RIGGED" and existing_armature is not None:
+        return None
+    if len(bone_names) == 0:
+        raise ValueError("Cannot create an armature without bones.")
+    if len(bonesTransformedPos) != len(bone_names) or len(parent_indices) != len(bone_names):
+        raise ValueError("Armature bone, position, and parent arrays must have matching lengths.")
+    for parent_idx in parent_indices:
+        if int(parent_idx) < -1 or int(parent_idx) >= len(bone_names):
+            raise ValueError(f"Invalid armature parent index: {parent_idx}")
+
+    update_target = None
+
+    # UPDATE_GENERATED builds a temporary armature first. The existing object
+    # is swapped to the new data only after all edit-bone operations succeed.
+    # This keeps a failed update from destroying the previous skeleton.
+    if creation_policy == "UPDATE_GENERATED" and existing_armature is not None:
+        if existing_armature.type != 'ARMATURE':
+            raise ValueError("UPDATE_GENERATED requires an armature object.")
+        update_target = existing_armature
+
+    # CREATE_NEW, REPLACE_GENERATED, and UPDATE_GENERATED all build a fresh
+    # data block here. REPLACE cleanup is intentionally deferred until the new
+    # rig has been assigned successfully by the reconstruction adapter.
     arm_data = bpy.data.armatures.new(f"{object_name}_Armature")
     arm_obj = bpy.data.objects.new(f"{object_name}_ArmatureObj", arm_data)
     coll = target_coll or bpy.context.scene.collection
     coll.objects.link(arm_obj)
-    bpy.context.view_layer.objects.active = arm_obj
-    bpy.ops.object.mode_set(mode='EDIT')
+    _activate_armature_for_edit(arm_obj)
     edit_bones = arm_obj.data.edit_bones
-
-    # 1. Create all bones first (Heads only)
     bone_list = []
     for i, name in enumerate(bone_names):
         bone = edit_bones.new(name)
@@ -275,8 +412,12 @@ def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name
             d = (mathutils.Vector(bonesTransformedPos[c_idx]) - mathutils.Vector(bone.head)).length
             if d > 0.001: all_distances.append(d)
     
-    global_median = np.median(all_distances) if all_distances else 0.1
-    min_len = 0.01 # Safety to prevent mesh corruption
+    model_extent = 0.0
+    if verticesTransformedPos is not None and len(verticesTransformedPos) > 0:
+        model_extent = float(np.linalg.norm(np.ptp(np.asarray(verticesTransformedPos, dtype=np.float64), axis=0)))
+    global_median = float(np.median(all_distances)) if all_distances else max(model_extent * 0.5, 1e-8)
+    scale = max(global_median, model_extent, 1e-8)
+    min_len = max(scale * 1e-4, 1e-8)
 
     # 5. Set Parents and Calculate Tails
     explicit_tails = None
@@ -307,12 +448,7 @@ def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name
                 parent_tail = mathutils.Vector(explicit_tails[parent_idx])
                 bone.use_connect = (parent_tail - my_head).length <= 1e-5
             if roll_reference_vectors is not None and i < len(roll_reference_vectors):
-                reference = mathutils.Vector(roll_reference_vectors[i])
-                if reference.length > 1e-8:
-                    try:
-                        bone.align_roll(reference)
-                    except ValueError:
-                        pass
+                _align_bone_roll(bone, roll_reference_vectors[i])
             continue
 
         # Priority 1: Parent-Child Chain (Standard)
@@ -366,20 +502,231 @@ def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name
                 # Root leaf (rare): Floor bone or single bone model
                 bone.tail = my_head + (model_forward * global_median * 0.5)
 
-        # Final safety check: only override with model_forward if no local PCA direction was used
-        if not used_pca:
-            if (mathutils.Vector(bone.tail) - my_head).length < min_len:
-                bone.tail = my_head + (model_forward * min_len)
+        # Final safety check is per-bone. A PCA failure must never leave a
+        # zero-length EditBone, and the old function-scope check only examined
+        # the final bone in the loop.
+        if (mathutils.Vector(bone.tail) - my_head).length < min_len:
+            bone.tail = my_head + (model_forward * min_len)
+
+    # Apply world transform (mesh-local bone space, armature shares mesh matrix).
+    if world_matrix is not None:
+        arm_obj.matrix_world = world_matrix
 
     bpy.ops.object.mode_set(mode='OBJECT')
+
+    if update_target is not None:
+        old_data = update_target.data
+        new_data = arm_obj.data
+        update_key = update_target.as_pointer()
+        if update_key in _PENDING_ARMATURE_UPDATES:
+            raise RuntimeError("Armature already has a pending reconstruction update.")
+        _PENDING_ARMATURE_UPDATES[update_key] = (
+            old_data,
+            new_data,
+            update_target.matrix_world.copy(),
+        )
+        update_target.data = new_data
+        update_target.matrix_world = world_matrix if world_matrix is not None else arm_obj.matrix_world
+        _remove_armature_object(arm_obj)
+        # Keep the old data, action, and constraints until the adapter commits.
+        # A later weight/metadata/modifier failure can then restore the exact rig.
+        arm_obj = update_target
+
     return arm_obj
+
+
+def create_armature(bone_names, bonesTransformedPos, parent_indices, object_name, target_coll,
+                    verticesTransformedPos=None, vertex_owners=None,
+                    explicit_tail_positions=None, roll_reference_vectors=None,
+                    creation_policy="CREATE_NEW", existing_armature=None,
+                    world_matrix=None):
+    """Construct an armature transactionally and restore the Blender context."""
+    snapshot = _capture_blender_context()
+    existing_object_names = {obj.name for obj in bpy.data.objects}
+    try:
+        return _create_armature_impl(
+            bone_names,
+            bonesTransformedPos,
+            parent_indices,
+            object_name,
+            target_coll,
+            verticesTransformedPos=verticesTransformedPos,
+            vertex_owners=vertex_owners,
+            explicit_tail_positions=explicit_tail_positions,
+            roll_reference_vectors=roll_reference_vectors,
+            creation_policy=creation_policy,
+            existing_armature=existing_armature,
+            world_matrix=world_matrix,
+        )
+    except Exception:
+        # The implementation builds replacement data before touching an
+        # existing UPDATE target. Remove only objects created by this call.
+        active = bpy.context.view_layer.objects.active
+        if active and active.mode != 'OBJECT':
+            try:
+                bpy.ops.object.mode_set(mode='OBJECT')
+            except Exception:
+                pass
+        for arm_obj in list(bpy.data.objects):
+            if (
+                arm_obj.name not in existing_object_names
+                and arm_obj.type == 'ARMATURE'
+            ):
+                _remove_armature_object(arm_obj)
+        raise
+    finally:
+        _restore_blender_context(snapshot)
+
+
+def get_bone_roll(bone):
+    """Return the final stored roll for a data Bone without entering Edit Mode."""
+    try:
+        _, roll = bone.AxisRollFromMatrix(
+            bone.matrix_local.to_3x3(), axis=bone.y_axis
+        )
+        return float(roll)
+    except (AttributeError, TypeError, ValueError, RuntimeError):
+        return 0.0
+
+
+def _align_bone_roll(bone, reference):
+    """Align roll to a projected reference with a deterministic fallback."""
+    reference = mathutils.Vector(reference)
+    axis = mathutils.Vector(bone.tail) - mathutils.Vector(bone.head)
+    if reference.length <= 1e-8 or axis.length <= 1e-8:
+        return
+    axis.normalize()
+    projected = reference - axis * reference.dot(axis)
+    reference_sign = 1.0
+    for component in reference:
+        if abs(component) > 1e-8:
+            reference_sign = 1.0 if component > 0.0 else -1.0
+            break
+    if projected.length <= 1e-8:
+        candidates = (
+            mathutils.Vector((1.0, 0.0, 0.0)),
+            mathutils.Vector((0.0, 1.0, 0.0)),
+            mathutils.Vector((0.0, 0.0, 1.0)),
+        )
+        fallback = min(candidates, key=lambda candidate: abs(axis.dot(candidate)))
+        projected = axis.cross(fallback) * reference_sign
+    if projected.length <= 1e-8:
+        return
+    try:
+        bone.align_roll(projected.normalized())
+    except ValueError:
+        # Blender can reject a numerically parallel vector. Try the other
+        # canonical axes before accepting the stable default roll.
+        for candidate in (
+            mathutils.Vector((1.0, 0.0, 0.0)),
+            mathutils.Vector((0.0, 1.0, 0.0)),
+            mathutils.Vector((0.0, 0.0, 1.0)),
+        ):
+            projected = axis.cross(candidate) * reference_sign
+            if projected.length <= 1e-8:
+                continue
+            try:
+                bone.align_roll(projected.normalized())
+                return
+            except ValueError:
+                continue
+
 
 @timed("assign_armature_modifier")
 def assign_armature_modifier(mesh_obj, armature_obj):
-    mod = mesh_obj.modifiers.new(name="Armature", type='ARMATURE')
+    """Attach one armature modifier while preserving the mesh world matrix."""
+    matching = [
+        modifier for modifier in mesh_obj.modifiers
+        if modifier.type == 'ARMATURE' and modifier.object == armature_obj
+    ]
+    mod = matching[0] if matching else mesh_obj.modifiers.new(name="Armature", type='ARMATURE')
     mod.object = armature_obj
+    for duplicate in matching[1:]:
+        mesh_obj.modifiers.remove(duplicate)
+
+    world_matrix = mesh_obj.matrix_world.copy()
     mesh_obj.parent = armature_obj
     mesh_obj.matrix_parent_inverse = armature_obj.matrix_world.inverted()
+    mesh_obj.matrix_world = world_matrix
+    return mod
+
+
+def finalize_reconstruction_lifecycle(mesh_obj, old_armature, new_armature, creation_policy):
+    """Commit generated-rig replacement after the new binding is successful.
+
+    The old object is never touched until the caller has created and assigned
+    the replacement. CREATE_NEW keeps the old armature datablock available but
+    removes its active modifier from this mesh; REPLACE_GENERATED removes the
+    old object only when no other object still references it.
+    """
+    if old_armature is None:
+        return
+
+    if old_armature == new_armature:
+        if creation_policy == "UPDATE_GENERATED":
+            if old_armature.animation_data:
+                old_armature.animation_data_clear()
+            for constraint in list(old_armature.constraints):
+                old_armature.constraints.remove(constraint)
+            _commit_pending_armature_update(old_armature)
+        return
+
+    if creation_policy in {"CREATE_NEW", "REPLACE_GENERATED"}:
+        for modifier in list(mesh_obj.modifiers):
+            if modifier.type == 'ARMATURE' and modifier.object == old_armature:
+                mesh_obj.modifiers.remove(modifier)
+
+    if creation_policy != "REPLACE_GENERATED":
+        return
+
+    other_users = []
+    for obj in bpy.data.objects:
+        if obj == mesh_obj or obj == old_armature:
+            continue
+        if obj.parent == old_armature or any(
+            modifier.type == 'ARMATURE' and modifier.object == old_armature
+            for modifier in obj.modifiers
+        ):
+            other_users.append(obj)
+            continue
+        for constraint in obj.constraints:
+            direct_target = getattr(constraint, "target", None)
+            if direct_target == old_armature:
+                other_users.append(obj)
+                break
+            targets = getattr(constraint, "targets", None)
+            if targets and any(getattr(target, "target", None) == old_armature for target in targets):
+                other_users.append(obj)
+                break
+        if obj in other_users:
+            continue
+        animation_data = getattr(obj, "animation_data", None)
+        if animation_data:
+            driver_target_found = any(
+                getattr(target, "id", None) == old_armature
+                for fcurve in animation_data.drivers
+                for variable in fcurve.driver.variables
+                for target in variable.targets
+            )
+            if driver_target_found:
+                other_users.append(obj)
+    if other_users:
+        warn(
+            f"Keeping replaced armature '{old_armature.name}' because it is still "
+            f"referenced by {len(other_users)} other object(s)."
+        )
+        return
+
+    if old_armature.animation_data:
+        old_armature.animation_data_clear()
+    for constraint in list(old_armature.constraints):
+        old_armature.constraints.remove(constraint)
+    old_data = old_armature.data if old_armature.type == 'ARMATURE' else None
+    if old_armature.name in bpy.data.objects:
+        bpy.data.objects.remove(old_armature, do_unlink=True)
+    if old_data and old_data.name in bpy.data.armatures and old_data.users == 0:
+        bpy.data.armatures.remove(old_data)
+
 
 @timed("assign_hook_modifiers")
 def assign_hook_modifiers(obj, hook_objects, vertex_groups_by_index):
@@ -688,11 +1035,35 @@ def collect_bones_and_owners(obj, export_matrix):
                 warn(f"{len(unmatched_vertices)} vertices assigned to root bone (no matching bone found).")
                 vertex_owners[unmatched_vertices] = 0
 
-            # 3. Cleanup Names for File Format (Strip suffixes ONLY at return)
+            # 3. Use the reconstruction mapping when available. Generated
+            # duplicate names such as ``.1`` are intentional and must not be
+            # stripped as if they were Blender's legacy ``.001`` recycling.
+            name_map = {}
+            try:
+                entries = json.loads(arm.get("carnivores_reconstruct_bone_name_map", "[]"))
+                if isinstance(entries, list) and len(entries) == len(bone_names):
+                    candidate_map = {
+                        str(entry["blender_name"]): str(entry["export_name"])
+                        for entry in entries
+                        if (
+                            isinstance(entry, dict)
+                            and entry.get("blender_name")
+                            and entry.get("export_name")
+                        )
+                    }
+                    if set(candidate_map) == set(bone_names):
+                        name_map = candidate_map
+            except (TypeError, ValueError, KeyError):
+                name_map = {}
+
             final_names = []
             for name in bone_names:
-                clean = name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', name) else name
-                final_names.append(clean[:31])
+                if name in name_map:
+                    export_name = name_map[name]
+                    final_names.append(export_name.encode("ascii", "ignore")[:31].decode("ascii"))
+                else:
+                    clean = name.rsplit('.', 1)[0] if re.match(r'.*\.\d{3}$', name) else name
+                    final_names.append(clean.encode("ascii", "ignore")[:31].decode("ascii"))
 
             return final_names, bone_positions, bone_parents, vertex_owners
 
