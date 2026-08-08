@@ -175,13 +175,20 @@ class AudioManager:
         self._mark_completed_handles()
         self._prune_deleted_objects(scene)
 
-        # Resolve desired sources
+        # Resolve desired sources. Playback is strictly exclusive:
+        # preview plays only the previewed action, NLA tweak mode only the
+        # active object's focused strip, ordinary playback only the active
+        # object's selected Carnivores track.
         desired = {}  # source_key -> (obj, action, snd, strip, cycle, offset)
-        if _preview_restore_state or scene.is_nla_tweakmode:
-            candidate_objects = scene.objects
+        if _preview_restore_state:
+            preview_obj = _preview_restore_state.get('obj')
+            try:
+                is_valid = bool(preview_obj and scene.objects.get(preview_obj.name) == preview_obj)
+            except ReferenceError:
+                is_valid = False
+            candidate_objects = (preview_obj,) if is_valid else ()
         else:
-            # Ordinary playback follows only the active object's selected
-            # Carnivores track, avoiding multiple overlapping track sounds.
+            # Tweak mode and ordinary playback follow the active object only.
             active_object = getattr(bpy.context.view_layer.objects, "active", None)
             is_scene_object = bool(active_object and scene.objects.get(active_object.name) == active_object)
             candidate_objects = (active_object,) if is_scene_object else ()
@@ -603,6 +610,7 @@ def register_audio_handlers():
 
 def unregister_audio_handlers():
     """Remove all audio handlers and stop audio resources."""
+    _clear_preview_state()
     h = bpy.app.handlers
     if carnivores_nla_sound_handler in h.frame_change_post:
         h.frame_change_post.remove(carnivores_nla_sound_handler)
@@ -617,17 +625,17 @@ def unregister_audio_handlers():
     _audio_manager.reset()
 
 class CARNIVORES_OT_play_linked_sound(bpy.types.Operator):
-    """Plays the sound linked to the active object's active animation by adding it to the sequencer"""
+    """Adds the linked sound of the selected animation to the VSE as a sound strip, aligned with the animation's timeline position"""
     bl_idname = "carnivores.play_linked_sound"
-    bl_label = "Play Linked Sound"
-    bl_description = "Add the active animation's linked sound as a VSE strip at the current frame; this does not start playback."
+    bl_label = "Add Sound Strip to Sequencer"
+    bl_description = "Add the animation's linked sound to the Video Sequence Editor as a strip aligned with the animation's timeline range, so it plays in sync while scrubbing or rendering. Audio editing itself is best done in an external editor."
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
         obj = getattr(context, "active_object", None)
-        if not obj or not obj.animation_data or not obj.animation_data.action:
-            return _poll_message(cls, "The active object needs an active animation action.")
+        if not obj or not anim_utils.get_active_animation_data(obj):
+            return _poll_message(cls, "The active object needs animation data with a linked sound.")
         return True
 
     def execute(self, context):
@@ -636,26 +644,52 @@ class CARNIVORES_OT_play_linked_sound(bpy.types.Operator):
             self.report({'ERROR'}, "No active object selected.")
             return {'CANCELLED'}
 
-        if not obj.animation_data or not obj.animation_data.action:
-            self.report({'ERROR'}, "Active object has no active animation action.")
+        anim_data = anim_utils.get_active_animation_data(obj)
+        if not anim_data:
+            self.report({'ERROR'}, "Active object has no animation data.")
             return {'CANCELLED'}
 
-        action = obj.animation_data.action
+        action = anim_data.action
+        if not action and anim_data.nla_tracks:
+            # Fall back to the track selected in the Carnivores Animation panel.
+            track_index = int(getattr(obj, "carnivores_active_nla_index", -1))
+            if 0 <= track_index < len(anim_data.nla_tracks):
+                for strip in anim_data.nla_tracks[track_index].strips:
+                    if strip.action:
+                        action = strip.action
+                        break
+        if not action:
+            self.report({'ERROR'}, "Active object has no active or selected animation action.")
+            return {'CANCELLED'}
+
         linked_sound = anim_utils.resolve_action_sound(action)
         if not linked_sound:
             self.report({'ERROR'}, f"Animation '{action.name}' has no linked sound.")
             return {'CANCELLED'}
+
+        # Align the strip with the animation's NLA position when the action is
+        # on the timeline; otherwise start at the current frame.
+        strip_start = context.scene.frame_current
+        if anim_data.nla_tracks:
+            for track in anim_data.nla_tracks:
+                for strip in track.strips:
+                    if strip.action == action:
+                        strip_start = int(strip.frame_start)
+                        break
+                else:
+                    continue
+                break
 
         # Ensure sequence editor exists
         if not context.scene.sequence_editor:
             context.scene.sequence_editor_create()
 
         # Add sound strip to sequencer
-        # We'll place it on channel 1 and start it at the current frame
+        # We'll place it on channel 1 and start it at the animation's start frame
         # The name of the strip will be the sound's name
         try:
             debug(f"Sound data block exists. Sound name: {linked_sound.name}")
-            debug(f"Attempting to play new sound '{linked_sound.name}' for {obj.name}.")
+            debug(f"Adding sound '{linked_sound.name}' for {obj.name} at frame {strip_start}.")
 
             # Check if a strip with the same name already exists to avoid duplicates
             existing_strip = context.scene.sequence_editor.sequences.get(linked_sound.name)
@@ -668,11 +702,11 @@ class CARNIVORES_OT_play_linked_sound(bpy.types.Operator):
                 name=linked_sound.name,
                 type='SOUND',
                 channel=1,
-                frame_start=context.scene.frame_current
+                frame_start=strip_start
             )
             sound_strip.sound = linked_sound  # Link the actual sound datablock
 
-            self.report({'INFO'}, f"Added sound '{linked_sound.name}' to sequencer at frame {context.scene.frame_current}.")
+            self.report({'INFO'}, f"Added sound '{linked_sound.name}' to sequencer at frame {strip_start}.")
         except Exception as e:
             self.report({'ERROR'}, f"Failed to add sound to sequencer: {e}")
             return {'CANCELLED'}
@@ -1050,6 +1084,8 @@ def preview_loop_handler(scene):
 @bpy.app.handlers.persistent
 def clear_aud_device_on_new_file(scene):
     _audio_manager.on_file_load()
+    _clear_preview_state()
+    migrate_legacy_sound_links()
 
     # Clean up temp files from previous session's packed-sound playback
     anim_utils.cleanup_temp_sound_files()
@@ -1058,6 +1094,43 @@ def clear_aud_device_on_new_file(scene):
     register_audio_handlers()
 
     debug("AUDIO: Audio system reset complete.")
+
+def _clear_preview_state():
+    """Discard preview restoration state and remove its frame-change handler.
+
+    Called on file load and addon unregister so preview mode cannot leak
+    into a newly loaded file or survive the addon being disabled.
+    """
+    global _preview_restore_state
+    if preview_loop_handler in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.remove(preview_loop_handler)
+    _preview_restore_state = None
+
+
+def migrate_legacy_sound_links():
+    """Assign carnivores_sound_ptr for legacy action['carnivores_sound'] name links.
+
+    Runs on file load. Unresolved legacy names are retained so a missing
+    sound datablock can be repaired later.
+    """
+    migrated = 0
+    for action in bpy.data.actions:
+        if getattr(action, 'carnivores_sound_ptr', None):
+            continue
+        legacy_name = action.get('carnivores_sound')
+        if not legacy_name:
+            continue
+        sound = bpy.data.sounds.get(legacy_name)
+        if not sound:
+            continue
+        try:
+            action.carnivores_sound_ptr = sound
+            migrated += 1
+        except Exception as e:
+            warn(f"AUDIO: Could not migrate legacy sound link on '{action.name}': {e}")
+    if migrated:
+        info(f"AUDIO: Migrated {migrated} legacy sound name links to sound pointers.")
+
 
 def _restore_preview_state(scene, context=None):
     """Restore preview mutations from both operator and playback-stop paths."""
@@ -1104,8 +1177,7 @@ def _restore_preview_state(scene, context=None):
         scene.frame_preview_end = state.get('original_preview_end', scene.frame_preview_end)
     scene.carnivores_nla_sound_enabled = state['original_sound_enabled']
 
-    if preview_loop_handler in bpy.app.handlers.frame_change_post:
-        bpy.app.handlers.frame_change_post.remove(preview_loop_handler)
+    _clear_preview_state()
     try:
         _audio_manager.remove_preview_source(obj, state.get('action_name'))
     except (ReferenceError, RuntimeError):

@@ -94,6 +94,7 @@ Manual verification for audio improvements from commits `cc7d431` and `b78f49d`.
 | 9.3 | During preview of Track A, click Play on Track B. | Preview switches to Track B. Track A's audio stops, Track B's starts. |
 | 9.4 | During preview, click the Play button again (Pause icon). | Preview stops. All tracks restored to their original mute states. No audio plays. |
 | 9.5 | During preview, disable NLA Sound in the panel. | Preview audio stops. Preview continues with no sound. |
+| 9.6 | Start a preview, then load a different blend file mid-preview. | No preview loop handler, restore state, or active handles leak into the new file. Other objects' selected tracks do not start playing. |
 
 ## 10. Round Trip (both commits)
 
@@ -110,4 +111,4 @@ Manual verification for audio improvements from commits `cc7d431` and `b78f49d`.
 
 | Date | Tester | Blender Version | Tests Passed | Notes |
 |------|--------|----------------|-------------|-------|
-|      |        |                | /43         |       |
+|      |        |                | /44         |       |

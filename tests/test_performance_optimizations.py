@@ -1,5 +1,6 @@
 import io
 import os
+import shutil
 from pathlib import Path
 import sys
 import tempfile
@@ -17,8 +18,10 @@ from carnivores_io.parsers.export_car import (
     _convert_sound_to_22khz_mono,
     _extract_pcm16_mono_22050_wav,
     _linear_fcurve_samples,
+    export_car,
     gather_car_animations,
 )
+from carnivores_io.parsers.parse_car import parse_car
 from carnivores_io.utils.animation import (
     cleanup_temp_sound_files,
     import_car_sounds,
@@ -203,6 +206,90 @@ class PerformanceOptimizationTests(unittest.TestCase):
             bpy.data.meshes.remove(mesh)
             if action is not None and action.name in bpy.data.actions:
                 bpy.data.actions.remove(action)
+
+    def test_car_sound_round_trip_preserves_count_mapping_and_payloads(self):
+        payloads = [
+            np.array([-32768, -1, 0, 1, 32767], dtype="<i2").tobytes(),
+            np.array([-5, -4, -3, -2, -1, 0, 1, 2], dtype="<i2").tobytes(),
+        ]
+        sounds_data = [
+            {"name": "Growl", "data": np.frombuffer(payloads[0], dtype="<i2")},
+            {"name": "Roar", "data": np.frombuffer(payloads[1], dtype="<i2")},
+        ]
+        imported = []
+        mesh = None
+        obj = None
+        action = None
+        filepath = None
+        temp_dir = None
+        original_fps = bpy.context.scene.render.fps
+        try:
+            mesh = bpy.data.meshes.new("RoundTripMesh")
+            mesh.from_pydata(
+                [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)],
+                [],
+                [(0, 1, 2, 3)],
+            )
+            obj = bpy.data.objects.new("RoundTripObject", mesh)
+            bpy.context.scene.collection.objects.link(obj)
+
+            obj.shape_key_add(name="Basis")
+            for index in range(3):
+                key = obj.shape_key_add(name=f"Walk.Frame_{index + 1:03d}")
+                key.data[0].co.x = index / 16.0
+            mesh.shape_keys.use_relative = False
+            bpy.context.scene.render.fps = 60
+            action = keyframe_shape_key_animation_as_action(
+                obj,
+                "Walk",
+                kps=30,
+                scene_fps=60,
+                use_absolute=True,
+                use_kps_timing=True,
+            )
+            push_shape_key_action_to_nla(obj, strip_name="Walk")
+
+            imported = import_car_sounds(
+                None, sounds_data, "Model", bpy.context, referenced_indices={0, 1}
+            )
+            self.assertEqual(len(imported), 2)
+            self.assertTrue(all(sound is not None for sound in imported))
+            action.carnivores_sound_ptr = imported[0]
+
+            temp_dir = tempfile.mkdtemp(prefix="carnivores_rt_")
+            filepath = os.path.join(temp_dir, "roundtrip.car")
+            export_car(filepath, obj, np.identity(4), export_textures=False)
+
+            (header, _model_name, _faces, _uvs, _vertices, _bones,
+             _owners, _texture, _texture_height, _warnings, animations,
+             sounds, cross_ref) = parse_car(
+                filepath, parse_texture=False, import_sounds=True
+            )
+
+            self.assertEqual(int(header["sfx_count"]), 1)
+            self.assertEqual(len(sounds), 1)
+            self.assertEqual(sounds[0]["name"], "Growl")
+            self.assertEqual(sounds[0]["length_bytes"], len(payloads[0]))
+            self.assertEqual(sounds[0]["data"].tobytes(), payloads[0])
+
+            self.assertEqual(len(animations), 1)
+            self.assertEqual(animations[0]["name"], "Walk")
+            self.assertEqual(cross_ref[0], 0)
+            self.assertEqual(list(cross_ref[1:]), [-1] * 63)
+        finally:
+            bpy.context.scene.render.fps = original_fps
+            if action is not None and action.name in bpy.data.actions:
+                bpy.data.actions.remove(action)
+            if obj is not None:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            if mesh is not None:
+                bpy.data.meshes.remove(mesh)
+            for sound in imported:
+                if sound is not None and sound.name in bpy.data.sounds:
+                    bpy.data.sounds.remove(sound)
+            cleanup_temp_sound_files()
+            if temp_dir and os.path.isdir(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
