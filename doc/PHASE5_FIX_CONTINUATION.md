@@ -1,10 +1,12 @@
 # Phase 5 Fix Continuation
 
+> **Status: historical record.** The fixes described here were completed and committed as `d4d9112` ("fix(rig): complete phase 5 reconstruction lifecycle"). For the current committed state, use [RIG_RECONSTRUCTION_HANDOFF.md](RIG_RECONSTRUCTION_HANDOFF.md) and [RIG_RECONSTRUCTION_PLAN.md](RIG_RECONSTRUCTION_PLAN.md).
+
 ## Current state
 
 This session reviewed and fixed the Phase 5 rig-reconstruction findings from `doc/RIG_RECONSTRUCTION_PLAN.md`.
 
-The working tree is intentionally uncommitted. The pre-existing untracked `.commandcode/` directory is still present and was not touched.
+At the time of writing (pre-`d4d9112`), the working tree was intentionally uncommitted. The pre-existing untracked `.commandcode/` directory was present and was not touched.
 
 Last verification:
 

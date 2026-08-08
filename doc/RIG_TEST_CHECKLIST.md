@@ -69,7 +69,7 @@ Check at least one model for each applicable case:
 
 ## Phase 7 Round-Trip Reconciliation
 
-1. Run **Validate Rig Proposal** after applying a generated rig and record the explicit result level: `PASS`, `EXPECTED_DRIFT`, `WARNING`, or `ERROR`.
+1. Run **Validate Rig Round Trip** after applying a generated rig and record the explicit result level: `PASS`, `EXPECTED_DRIFT`, `WARNING`, or `ERROR`.
 2. Confirm the report separates canonical compact-owner versus dominant deform drift from canonical raw-owner versus dry-run CAR export drift.
 3. Confirm final export bone order, Blender names, export names, raw IDs, compact IDs, parent indices, and affected vertex counts are present in the structured report.
 4. With exact one-hot generated groups, confirm `PASS` and zero unexpected export drift.

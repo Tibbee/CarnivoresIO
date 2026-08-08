@@ -51,6 +51,8 @@ All binary I/O uses NumPy for performance. Textures use the ARGB1555 format at a
 
 Legacy and experimental topology-first algorithms infer a bone hierarchy from imported CAR owner data or vertex groups. The reconstruction workflow calculates owner-region centroids, uses symmetry-aware hierarchy scoring, and supports Automatic or searchable owner-root selection with a compatible integer override for scripts. Names such as `floor`, `root`, `pelvis`, and `spine` are considered during automatic root scoring, but explicit overrides always take precedence. The resulting armature is parented to the mesh with an Armature modifier in a single step.
 
+The experimental Topology algorithm runs through an inspectable **Analyze → Apply** workflow: analysis is non-destructive, shows a scoped preview of roots, joints, accepted/rejected edges, and skipped groups, and persists the proposal with integrity checks so stale or edited sources are rejected before applying. Generated rigs are protected by explicit lifecycle policies (Create New / Replace Generated / Cancel), and **Validate Rig Round Trip** reconciles canonical source owners, generated deform groups, and dry-run export owners with explicit `PASS`, `EXPECTED_DRIFT`, `WARNING`, and `ERROR` levels.
+
 ### Animation Pipeline
 
 - Vertex animations from `.car` files are converted to Shape Key Actions with NLA strips during import.
@@ -127,8 +129,8 @@ Tools are accessed through two locations in Blender:
 
 1. Select the imported mesh.
 2. In the **Carnivores** sidebar tab, open the dedicated **Carnivores Rig** panel.
-3. Choose the reconstruction algorithm and optional root/weight settings, then click **Reconstruct Rig**.
-4. The addon computes centroids from the imported owner cache (falling back to vertex groups when needed), infers a bone hierarchy using a scored symmetry-aware MST algorithm, and builds an armature. Optional pre-reconstruct smoothing can be enabled in the **Carnivores Rig** panel. The mesh is parented with an Armature modifier automatically.
+3. Choose the reconstruction algorithm and optional root/weight settings. For **Topology (Experimental)**, run **Analyze Rig Proposal** first: the analysis is non-destructive and shows a scoped preview of roots, joints, accepted/rejected edges, and skipped groups. Review the proposal, then click **Apply Rig Proposal**. **Reconstruct Rig from Owners** remains the direct compatibility shortcut for both algorithms.
+4. The addon computes centroids from the imported owner cache (falling back to vertex groups when needed), infers a bone hierarchy using a scored symmetry-aware MST algorithm, and builds an armature. Optional pre-reconstruct smoothing can be enabled in the **Carnivores Rig** panel. The mesh is parented with an Armature modifier automatically. After rigging, **Validate Rig Round Trip** reports owner reconciliation across canonical source owners, generated deform groups, and the export owner mapping (`PASS` / `EXPECTED_DRIFT` / `WARNING` / `ERROR`).
 
 To inspect the result, click **Generate Rig Report**, then **Open Report** to view bone positions, parenting, owner-cache, topology, root, and vertex-group statistics. **Reset to Imported Owners** explicitly rebuilds canonical `CarBone_<index>` groups from the cached owner data.
 

@@ -15,9 +15,10 @@ sections of doc/SYSTEMS.md completely before editing.
 Constraints:
 - Work locally only. Do not fetch, pull, push, or modify remote branches.
 - Current branch: main.
-- Current committed HEAD: 64c3c70 fix(texture): refresh packed images after import.
-- Phases 0-3 (owner mapping, pure geometry analysis, anatomy-aware Topology v2-v4,
-  legacy cluster-filter regression fix) are committed and merged.
+- Current committed HEAD: c037643 feat(rig): add round-trip reconciliation.
+- Phases 0-7 are committed and merged: owner mapping (0-1), pure geometry
+  analysis (2), anatomy-aware Topology v2-v4 (3), weight generation (4),
+  armature lifecycle (5), proposal workflow (6), round-trip reconciliation (7).
 - Keep Legacy as the default and preserve its successful behavior.
 - Do not touch or commit .commandcode/.
 - User screenshots in doc/*.png are untracked test evidence; do not commit them
@@ -29,13 +30,14 @@ Current implementation (all committed):
 - Legacy centroid-cluster filtering caused valid distal legs/tail groups to be
   skipped on `dilo2b`. It is now diagnostic-only by default; the explicit
   `Filter Detached Centroid Clusters` option restores pruning when enabled.
-- Experimental Topology algorithm v2 is anatomy-constrained:
+- Topology algorithm v2 is anatomy-constrained:
   - robust cross-owner boundary candidates;
   - deterministic bilateral pairing around imported X lateral axis;
   - central backbone construction with low-confidence proximity completion;
   - same-side lateral components attached to the central backbone exactly once;
   - mirrored components prefer the same central owner;
-  - explicit disconnected policies;
+  - explicit disconnected policies (Multiple Roots / Attach Nearest / Skip /
+    Reserve for Hooks);
   - proposal heads, tails, and roll references passed directly to Blender;
   - optional Semantic L/R suffixes shared with Legacy and synchronized with vertex groups;
   - optional Topology deform smoothing rebuilt from canonical one-hot owners on every run, so smoothing is non-cumulative and cannot alter hierarchy evidence;
@@ -47,80 +49,105 @@ Current implementation (all committed):
   with at least two real topology-boundary connections, avoiding tiny but
   graph-central control groups as roots while retaining scored fallback selection
   for endpoint-only structures.
+- Phase 5 lifecycle (d4d9112): transactional armature construction with context
+  snapshot/restore and rollback, explicit rig policies (CREATE_NEW /
+  REPLACE_GENERATED / CANCEL), explicit `Remove Skipped Owner Groups` cleanup
+  that only removes recorded groups, deterministic roll alignment, and separate
+  Blender names vs ASCII/31-byte export names with a serialized name map.
+- Phase 6 proposal workflow (ed93a20): `Analyze Rig Proposal`, `Apply Rig
+  Proposal`, `Clear Rig Preview`, `Validate Rig Round Trip` operators; analysis
+  is non-mutating with scoped previews; proposals are persisted with source
+  checksums and settings fingerprints so stale/forged proposals are rejected
+  before any armature change. `Reconstruct Rig from Owners` remains the direct
+  compatibility shortcut.
+- Phase 7 round-trip reconciliation (c037643): a shared non-writing export-owner
+  dry run used by `.3DF`, `.CAR`, and `.3DN` mapping; canonical raw/compact
+  owners, generated dominant deform groups, final export owners, source groups,
+  hierarchy, and generated-weight checksums are reconciled with explicit
+  `PASS`, `EXPECTED_DRIFT` (smoothing-only drift), `WARNING`, and `ERROR`
+  levels. Fuzzy matching is disabled when explicit source-owner metadata exists.
 
-Latest real-asset result (`dilo2b`, Topology v2, Attach Nearest, root override -1):
-- 35 groups, no skipped groups, no owner divergence.
-- 21 central groups and these 7 correct mirror pairs:
-  15↔18, 16↔19, 17↔20, 22↔26, 23↔27, 24↔28, 25↔29.
-- Root selected: raw CarBone_3 / compact index 2.
-- Corrected hierarchy highlights:
-  4→15→16→17
-  4→18→19→20
-  3→21→2→1→30→31→32→33→34→35
-  30→22→23→24→25
-  30→26→27→28→29
-- CarBone_9–10 is the only PROXIMITY_FALLBACK edge and correctly joins the
-  formerly detached head component under Attach Nearest.
-- CarBone_18 is no longer an ancestor of CarBone_21.
-- The latest visual result is doc/blender_5KwvrdjiaJ.png.
-- CarBone_3 was highlighted as the automatic root. Moving a root should move the
-  whole connected mesh; determine whether the user objects to that behavior or
-  only to its pivot location before changing root inference.
+Latest real-asset reference (`dilo2b`, Topology v4, Attach Nearest, automatic
+root, smoothing disabled) — see RIG_TEST_CHECKLIST.md for the full regression:
+- 35 groups, no skipped groups, no owner-cache divergence; 21 central groups
+  and 7 correct mirror pairs (15↔18, 16↔19, 17↔20, 22↔26, 23↔27, 24↔28, 25↔29);
+- forelimb chains 4→15→16→17 and 4→18→19→20 with `CarBone_21` attached directly
+  to `CarBone_3`, not below the forelimb;
+- rear chains 30→22→23→24→25 and 30→26→27→28→29, central tail chain
+  1→30→31→32→33→34→35;
+- only `CarBone_9–10` is `PROXIMITY_FALLBACK` (joins the formerly detached head
+  component under Attach Nearest).
+- Confirmed pose checks: rotating `CarBone_18` moves only its forelimb;
+  rotating `CarBone_30` moves rear limbs and tail but not the forward torso.
+- Root: earlier scoring selected `CarBone_3`; Topology v4 should automatically
+  select the source-ordered backbone candidate `CarBone_1`. `CarBone_30`
+  (override compact index 29) remains a useful pelvis-root comparison. The
+  pose isolation checks must be re-run under the v4 automatic root.
 
 Immediate next work:
-1. Ask for/interpret the pending pose checks, initially with smoothing disabled:
-   - rotate CarBone_18: only its forelimb should move;
-   - rotate CarBone_30: rear limbs and tail should move, forward torso should not;
-   - optionally compare automatic root CarBone_3 with compact override index 29
-     (raw CarBone_30) for pelvis-oriented pivot placement.
-2. Do not change automatic root inference merely because the root moves the whole
-   mesh; that is expected. Change it only if pivot placement is demonstrably poor.
-3. If pose checks pass, test one asymmetric model and one additional symmetric
-   model. Phase 3 is already committed; additional fixes from this testing should
-   become a follow-up commit.
-4. Re-run all Blender tests, registration, compileall, and git diff --check.
-5. Keep any follow-up commit atomic and exclude .commandcode/ and test PNGs.
+1. Re-run the `dilo2b` reference regression under the current HEAD, confirm the
+   automatic root is `CarBone_1` (not `CarBone_3`), and recheck both pose
+   isolation tests (CarBone_18 forelimb-only; CarBone_30 rear+tail) after the
+   automatic-root change.
+2. If pose checks pass, test one asymmetric model and one additional symmetric
+   model. Follow-up fixes from this testing become an atomic commit.
+3. Phase 7 follow-up: run a temporary CAR export/re-import parity check on a
+   real asset and confirm the dry-run owner array and final bone names/order
+   match the serialized CAR records (checklist item 10).
+4. Do not start Phase 8 (motion-assisted inference) or Phase 9 (skeletal
+   animation conversion); both are planned but not started.
+5. Re-run all 101 Blender tests, the registration smoke test, compileall, and
+   git diff --check. Keep any commit atomic and exclude .commandcode/ and test
+   PNGs.
 
 Important implementation notes:
 - Pure logic: utils/rig_reconstruction.py.
 - Blender adapter/metadata: utils/animation.py.
-- Armature creation with optional explicit tails/roll: utils/io.py.
+- Armature creation, lifecycle policies, context snapshot/restore: utils/io.py.
 - UI and Debug Rig Info: operators/animation.py and __init__.py.
-- Pure hierarchy tests: tests/test_rig_hierarchy.py.
-- Blender adapter tests: tests/test_rig_adapter.py.
+- Generated armature metadata keys: carnivores_rig_algorithm,
+  carnivores_rig_algorithm_version, carnivores_rig_metadata_version,
+  carnivores_reconstruct_source_id, carnivores_reconstruct_source_mesh,
+  carnivores_reconstruct_owner_mapping, carnivores_reconstruct_bone_name_map.
+- Pure hierarchy/geometry tests: tests/test_rig_hierarchy.py,
+  tests/test_rig_geometry.py; Blender adapter tests: tests/test_rig_adapter.py;
+  reconciliation tests: tests/test_rig_reconciliation.py.
 - Root override is a compact zero-based index, not raw owner ID. On `dilo2b`,
   compact 29 corresponds to raw CarBone_30.
-- Existing generated rigs are not replaced transactionally; remove old rigs before
-  each manual run.
+- Generated rigs are protected by lifecycle policies: CREATE_NEW preserves the
+  old generated armature, REPLACE_GENERATED only deletes the old rig after a
+  successful swap, and CANCEL (or an unrelated user armature) refuses the
+  operation without changes.
 
 Verification at handoff:
-- 50 automated tests pass under Blender 5.2, including Topology semantic naming
-  and non-destructive generated smoothing.
+- 101 automated tests pass under Blender 5.2 (10 files under tests/).
 - Addon register/unregister smoke test passes.
-- compileall and git diff --check pass (only an LF→CRLF working-copy warning).
+- compileall and git diff --check pass.
 - No remote operations have occurred.
 
-Start by inspecting git status/diff and confirming the pending user pose result.
-Do not commit until real-asset testing is complete or the user explicitly asks.
+Start by inspecting git status/diff and re-running the dilo2b reference
+regression. Do not commit until real-asset testing is complete or the user
+explicitly asks.
 ```
 
 ## Local Git State at Handoff
 
 - Branch: `main`
-- HEAD: `64c3c70 fix(texture): refresh packed images after import`
-- Phases 0-3 and Topology v2-v4 are committed and merged into `main`.
+- HEAD: `c037643 feat(rig): add round-trip reconciliation`
+- Phases 0-7 are committed and merged into `main` (Phase 5: `d4d9112`, Phase 6: `ed93a20`, Phase 7: `c037643`).
 - `.commandcode/` is untracked and must remain untouched.
 - User test PNGs are untracked and are not release documentation by default.
 - No remote operations were performed during this work.
 
 ## Verification Command
 
-From Git Bash at the repository root:
+From Git Bash at the repository root (same command as `tests/README.md`; it
+registers the addon because operator tests call `bpy.ops.carnivores.*`):
 
 ```bash
 WINPWD=$(pwd -W)
 ../../../../blender.exe --background --factory-startup --python-expr \
-  "import sys,unittest; p=r'$WINPWD\\tests'; sys.path.insert(0,p); result=unittest.TextTestRunner(verbosity=1).run(unittest.defaultTestLoader.discover(p)); raise SystemExit(0 if result.wasSuccessful() else 1)"
+  "import sys,unittest; sys.path.insert(0,r'$WINPWD\\..'); import carnivores_io; carnivores_io.register(); p=r'$WINPWD'; sys.path.insert(0,p); result=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.discover(p)); carnivores_io.unregister(); raise SystemExit(0 if result.wasSuccessful() else 1)"
 python -m compileall -q core parsers utils operators tests
 git diff --check
 ```

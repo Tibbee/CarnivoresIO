@@ -139,7 +139,7 @@ Combined from `dev_notes.md` and `future_changes.md`.
 
 Improve the `.car` rig reconstruction pipeline for faithfulness, stability, and determinism. Current algorithm documentation is in [Systems: Skeleton Reconstruction](SYSTEMS.md#skeleton-reconstruction-car-models); the complete staged redesign is in [Rig Reconstruction Implementation Plan](RIG_RECONSTRUCTION_PLAN.md).
 
-**Current baseline (Phases 0-7 implemented in the working tree):**
+**Current baseline (Phases 0-7 implemented and committed, HEAD `c037643`):**
 - Preserve imported owner indices on the mesh for reconstruction use
 - Degeneracy pruning (empty groups → filtered out, not mesh_mean)
 - Diagnostic disconnected-cluster detection via BFS; destructive largest-cluster filtering is an explicit Legacy option and disabled by default
@@ -194,10 +194,11 @@ Milestones, acceptance criteria, tests, risks, and file touch points are maintai
 - Cache frequently accessed data (e.g., `3df_flags`)
 - See [Performance Handoff](PERFORMANCE_HANDOFF.md) for the committed CAR import/export fast paths
 
-#### 4.6 Testing Suite — Partially Implemented
-- 50 automated tests across 9 files under `tests/`, covering owner mapping, rig geometry/hierarchy/adapter,
-  structural validation, CAR validation, performance fast paths, and audio playback selection
-- Edge case coverage for empty meshes, invalid textures, cyclic bones, and fractional animation ranges
+#### 4.6 Testing Suite — Implemented
+- 101 automated tests across 10 files under `tests/`, covering owner mapping, rig geometry/hierarchy/adapter/reconciliation,
+  rig lifecycle policies, structural validation, CAR validation, performance fast paths, audio playback selection, and addon preferences
+- Edge case coverage for empty meshes, invalid textures, cyclic bones, fractional animation ranges, stale/forged proposals, and export-name collisions
+- Run instructions and coverage summary: [`tests/README.md`](../tests/README.md)
 - No fixture `.3df`/`.car` files are committed; synthetic fixtures are generated in test code
 
 ---

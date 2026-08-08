@@ -486,7 +486,7 @@ Blender's Video Sequence Editor can assist with trimming, fades, mixing, and rou
 
 ### 1.11 Verification Matrix
 
-There is currently no automated test suite, so each implementation phase must include Blender verification. Pure source-resolution and timing functions should receive unit tests if a test harness is introduced.
+A Blender test harness exists under `tests/` (101 tests across 10 files; see `tests/README.md`), but audio playback remains mostly manual: each implementation phase must include Blender verification. Pure source-resolution and timing functions should receive unit tests in that harness.
 
 #### Playback Modes
 

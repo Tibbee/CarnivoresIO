@@ -367,7 +367,7 @@ Move or wrap the current centroid, mirror, root, cluster, and MST helpers so the
 
 ## 8. Phase 3 — Topology-Aware Static Reconstruction
 
-**Implementation status:** The experimental `TOPOLOGY` path builds cross-owner boundary candidates, robust boundary joints, topology components, and explicit `MULTI_ROOT`, `ATTACH_NEAREST`, `SKIP`, and reserved `HOOKS` policies. Topology algorithm v2 introduced anatomy constraints: deterministic bilateral pairing separates lateral components from a proximity-completed central backbone, each lateral component attaches once, and paired components prefer the same central owner. Algorithm v3 additionally orients laterally ambiguous midline leaf controls along signed Blender Y body flow. Algorithm v4 uses source owner order to choose among central candidates with at least two supported topology connections, avoiding tiny but graph-central control groups as roots while retaining scored fallback selection for endpoint-only structures. The pure `RigProposal` supplies explicit heads, tails, and roll references to Blender. Debug metadata records classification and accepted-edge evidence. Manual `dilo2b` testing confirmed seven correct mirror pairs, independent forelimbs, symmetric rear-limb attachment through `CarBone_30`, restoration of the `CarBone_30–35` tail chain, and one low-confidence `CarBone_9–10` attachment. Its original root is known to be `CarBone_30`; automatic selection of `CarBone_3` remains an inference failure. General body-axis inference and transactional lifecycle remain for later work.
+**Implementation status:** The experimental `TOPOLOGY` path builds cross-owner boundary candidates, robust boundary joints, topology components, and explicit `MULTI_ROOT`, `ATTACH_NEAREST`, `SKIP`, and reserved `HOOKS` policies. Topology algorithm v2 introduced anatomy constraints: deterministic bilateral pairing separates lateral components from a proximity-completed central backbone, each lateral component attaches once, and paired components prefer the same central owner. Algorithm v3 additionally orients laterally ambiguous midline leaf controls along signed Blender Y body flow. Algorithm v4 uses source owner order to choose among central candidates with at least two supported topology connections, avoiding tiny but graph-central control groups as roots while retaining scored fallback selection for endpoint-only structures. The pure `RigProposal` supplies explicit heads, tails, and roll references to Blender. Debug metadata records classification and accepted-edge evidence. Manual `dilo2b` testing confirmed seven correct mirror pairs, independent forelimbs, symmetric rear-limb attachment through `CarBone_30`, restoration of the `CarBone_30–35` tail chain, and one low-confidence `CarBone_9–10` attachment. Its original root is known to be `CarBone_30`; automatic selection of `CarBone_3` remains an inference failure; v4 prefers source-ordered central candidates (candidate `CarBone_1` on `dilo2b`, pending re-verification). General body-axis inference remains for later work (Phase 8); transactional lifecycle is implemented (Phases 5-6).
 
 ### 8.1 Build the owner-region adjacency graph
 
@@ -535,6 +535,8 @@ Label these operations separately in the UI.
 
 ## 10. Phase 5 — Armature Construction Quality and Lifecycle
 
+**Implementation status:** Implemented and committed (`d4d9112`). Transactional armature construction with context snapshot/restore, explicit generated-rig lifecycle policies (`CREATE_NEW`, `REPLACE_GENERATED`, `CANCEL`), explicit skipped-group cleanup, deterministic roll alignment, and serialized Blender/export name mapping.
+
 ### 10.1 Correct local/original owner mapping
 
 Armature construction must receive explicit compact IDs and raw IDs. Never assume local proposal index `i` equals a source owner value.
@@ -627,6 +629,8 @@ Do not automatically delete nonempty skipped groups. Tag and report them. Offer 
 
 ## 11. Phase 6 — Preview, Confirmation, and Diagnostics
 
+**Implementation status:** Implemented and committed (`ed93a20`). Analyze/Apply/Clear/Validate operators, persisted proposals with payload integrity checks and stale-source rejection, and scoped previews.
+
 ### 11.1 Split Analyze from Apply
 
 Add operators:
@@ -701,7 +705,7 @@ Avoid Unicode-only status characters if console/text portability becomes an issu
 
 ## 12. Phase 7 — True Round-Trip Reconciliation
 
-**Implementation status:** Implemented in the current working tree. The read-only export mapping, structured reconciliation levels, generated-weight checksums, and validation/report integrations are covered by the Blender test suite; real-asset export/re-import parity remains follow-up work.
+**Implementation status:** Implemented and committed (`c037643`). The read-only export mapping, structured reconciliation levels, generated-weight checksums, and validation/report integrations are covered by the Blender test suite; real-asset export/re-import parity remains follow-up work.
 
 The existing dominant-group divergence report is retained as one diagnostic, but it is not sufficient.
 

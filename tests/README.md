@@ -11,3 +11,18 @@ WINPWD=$(pwd -W)
 ```
 
 The suite registers the addon because several operator tests call `bpy.ops.carnivores.*`. It does not modify Blender user preferences.
+
+The suite currently holds **101 tests across 10 files**:
+
+| File | Coverage |
+|---|---|
+| `test_rig_adapter.py` | Blender adapter contract: Legacy/Topology reconstruction, lifecycle policies, transactional updates, proposal storage, export-name mapping, dry-run owner mapping |
+| `test_rig_geometry.py` | Pure geometry: centroids, PCA/SVD, boundary joints, rolls |
+| `test_rig_hierarchy.py` | Pure hierarchy: MST scoring, mirror pairing, root selection |
+| `test_rig_reconciliation.py` | Round-trip reconciliation levels and dry-run diagnostics |
+| `test_performance_optimizations.py` | CAR import/export fast paths, fractional endpoints, sound byte preservation |
+| `test_structural_validation.py` | Non-destructive structural validation of binary input |
+| `test_car_validation.py` | CAR-specific validation (owners, counts, texture rows) |
+| `test_audio_playback_selection.py` | NLA-focused audio playback selection |
+| `test_addon_preferences.py` | Preference registration and defaults |
+| `test_owner_mapping.py` | Raw → compact owner mapping |

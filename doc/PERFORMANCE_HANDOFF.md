@@ -16,7 +16,7 @@ and the relevant sections of doc/SYSTEMS.md completely before editing.
 Constraints:
 - Work locally only. Do not fetch, pull, push, or modify remote branches.
 - Current branch: main.
-- Current committed HEAD: 64c3c70 fix(texture): refresh packed images after import.
+- Current committed HEAD: c037643 feat(rig): add round-trip reconciliation.
 - Preserve the performance report schema (versions stay 1).
 - Performance instrumentation is gated by the "Performance Instrumentation"
   preference toggle, independent of Debug Mode.
@@ -87,8 +87,8 @@ owner 0 when the imported CAR mesh has not been reconstructed into an armature.
 Earlier round-trip evidence preserved 19/19 animations, 13/13 sounds,
 518 vertices, and 992 faces, but the exported file shrank 9,324 bytes
 (4,073,232 -> 4,063,908). That difference equals exactly three animation
-frames at 518 vertices. The working tree fixes fractional endpoint truncation;
-a fresh DiloTest per-animation frame-count comparison is still required.
+frames at 518 vertices. The committed fractional-endpoint fix restores all
+769 frames and returns to the original 4,073,232-byte size (see open item 2).
 
 Optimization history (committed work plus the explicitly noted working-tree changes):
   - Absolute Shape Keys became the CAR import default (measured 5.4x faster
@@ -144,7 +144,7 @@ Known dead ends (do not retry without new information):
 
 Note on NLA: the earlier claim that "NLA mute toggles are not the bottleneck"
 applied to the individual toggle cost. Skipping the entire NLA mutation for the
-direct shape-key path (working tree) removed nla_state_mute_all / nla_track_solo
+direct shape-key path (committed fast path) removed nla_state_mute_all / nla_track_solo
 / most of nla_state_restore and was a real, measured win. Do not reintroduce
 NLA muting in the fast path.
 
@@ -156,7 +156,7 @@ Test protocol:
   fast path is conditional.
 - Verify packed sounds import correctly, play correctly, preserve compatible
   PCM bytes, and leave no temp files in %TEMP% (carnivores_io_sounds_*).
-- Run the Blender suite (currently 50 tests, including focused performance
+- Run the Blender suite (currently 101 tests, including focused performance
   fast-path coverage) before and after benchmark-driven changes.
 - Use cold Blender starts, Performance Instrumentation on, Debug off.
 ```
