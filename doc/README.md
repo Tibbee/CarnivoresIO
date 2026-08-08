@@ -10,7 +10,7 @@ Consolidated technical documentation for the CarnivoresIO Blender add-on, coveri
 | [Systems](SYSTEMS.md) | Core algorithms: skeleton reconstruction, vertex animation analysis, NLA sound synchronization |
 | [Development](DEVELOPMENT.md) | Developer notes, Blender 5.0 migration guide, future roadmap (rig reconstruction, visualization, animation), known issues |
 | [Reference](reference.md) | Canonical constants, face flag definitions, engine limits, validation rules |
-| [Improvements](IMPROVEMENTS.md) | Implementation roadmap for audio system correctness, lifecycle, and deferred workflow enhancements |
+| [Improvements](IMPROVEMENTS.md) | Implementation roadmap for audio system correctness, lifecycle, deferred workflow enhancements, and import/export robustness and data integrity |
 | [UI Usability Roadmap](UI_USABILITY_ROADMAP.md) | Prioritized implementation and LLM handoff plan for model health, reports, dialogs, face flags, animation/audio, rigging, and onboarding UX |
 | [Rig Reconstruction Plan](RIG_RECONSTRUCTION_PLAN.md) | Staged implementation plan for owner correctness, topology-aware rigs, previews, reconciliation, and motion-assisted reconstruction |
 | [Rig Reconstruction Handoff](RIG_RECONSTRUCTION_HANDOFF.md) | Copyable fresh-session prompt, current committed state (Phases 0-7), latest `dilo2b` findings, and immediate next actions |

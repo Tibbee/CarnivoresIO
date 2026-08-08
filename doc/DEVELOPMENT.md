@@ -180,10 +180,12 @@ Milestones, acceptance criteria, tests, risks, and file touch points are maintai
 #### 4.2 Texture Enhancements
 - Auto-resize textures to 256px width on export
 - Support alpha channel rendering for `sfOpacity` flag
+- Preserve the ARGB1555 1-bit alpha on import/export (currently discarded; see [Improvements: Import/Export Robustness](IMPROVEMENTS.md#3-importexport-robustness-and-data-integrity))
 
 #### 4.3 Bone Name Resolution
 - Unique name generation for duplicate/invalid bone names
 - UI option to rename bones before export
+- Unify name sanitization across parsers, validation, and export (embedded NULs and byte-aware truncation; see [Improvements: Import/Export Robustness](IMPROVEMENTS.md#3-importexport-robustness-and-data-integrity))
 
 #### 4.4 Validation Customization
 - Configurable validation thresholds via preferences
@@ -200,6 +202,10 @@ Milestones, acceptance criteria, tests, risks, and file touch points are maintai
 - Edge case coverage for empty meshes, invalid textures, cyclic bones, fractional animation ranges, stale/forged proposals, and export-name collisions
 - Run instructions and coverage summary: [`tests/README.md`](../tests/README.md)
 - No fixture `.3df`/`.car` files are committed; synthetic fixtures are generated in test code
+
+### Import/Export Robustness and Data Integrity
+
+Audit findings for silent data loss, missing undo support, non-atomic writes, and reporting gaps — including the CAR export silent-animation-drop bug, the ARGB1555 alpha-bit loss, the shape-key fast-path modifier hazard, and testing blind spots (`.3dn`/`.vtl`, texture conversion, reporting, preset deployment). Detailed plans, phases, and verification criteria: [Improvements: Import/Export Robustness and Data Integrity](IMPROVEMENTS.md#3-importexport-robustness-and-data-integrity).
 
 ---
 

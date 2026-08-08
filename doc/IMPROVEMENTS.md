@@ -27,6 +27,8 @@ The roadmap starts with the NLA audio system. Add future subsystem proposals as 
 
 ## 1. NLA Audio System
 
+**Implementation status:** Items 1.3.2 (source identity), 1.3.3 (offsets/sync), 1.3.5 (export conversion), 1.3.6 (parse validation), 1.3.7 (lifecycle), 1.3.8 (temp files), 1.4.1 (failure classification), 1.4.2 (backoff), 1.5 (volume), 1.7 (fallback factory caching), and the formerly partial requirements below (preview exclusivity, preview state lifecycle across file load, linked-sound migration) are implemented and committed. All core completion criteria in 1.12 are met; the deferred 1.9 authoring tools remain separate follow-up work. Spatial audio (1.6) is explicitly **out of scope** — Blender is used as an editor/authoring tool where managed timeline playback and VSE strip placement are sufficient; no listener/attenuation policy is needed.
+
 ### 1.1 Goals
 
 - Play the sound linked to an explicitly focused animation during extension preview and NLA tweak mode.
@@ -56,6 +58,8 @@ Current sound links use `Action.carnivores_sound_ptr`. Older extension versions 
 
 #### Required: Focused Playback Policy
 
+**Status: Implemented.** `_resolve_active_source` (`operators/animation.py`) applies priority preview → tweak mode → selected Carnivores track, skips muted tracks/strips, and gates on `scene.carnivores_nla_sound_enabled`. Playback is strictly exclusive: preview plays only the previewed object's action, NLA tweak mode only the active object's focused strip, and ordinary playback only the active object's selected track (previously preview/tweak scanned all scene objects and could start unrelated tracks).
+
 Managed audio intentionally plays only when the user has selected an unambiguous animation source:
 
 1. Extension track preview
@@ -64,6 +68,14 @@ Managed audio intentionally plays only when the user has selected an unambiguous
 Normal, unfocused NLA timeline playback must not trigger linked sounds. In the Carnivores workflow, one clip belongs to one animation; evaluating the normal NLA stack can otherwise cascade through unrelated strips and start clips at confusing offsets. The resolver must ignore muted or inactive tracks and strips and return enough source identity to distinguish explicit preview selections, not only a sound name.
 
 NLA strip scaling is intentionally outside managed audio synchronization. Linked clips retain their authored speed and are not pitch-shifted, time-stretched, or reversed. For defensive compatibility with nonstandard workflows, focused playback restarts the authored clip at detected NLA repeat boundaries; this is best-effort behavior and does not guarantee synchronization for scaled or fractional repeats. Audio modders should prepare a clip matching the animation's intended frame range and KPS. See [Deferred Workflow Enhancements](#19-deferred-workflow-enhancements) for planned export and timing-assistance tools.
+
+#### Required: Preview Exclusivity
+
+**Status: Implemented.** `start_or_sync` (`operators/animation.py`) now restricts candidate objects during preview to the previewed object only, and during NLA tweak mode to the active object only. Other objects' selected, unmuted tracks can no longer start playing during a preview or tweak session. Previously the handler scanned `scene.objects` while `_preview_restore_state` was set, so every other scene object's focused Carnivores track also played.
+
+#### Required: Preview State Lifecycle Across File Load
+
+**Status: Implemented.** `_clear_preview_state()` — called from the `load_post` handler (`clear_aud_device_on_new_file`) and from `unregister_audio_handlers` — removes the dynamically registered `preview_loop_handler` from `frame_change_post` and discards `_preview_restore_state`. Loading a file or disabling the addon mid-preview can no longer leak preview mode, stale frame-range restoration, or all-object audio scanning into the next file.
 
 #### Required: Source Identity and Retriggering
 
@@ -103,6 +115,8 @@ Small continuous drift correction is not required initially. First ensure determ
 
 #### Required: Linked Sound Resolution and Migration
 
+**Status: Implemented.** `resolve_action_sound()` (`utils/animation.py`) is the single resolver used by playback, preview, export, and validation. A load-time migration (`migrate_legacy_sound_links()` in `operators/animation.py`, run from the `load_post` handler) assigns `carnivores_sound_ptr` whenever a legacy `action["carnivores_sound"]` name resolves; unresolved legacy names are retained so a missing datablock can be repaired later. `CARNIVORES_OT_play_linked_sound` uses the shared resolver.
+
 Create one helper that resolves an action's linked `bpy.types.Sound`:
 
 1. Return `action.carnivores_sound_ptr` when set.
@@ -113,7 +127,7 @@ Use the helper in playback, preview, export, UI operators, and validation where 
 
 Do not remove legacy fallback support without a migration. An optional load-time migration may assign the pointer when the legacy name resolves. It should retain unresolved legacy data so a missing datablock can be repaired later.
 
-`CARNIVORES_OT_play_linked_sound` currently uses only the legacy string property and creates a Sequencer strip instead of using the managed Audaspace playback path. It is registered but not exposed by the current panel. Either remove this legacy operator after confirming it has no supported caller, or route it through the shared linked-sound resolver and audio manager. Do not retain a second playback architecture solely for this operator.
+**Decision (authoring tool):** `CARNIVORES_OT_play_linked_sound` is retained as an explicit VSE authoring operator, renamed to **Add Sound Strip to Sequencer**. It resolves the active (or panel-selected) animation's linked sound through the shared resolver and inserts a sound strip aligned with the animation's NLA timeline position (falling back to the current frame), so audio plays in sync while scrubbing or rendering. It does not play audio and is not a second playback architecture; Blender's VSE is used for trimming/fades/rough sync only, with high-quality retiming and restoration left to external editors (Audacity/DAW). The operator resolves animation data through `get_active_animation_data()`, so it works for CAR imports stored on shape-key animation data.
 
 #### Required: CAR Sound Export Conversion
 
@@ -299,6 +313,8 @@ These values control Blender preview only. CAR export must not imply or serializ
 
 #### Optional: Camera-Relative 3D Playback
 
+**Decision: Out of scope — not useful for this project's use of Blender as an editor/authoring tool.** The extension is used to import/author models and verify animation/audio alignment, not to simulate in-game audio. Managed timeline playback and VSE sound-strip placement cover the authoring workflow; no listener/attenuation policy is needed. Do not implement without a confirmed use case.
+
 Carnivores uses spatialized sounds in-game, but Blender preview currently has no listener policy. Spatial audio should be implemented only after the desired preview behavior is selected.
 
 Correct Audaspace properties include:
@@ -332,6 +348,8 @@ Do not add spatialization as part of the core lifecycle refactor. Implement and 
 ### 1.7 Factory Loading and Caching
 
 #### Optional: Cache Only Proven Expensive Fallbacks
+
+**Status: Implemented.** The `AudioManager` caches only fallback factories (when `bpy.types.Sound.factory` fails), keyed by datablock identity + resolved path + mtime + packed size, with stale-entry eviction and invalidation on file load and reset. Blender's native factory is never cached. First-trigger latency preloading and per-frame candidate caches remain unimplemented by design (profiling first).
 
 `bpy.types.Sound.factory` already exposes Blender's sound factory. Do not add a second cache for every sound unless profiling demonstrates a benefit.
 
@@ -459,6 +477,8 @@ Blender's Video Sequence Editor can assist with trimming, fades, mixing, and rou
 6. Track source identity separately from sound identity.
 7. Implement deterministic start offsets and explicit loop/retrigger behavior.
 
+**Status: All implemented.** The VSE authoring operator was kept (renamed **Add Sound Strip to Sequencer**) per the decision in [Linked Sound Resolution](#required-linked-sound-resolution-and-migration); load-time legacy link migration was added with the `load_post` handler.
+
 #### Phase B: Resource Ownership
 
 1. Introduce the audio manager and route all handle/device operations through it.
@@ -469,12 +489,16 @@ Blender's Video Sequence Editor can assist with trimming, fades, mixing, and rou
 6. Consolidate temporary-file cleanup.
 7. Remove direct access to audio manager internals from `__init__.py` and operators.
 
+**Status: All implemented.**
+
 #### Phase C: Reliability and Usability
 
 1. Classify sound and device failures.
 2. Apply bounded retry backoff to every persistent failure path.
 3. Add scene and action volume controls.
 4. Update current handles when volume changes.
+
+**Status: All implemented.**
 
 #### Phase D: Measured or Optional Enhancements
 
@@ -483,6 +507,8 @@ Blender's Video Sequence Editor can assist with trimming, fades, mixing, and rou
 3. Test whether packed-sound handling can be simplified without breaking persistence.
 4. Profile scene-object scanning before adding candidate caches.
 5. Add optional spatial audio after listener and attenuation decisions are settled.
+
+**Status:** Fallback factory caching (item 2) is implemented; preloading remains unprofiled. Item 5 is explicitly out of scope — see [Spatial Audio](#16-spatial-audio).
 
 ### 1.11 Verification Matrix
 
@@ -515,6 +541,8 @@ A Blender test harness exists under `tests/` (101 tests across 10 files; see `te
 - A failed cleanup call does not prevent the rest of reset from completing.
 - Deleting an object during playback does not raise `ReferenceError` or leave its handle playing.
 - Repeated OpenAL failures respect the manager's reset cooldown.
+- Loading a file mid-preview leaves no preview loop handler, restore state, or active handles in the new file.
+- Preview plays only the previewed object's action; other objects' selected tracks stay silent during preview and during NLA tweak mode.
 
 #### Compatibility
 
@@ -528,7 +556,7 @@ A Blender test harness exists under `tests/` (101 tests across 10 files; see `te
 
 - Exported payloads are mono signed `int16` PCM at 22050 Hz.
 - Every sound's declared length equals its serialized payload length and is even.
-- Export followed by parse preserves sound count and animation cross-reference mappings.
+- Export followed by parse preserves sound count and animation cross-reference mappings. Automated round-trip coverage: `tests/test_performance_optimizations.py::test_car_sound_round_trip_preserves_count_mapping_and_payloads`.
 - Odd, oversized, or truncated input lengths produce deterministic validation results without misaligning later sections.
 - Long finite sounds are not silently limited by the old 100,000-second magic constant.
 - Save, close, reopen, and re-export preserves embedded CAR sounds.
@@ -556,14 +584,14 @@ The core audio improvement is complete when:
 - All supported focused playback modes use one linked-sound resolver and one audio resource owner.
 - Extension preview and NLA tweak mode select one explicit animation source, while normal unfocused NLA playback remains silent.
 - Focused-source transitions, supported midpoint starts, and repeat-boundary restarts have deterministic behavior; scaled repeats do not imply audio synchronization.
-- File load and unregister leave no managed handles, stale device, retry state, or tracked temporary files.
+- File load and unregister leave no managed handles, stale device, retry state, preview state, or tracked temporary files.
 - Legacy sound links continue to work or are safely migrated.
 - CAR sound conversion always writes validated PCM with an exact declared byte length.
 - Malformed sound lengths cannot silently misalign subsequent CAR sections.
 - Persistent failures are rate-limited without hiding successful recovery.
 - Manual verification results are recorded for supported Blender versions.
 
-Caching and spatial audio are not required for core completion.
+**Status: All core criteria met in the working tree** (preview exclusivity, preview lifecycle cleanup, and legacy migration landed together with the round-trip test). Spatial audio is out of scope by decision; the deferred 1.9 authoring tools (Export Linked Audio, batch export, timing assistance) remain separate follow-up work. Caching is implemented for fallback factories only.
 
 ---
 
@@ -579,3 +607,158 @@ Add future proposals here as independent top-level sections. Each should include
 - Completion criteria
 
 Potential areas already mentioned in the development roadmap include export validation, animation workflow, face-flag editing, texture handling, bone-name resolution, performance profiling, and automated testing. Their detailed plans should be added only after the current implementation and behavior have been re-evaluated.
+
+---
+
+## 3. Import/Export Robustness and Data Integrity
+
+Findings from a code audit (parsers, operators, animation, tests) cross-checked against all roadmap documents. None of these are covered by the rig, UI, audio, or performance plans. Each item records the confirmed behavior at the time of writing (HEAD `fab49f4`); verify current line references before editing.
+
+### 3.1 Goals
+
+- No export may silently drop or corrupt animation data while reporting success.
+- Every diagnostic that affects output must reach the operator report.
+- Imports and exports must be undoable and must not mutate scene state without disclosure.
+- Binary output must be atomic and data-preserving (import→export round trips must not lose declared bits).
+- Parsers, validators, and exporters must agree on the same sanitization rules.
+- Documented format coverage must match actual support.
+
+### 3.2 Confirmed Problems
+
+#### Required: CAR Export Must Not Silently Drop Animations
+
+`parsers/export_car.py`:
+
+- `bake_range()` returns `None` when the evaluated frame's vertex count differs from the base mesh (`:296-300`; console-only `error()`).
+- `if frames is not None and len(frames):` silently skips that animation (`:614`).
+- The outer `except Exception` around the whole NLA/action bake swallows ALL exceptions (for example `to_mesh()` failure or NumPy errors in the fast path) with a console-only log, then continues (`:662-663`).
+
+The operator report counts the file as exported successfully, so a `.car` can be written missing animations with no warning in the user report — silent data loss. The identical condition in `parsers/export_vtl.py` raises `ValueError` and fails the whole export loudly (`:163-165`, `:284-286`), so CAR and VTL offer contradictory failure contracts for the same data condition.
+
+#### Required: Resync Animation Must Preserve Absolute Mode
+
+`operators/animation.py:1316` calls `keyframe_shape_key_animation_as_action(..., frame_start=1, kps=kps, scene_fps=...)` without `use_absolute`. With absolute shape keys imported (the default), the action is rebaked into relative-style `key_blocks[...].value` fcurves while `sk_data.use_relative` stays `False`. On export, `bake_range_fast` (`parsers/export_car.py`, `use_relative = sk_data.use_relative`) finds no `eval_time` fcurve → `vals.fill(0.0)` → every frame exports the basis pose. The result is a silently static export after a successful Resync operation.
+
+#### Required: Shape-Key Fast Path Must Respect Topology-Changing Modifiers
+
+`can_use_fast_path` in `parsers/export_car.py:224-231` and `parsers/export_vtl.py:117-120` excludes only `{'ARMATURE', 'HOOK', 'CLOTH', 'SOFT_BODY'}`. Any other visible modifier (Subdivision Surface, Mirror, Decimate, Shrinkwrap, ...) passes the filter:
+
+- CAR: the fast path samples raw shape-key deltas (`trans_basis`/`trans_delta`), so exported animation ignores the visible deformation the user sees — wrong-but-plausible data, no error, no warning.
+- VTL: `vertex_count` comes from the evaluated mesh while `trans_basis` comes from base-mesh shape keys → array shape mismatch inside `bake_range_fast` (`export_vtl.py:239`) → cryptic NumPy exception, export fails.
+
+Neither path handles the case correctly or explains it.
+
+#### Required: ARGB1555 Alpha Bit Preservation
+
+`parsers/parse_3df.py:78-81` shifts bit 15 out (`>> 10`) and sets alpha to `np.zeros_like(r)` — the 1-bit alpha is discarded on import. `utils/io.py:968-973` forces `a = 0` on export, so the bit is never written. Files that use the alpha bit (relevant to the `sfOpacity` alpha-tested cutout flag, `doc/reference.md`) lose it on import, and re-export after import permanently zeroes it. Import→export is not data-preserving for the texture's declared alpha bit.
+
+#### Required: Empty-Texture Import Safety
+
+A `texture_size = 0` file parses to an empty `(0, 4)` array (reshape skipped, `parsers/parse_3df.py:67-87`). The only guard in `operators/io.py:580-584` and `:1484-1488` is `texture is not None`, which an empty ndarray passes, so `utils/io.py:760-775` calls `bpy.data.images.new(width=256, height=0)` followed by `update()/pack()/reload()`. Untextured models are a documented common case (AGENTS.md testing checklist), and no test covers import with `parse_texture=True` on `texture_size=0` (tests use `parse_texture=False`). Default-settings import of an untextured file may raise or create a degenerate image — untested and unguarded.
+
+#### Required: Bone-Name Sanitization Consistency
+
+- `parsers/parse_3df.py:53-54` only `rstrip('\x00')`, so an embedded NUL mid-name (for example `b"Root\x00junk"`) survives into vertex-group/armature names.
+- `parsers/validate.py:295` splits at the first NUL for duplicate detection, so validation and the actual imported names disagree on what the name is.
+- Truncation is by characters (`name[:32]`, `parse_3df.py:58-59`), not bytes; a long name with multibyte characters can pass validation yet be silently truncated to 32 bytes on re-export.
+- `parse_car_header` (`parse_car.py:23`) does split at the first NUL, so `.3df` and `.car` disagree on the same rule.
+
+Malformed names pass validation but import differently than validated; round-trip renames are nondeterministic.
+
+#### Required: 3DN Export int16 Parent Range Guard
+
+`parsers/export_3dn.py:20-21` has no equivalent of the 3DF/CAR guard (`parsers/export_3df.py:39-40`, `bone_count > np.iinfo(np.int16).max + 1`). `BONE_DTYPE.parent` is `'<i2'` (`core/core.py`), and `gather_3dn_data` fills `bones_arr['parent']` directly (`export_3dn.py:95`). Above 32,767 bones, parent indices silently wrap negative, producing an invalid hierarchy. `utils/validation.py` has no 3DN bone-count preflight check either.
+
+#### Required: Undo Support for I/O Operators
+
+Every I/O operator declares `bl_options = {'PRESET'}` only (`operators/io.py:341, 676, 941, 1144, 1574, 1787`). Imports create collections, meshes, objects, packed images, materials, vertex groups, hooks/armatures, shape keys, actions, NLA strips, and sound datablocks; exports mutate scene state during CAR/VTL baking (`scene.frame_set`, NLA mute toggles, modifier `show_viewport`, `show_only_shape_key`). A single Ctrl+Z cannot remove an import or restore pre-export state; users must manually delete dozens of datablocks. Blender's built-in file importers use `{'REGISTER', 'UNDO'}`. The flag operators already use `{'REGISTER', 'UNDO'}`.
+
+#### Required: Import Must Not Silently Replace the Scene World
+
+`operators/io.py:641-642` (3DF) and `:1531-1532` (CAR) call `setup_custom_world_shader()` on any successful batch with textures+materials; `utils/io.py:861-906` creates or reassigns `bpy.context.scene.world = "CustomWorld"` and rebuilds its node tree. Importing a model changes the scene's lighting/environment without disclosure and cannot be undone.
+
+#### Recommended: Atomic File Writes
+
+All exporters stream directly to the destination path (`export_3df.py:160-166`, `export_car.py:788-824`, `export_3dn.py:118-126`, `export_vtl.py:344-354`). On disk-full, I/O error, or interruption mid-write, the user's previous valid file is replaced by a truncated file with no recovery path. No temp-file + atomic-rename pattern exists.
+
+#### Recommended: All Diagnostics Must Reach the Operator Report
+
+A subset of diagnostics bypasses the report system (`utils/reporting.py` + `_finalize_operation_report`):
+
+- `parsers/parse_3df.py:60,63` — bone-name truncation/non-ASCII cleaning uses module-level `warn()` instead of `context.warnings`, so these never appear in the import report.
+- `parsers/export_car.py:339` (static animation), `:662-663` (bake error), `:731-735` (>64 animations), `:745` (cross-reference truncation) — all console-only; the export report still says "Exported successfully."
+
+CAR export in particular can warn about truncated animation/sound mapping and still report total success.
+
+#### Recommended: Failed-Import Datablock Cleanup
+
+`operators/io.py:260-274` (`_remove_failed_import_collection`) deletes only the collection; objects are merely unlinked (`do_unlink=True`), and images/materials/hooks/armatures (3DF path `:579-606`) and shape keys/actions/sounds (CAR path `:1444-1483`) are created before later steps can fail. A failed import leaves orphaned mesh objects, images, materials, actions, and sound datablocks (visible under Orphan Data in 4.x). The UI roadmap documents the collection cleanup requirement only; the datablock leak is not covered.
+
+#### Recommended: Collision-Safe Keying for Export Maps
+
+- `_strip_cycles` keyed `(obj, strip.name)` (`utils/animation.py`) collides for same-named strips on different tracks of one object.
+- `export_car`'s `sounds_map` keyed by sound datablock name: two different sounds sharing a name collapse to the first index.
+
+#### Recommended: Format Coverage Documentation
+
+- No `import_vtl` operator exists, and no doc mentions it (the `.3dn` import absence is noted only in `doc/RIG_RECONSTRUCTION_PLAN.md`, a rig-focused doc).
+- The README claims `.3df`, `.car`, `.3dn` "importing/exporting" support without qualification (`doc/README.md`). Users and maintainers have no documented statement of what is import-supported.
+
+### 3.3 Testing Blind Spots
+
+No test coverage exists for: `.3dn` export, `.vtl` export, ARGB1555 texture conversion (including the alpha bit), empty-texture import (`texture_size = 0` with `parse_texture=True`), face-flag UI operators, reporting/report datablocks, preset deployment, and `parse_3df` edge cases (truncated files, malformed names, oversized counts). These should be filled as each phase below lands.
+
+### 3.4 Ordered Implementation Phases
+
+#### Phase A: Data-Integrity Bugs
+
+1. CAR export: fail or warn through the report (never silently skip) when `bake_range()` returns `None`; route bake exceptions into the report; unify the CAR/VTL failure contract.
+2. Resync Animation: pass `use_absolute` matching the imported shape-key mode.
+3. Fast path: treat topology-changing visible modifiers as incompatible with the shape-key fast path in both CAR and VTL.
+4. ARGB1555: preserve bit 15 through import and export.
+5. Empty texture: skip image creation for zero-size payloads and record a warning.
+
+#### Phase B: Scene-State Safety
+
+1. Add `'REGISTER', 'UNDO'` to import/export operators (verify undo granularity and memory cost on large imports).
+2. Replace unconditional world replacement with a disclosed, optional shader setup (default off) or restore the prior world.
+3. Expand failed-import cleanup to remove created datablocks, not just the collection.
+
+#### Phase C: Binary and Output Robustness
+
+1. Add the 3DN int16 parent-count guard and preflight check.
+2. Unify bone-name sanitization (single rule: split at first NUL, byte-aware truncation) across `.3df`, `.car`, validation, and export name generation.
+3. Write exports to a temp file in the destination directory and atomically rename on success.
+
+#### Phase D: Reporting and Coverage
+
+1. Route every console-only `warn()`/`error()` that affects output through `ParserContext.warnings` or the operation report.
+2. Make `sounds_map` and `_strip_cycles` keys collision-safe (datablock identity, track index).
+3. Document import support explicitly in the README and `doc/README.md` (`.3dn`/`.vtl` import status, `.vtl` export only).
+
+#### Phase E: Tests
+
+Fill the blind spots in section 3.3 as each phase lands, with at least: CAR export dropping an animation produces a reported warning/error; VTL and CAR fail identically on vertex-count mismatch; absolute resync round-trips byte-identical animation; fast path disabled with SUBSURF/MIRROR visible; alpha-bit round trip; empty-texture import; undo of import; 3DN with >32,767 bones fails preflight; atomic write leaves no partial file on injected failure.
+
+### 3.5 Verification Matrix
+
+- Byte-diff of exported `.car`/`.vtl` against pre-change references after each Phase A fix.
+- `bake_range` failure path: report contains an explicit animation-level error and the file is not reported as fully successful.
+- Resync on an absolute-mode import, then export and re-import: animation frames identical.
+- SUBSURF/MIRROR visible during export: CAR falls back to the slow path or fails with a clear message; VTL does not raise a raw NumPy error.
+- ARGB1555 alpha bit survives import→export (parse the re-export and compare bit 15).
+- `texture_size = 0` import with `parse_texture=True`: imports without error, no degenerate image datablock.
+- Import with `{'REGISTER', 'UNDO'}`: one Ctrl+Z removes the imported collection and its created datablocks.
+- Textured import leaves `scene.world` unchanged unless the shader option is enabled.
+- Injected mid-write failure (disk full) leaves the previous file intact.
+- Report contents cover every warning the parser/exporters produce.
+- 3DN with >32,767 bones fails preflight with a clear message.
+
+### 3.6 Completion Criteria
+
+- No export path can report success while dropping or corrupting animation data; every diagnostic affecting output reaches the report.
+- Import/export round trips preserve every declared binary bit, including ARGB1555 alpha.
+- Imports are undoable, do not replace the scene world without disclosure, and clean up after failures.
+- Parsers, validators, and exporters share one sanitization rule set.
+- All exporters write atomically.
+- Import support is documented exactly as implemented, and the blind-spot tests exist.
