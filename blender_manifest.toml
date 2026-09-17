@@ -32,6 +32,7 @@ paths_exclude_pattern = [
     "/tests/",
     "/*.patch",
     "/doc/",
+    "/CHANGELOG.md",
     "/index.html",
     "/screenshot.png",
 ]
