@@ -7,6 +7,7 @@ import re
 
 from .. import utils
 from ..utils.logger import info, debug, warn, error
+from ..utils.animation import can_use_shape_key_fast_path
 
 @utils.timed('export_vtl.animations')
 def gather_vtl_animation(obj, export_matrix, vertex_count):
@@ -113,11 +114,10 @@ def gather_vtl_animation(obj, export_matrix, vertex_count):
          mesh_to_arm = np.array(obj.parent.matrix_world.inverted() @ obj.matrix_world)
     full_matrix = export_matrix @ mesh_to_arm
 
-    # Determine Fast path
-    can_use_fast_path = (
-        obj.data.shape_keys is not None and 
-        all(mod.type not in {'ARMATURE', 'HOOK', 'CLOTH', 'SOFT_BODY'} for mod in obj.modifiers if mod.show_viewport)
-    )
+    # Determine Fast path — same correctness rule as CAR export: direct
+    # shape-key sampling ignores every visible modifier, so only known
+    # position-preserving modifier types may keep it enabled.
+    can_use_fast_path = can_use_shape_key_fast_path(obj)
     
     trans_basis = None
     trans_delta = None
@@ -341,7 +341,7 @@ def export_vtl(filepath, obj, export_matrix):
         raise ValueError("Animation resulted in 0 frames. Nothing to export.")
 
     # 4. Write File
-    with open(filepath, 'wb') as f:
+    with utils.atomic_output_file(filepath) as f:
         # Header (12 bytes)
         # 0x00 uint32 VCount
         f.write(struct.pack('<I', vertex_count))

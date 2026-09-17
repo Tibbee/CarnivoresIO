@@ -43,6 +43,7 @@ Canonical definition for `.3df`, `.car`, and `.3dn` face `flags` field:
 | 6 | 0x0040 | Environment-map selection bit | Selects faces for the special environment-map pass when used |
 | 7 | 0x0080 | `sfNeedVC` | Legacy vertex-color/light and culling marker; C2 adds it to non-double-sided faces |
 | 8–14 | — | Unused | Reserved, always 0 |
+| 15 | 0x8000 | ARGB1555 alpha bit | **Deliberately forced to 0 by this add-on** — see [Texture Alpha Bit Policy](#texture-alpha-bit-policy) |
 | 15 | 0x8000 | `sfDark` | Legacy software-renderer darkening flag |
 
 Face flags are stored as a face-domain `INT` attribute named `3df_flags` on Blender meshes. Use helpers in `utils/flags.py` to read/write them.
@@ -70,6 +71,16 @@ The **Carnivores Model** panel and export dialogs use the same non-destructive B
 - Signed 16-bit CAR/VTL animation coordinate range after the selected export transform
 
 Results use `PASS`, `INFO`, `WARNING`, and `ERROR`. Preflight errors block export by default; warnings permit export and are copied into the operation report. The validator reads the source mesh, materials, actions, sounds, and rig only; it does not apply modifiers, triangulate the source, resize textures, alter owners, or remove unknown flags.
+
+## Texture Alpha Bit Policy
+
+**The add-on deliberately forces ARGB1555 bit 15 (alpha) to 0 on import and export. This is not a bug; do not "fix" it.**
+
+Carnivores has undefined behavior for map objects whose textures carry the alpha bit set to 1. Without source access to the original map editing tool, there is no clear understanding of what changes internally. Observed in-game symptom: for objects that switch into existence as a LOD and use the sprite bitmap fallback, textures with alpha = 1 show black pixels along texture edges when combined with the `sfOpacity` and `sfDoubleSide` face flags. With alpha forced to 0, the artifact disappears completely.
+
+This decision needs further research: a dedicated investigation should compare actual map resource files before and after objects with alpha = 1 versus alpha = 0 are imported and used, to identify the exact engine-side cause. Until that research produces a documented cause, bit 15 stays 0 on export and is discarded on import.
+
+Agents auditing this codebase: the hardcoded `a = 0` in the ARGB1555 export path (`utils/io.py`) and the zeroed alpha channel on import (`parsers/parse_3df.py`) are intentional, documented behavior. Do not file or implement a fix for alpha-bit preservation without first completing the map-resource investigation described above.
 
 ## Validation Warnings vs. Errors
 

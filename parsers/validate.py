@@ -27,6 +27,36 @@ def _warn(context, message):
         context.warnings.append(message)
 
 
+# Serialized name fields (`.3df`/`.car`/`.3dn` model, bone, animation, and
+# sound names) are 32-byte fixed-width ASCII. This is the single sanitization
+# rule shared by parsers, validation, and exporters: decode ignoring invalid
+# bytes, split at the first NUL (padding in the middle must not survive), then
+# truncate by bytes — never by characters — to the field width.
+SERIALIZED_NAME_BYTES = 32
+
+
+def decode_serialized_name(raw_name):
+    """Decode a fixed-width name field with the shared sanitization rule."""
+    raw = np.asarray(raw_name).tobytes()
+    return raw.decode('ascii', errors='ignore').split('\x00', 1)[0]
+
+
+def truncate_serialized_name(name, max_bytes=SERIALIZED_NAME_BYTES):
+    """Byte-aware ASCII-safe truncation for serialized name fields.
+
+    Returns ``(name, truncated)`` where ``truncated`` is True when bytes were
+    dropped. The result is always ASCII and never exceeds ``max_bytes``.
+    """
+    encoded = str(name).encode('ascii', errors='ignore')[:max_bytes]
+    clean = encoded.decode('ascii', errors='ignore')
+    return clean, len(clean) < len(str(name).encode('ascii', errors='ignore'))
+
+
+def serialize_name(name, max_bytes=SERIALIZED_NAME_BYTES):
+    """Encode a name into the fixed-width NUL-padded serialized form."""
+    return str(name).encode('ascii', errors='ignore')[:max_bytes].ljust(max_bytes, b'\x00')
+
+
 def _as_count(value, name):
     count = int(value)
     if count < 0:
@@ -292,7 +322,7 @@ def validate_3df_bones(bones, bone_count, context, compatibility=True):
     if compatibility:
         decoded = []
         for index, raw_name in enumerate(bones['name']):
-            name = raw_name.decode('ascii', errors='ignore').split('\x00', 1)[0]
+            name = decode_serialized_name(raw_name)
             if not name:
                 _warn(context, f"Bone #{index} has an empty name; the importer will use a placeholder.")
                 name = f"Bone_{index}"

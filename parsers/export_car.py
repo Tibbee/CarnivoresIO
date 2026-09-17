@@ -11,9 +11,14 @@ import wave
 from ..core.core import CAR_HEADER_DTYPE, VERTEX_DTYPE, FACE_DTYPE
 from ..core.constants import TEXTURE_WIDTH
 from .. import utils
+from . import validate as validator
 from .export_3df import gather_mesh_data
 from ..utils.logger import info, debug, warn, error
-from ..utils.animation import resolve_action_sound, sound_datablock_to_factory
+from ..utils.animation import (
+    can_use_shape_key_fast_path,
+    resolve_action_sound,
+    sound_datablock_to_factory,
+)
 from ..utils.performance import current_session
 
 def _extract_pcm16_mono_22050_wav(raw_bytes):
@@ -166,6 +171,13 @@ def _animation_sample_count(start, end, frame_step):
     return max(1, int(((float(end) - float(start)) / frame_step) + 0.5) + 1)
 
 
+def _record_diagnostic(diagnostics, message):
+    """Log a warning and surface it to the operation report when provided."""
+    warn(message)
+    if diagnostics is not None and message not in diagnostics:
+        diagnostics.append(message)
+
+
 def _linear_fcurve_samples(fcurve, times):
     """Evaluate a simple linear F-Curve in NumPy, returning None when unsafe."""
     if fcurve is None or len(fcurve.keyframe_points) == 0 or len(fcurve.modifiers):
@@ -185,7 +197,7 @@ def _linear_fcurve_samples(fcurve, times):
 
 
 @utils.timed('export_car.animations')
-def gather_car_animations(obj, export_matrix, vertex_count):
+def gather_car_animations(obj, export_matrix, vertex_count, diagnostics=None):
     """
     Collects animation data by baking the object's deformation.
     Strategy:
@@ -214,21 +226,30 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         source_label = f"Object ({obj.name})"
         
     if not anim_data:
-        warn("No animation data found on Object, ShapeKeys, or Parent Armature.")
+        _record_diagnostic(
+            diagnostics,
+            "No animation data found on Object, ShapeKeys, or Parent Armature. "
+            "The file will be exported without animations.",
+        )
         return []
         
     debug(f"Found animation source: {source_label}")
 
     # Direct shape-key sampling does not need dependency-graph or NLA state
     # mutation. Other deformation paths retain the evaluated-mesh bake.
-    can_use_fast_path = (
-        obj.data.shape_keys is not None
-        and all(
-            mod.type not in {'ARMATURE', 'HOOK', 'CLOTH', 'SOFT_BODY'}
-            for mod in obj.modifiers
-            if mod.show_viewport
+    can_use_fast_path = can_use_shape_key_fast_path(obj)
+    if (
+        not can_use_fast_path
+        and obj.data.shape_keys is not None
+        and any(mod.show_viewport for mod in obj.modifiers)
+    ):
+        blocked = [mod.name for mod in obj.modifiers if mod.show_viewport][:4]
+        _record_diagnostic(
+            diagnostics,
+            f"Visible modifiers ({', '.join(blocked)}) are not applied by direct "
+            "shape-key sampling; export uses the evaluated-mesh bake for animation "
+            "data (slower, but matches the viewport).",
         )
-    )
     used_evaluated_bake = False
 
     # --- STATE MANAGEMENT ---
@@ -296,8 +317,10 @@ def gather_car_animations(obj, export_matrix, vertex_count):
             try:
                 count = len(mesh.vertices)
                 if count != vertex_count:
-                    error(f"Frame {current_frame:.2f} of '{name}' has {count} vertices, expected {vertex_count} (Base). Skipping animation.")
-                    return None # Signal error
+                    raise ValueError(
+                        f"Frame {current_frame:.2f} of '{name}' has {count} vertices, "
+                        f"expected {vertex_count} (base mesh)."
+                    )
                 
                 # Bulk get coords
                 verts_co_flat = np.empty(count * 3, dtype=np.float32)
@@ -336,7 +359,7 @@ def gather_car_animations(obj, export_matrix, vertex_count):
 
         # Static Check
         if len(frames_data) > 1 and np.all(frames_data[1:] == frames_data[0]):
-            warn(f"Animation '{name}' appears to be static.")
+            _record_diagnostic(diagnostics, f"Animation '{name}' appears to be static.")
 
         return frames_data
 
@@ -411,6 +434,13 @@ def gather_car_animations(obj, export_matrix, vertex_count):
         abs_frame_values = None
         if not use_relative:
             abs_frame_values = np.array([kb.frame for kb in sk_data.key_blocks], dtype=np.float32)
+            if linear_values is None and eval_time_fc is None:
+                _record_diagnostic(
+                    diagnostics,
+                    f"Animation '{name}' has no eval_time F-Curve although shape keys are "
+                    "in absolute mode; every frame exports the basis pose. "
+                    "Use Re-Sync Timing or re-create the action.",
+                )
 
         if not use_relative and num_samples >= 64:
             # Absolute path, large sample count: evaluate simple linear curves
@@ -461,8 +491,10 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                     # Absolute interpolation (scalar, small sample counts)
                     if linear_values is not None:
                         val = linear_values[i]
+                    elif eval_time_fc:
+                        val = eval_time_fc.evaluate(t)
                     else:
-                        val = eval_time_fc.evaluate(t) if eval_time_fc else 0.0
+                        val = 0.0
 
                     # Find two nearest frames
                     # Optimization: if val is outside range, clip it
@@ -618,6 +650,12 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                             'frames': frames,
                             'sound_ptr': snd_ptr
                         })
+                    else:
+                        _record_diagnostic(
+                            diagnostics,
+                            f"Animation '{clean_name}' (track '{track.name}') produced no "
+                            "bakeable frames and was NOT exported.",
+                        )
                 
                 # Re-mute after evaluated processing; direct sampling left it untouched.
                 if not can_use_fast_path:
@@ -655,12 +693,21 @@ def gather_car_animations(obj, export_matrix, vertex_count):
                     'frames': frames,
                     'sound_ptr': snd_ptr
                 })
+            else:
+                _record_diagnostic(
+                    diagnostics,
+                    f"Animation '{clean_name}' produced no bakeable frames and was NOT exported.",
+                )
                 
         else:
-            warn("No NLA tracks and no Active Action. No animations exported.")
+            _record_diagnostic(
+                diagnostics,
+                "No NLA tracks and no Active Action. The file will be exported without animations.",
+            )
 
     except Exception as e:
         error(f"Critical Error during animation bake: {e}")
+        raise
 
     finally:
         # --- RESTORE STATE ---
@@ -705,7 +752,8 @@ def gather_car_animations(obj, export_matrix, vertex_count):
 @utils.timed('export_car.serialize')
 def export_car(filepath, obj, export_matrix, export_textures=False,
                flip_u=False, flip_v=False, flip_handedness=True,
-               model_name_override="", sound_conversion_cache=None):
+               model_name_override="", sound_conversion_cache=None,
+               diagnostics=None):
     
     debug(f"--- Starting .car export to: {filepath} ---")
     session = current_session()
@@ -715,13 +763,13 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
     start_mesh = time.perf_counter()
     (vertex_count, face_count, bone_count, texture_size, 
      faces_arr, verts_arr, bones_arr, texture_raw) = gather_mesh_data(
-        obj, export_matrix, export_textures, flip_u, flip_v, flip_handedness
+        obj, export_matrix, export_textures, flip_u, flip_v, flip_handedness, diagnostics=diagnostics
     )
     debug(f"[Timing] gather_mesh_data took {time.perf_counter() - start_mesh:.6f} seconds")
 
     # 2. Gather Animations & Sounds
     start_anim = time.perf_counter()
-    anims = gather_car_animations(obj, export_matrix, vertex_count)
+    anims = gather_car_animations(obj, export_matrix, vertex_count, diagnostics=diagnostics)
     debug(f"[Timing] gather_car_animations took {time.perf_counter() - start_anim:.6f} seconds")
     if session:
         session.add_metadata(
@@ -729,9 +777,10 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
             animation_frames=sum(len(anim['frames']) for anim in anims),
         )
     if len(anims) > 64:
-        warn(
+        _record_diagnostic(
+            diagnostics,
             f"Exporting {len(anims)} animations. Current C2 MEE supports 64 and the fixed "
-            "cross-reference table can map sounds only for the first 64 animations."
+            "cross-reference table can map sounds only for the first 64 animations.",
         )
 
     start_sound = time.perf_counter()
@@ -742,28 +791,34 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
     # Process sounds
     for i, anim in enumerate(anims):
         if i >= 64: 
-            warn("More than 64 animations, truncation will occur in cross-ref.")
+            _record_diagnostic(
+                diagnostics,
+                "More than 64 animations; sound cross-reference entries beyond the 64th "
+                "animation are not exported.",
+            )
             break
             
         snd = anim['sound_ptr']
         if snd:
-            if snd.name not in sounds_map:
+            if snd not in sounds_map:
                 # Convert and add
                 data_bytes, length = convert_sound_to_22khz_mono(
                     snd, conversion_cache=sound_conversion_cache
                 )
                 if data_bytes:
                     idx = len(sound_list)
-                    sounds_map[snd.name] = idx
+                    # Keyed by datablock identity, not name: linked libraries
+                    # can contain different sounds that share a name.
+                    sounds_map[snd] = idx
                     sound_list.append({
                         'name': snd.name,
                         'length': length,
                         'data': data_bytes
                     })
                 else:
-                    sounds_map[snd.name] = -1
+                    sounds_map[snd] = -1
             
-            cross_ref[i] = sounds_map[snd.name]
+            cross_ref[i] = sounds_map[snd]
 
     debug(f"[Timing] sound_processing took {time.perf_counter() - start_sound:.6f} seconds")
 
@@ -775,7 +830,7 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
     # Ensure "msc: #" suffix if not present? 
     # Actually, the user might want to set this exactly.
     # We will truncate to 32 chars.
-    header['model_name'] = m_name.encode('ascii', 'ignore')[:32].ljust(32, b'\x00')
+    header['model_name'] = validator.serialize_name(m_name)
     
     header['ani_count'] = len(anims)
     header['sfx_count'] = len(sound_list)
@@ -785,7 +840,7 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
 
     # 4. Write File
     start_write = time.perf_counter()
-    with open(filepath, 'wb') as f:
+    with utils.atomic_output_file(filepath) as f:
         # Header
         header.tofile(f)
         
@@ -803,7 +858,7 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
         # Animations
         for anim in anims:
             # Name 32
-            f.write(anim['name'].encode('ascii', 'ignore')[:32].ljust(32, b'\x00'))
+            f.write(validator.serialize_name(anim['name']))
             # KPS 4
             f.write(struct.pack('<I', anim['kps']))
             # Frames Count 4
@@ -814,7 +869,7 @@ def export_car(filepath, obj, export_matrix, export_textures=False,
         # Sounds
         for snd in sound_list:
             # Name 32
-            f.write(snd['name'].encode('ascii', 'ignore')[:32].ljust(32, b'\x00'))
+            f.write(validator.serialize_name(snd['name']))
             # Length 4
             f.write(struct.pack('<I', snd['length']))
             # Data

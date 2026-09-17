@@ -5,11 +5,12 @@ from ..core.core import HEADER_DTYPE, FACE_DTYPE, VERTEX_DTYPE, BONE_DTYPE
 from ..core.constants import TEXTURE_WIDTH
 from ..utils.logger import info, debug, warn, error
 from ..utils.performance import current_session
+from .validate import serialize_name
 
 import bpy_extras.io_utils
 
 @utils.timed('export.mesh_gather')
-def gather_mesh_data(obj, export_matrix, export_textures=False, flip_u=False, flip_v=False, flip_handedness=True):
+def gather_mesh_data(obj, export_matrix, export_textures=False, flip_u=False, flip_v=False, flip_handedness=True, diagnostics=None):
     """
     Gathers mesh data (vertices, faces, bones, texture) from a Blender object.
     Returns:
@@ -32,7 +33,7 @@ def gather_mesh_data(obj, export_matrix, export_textures=False, flip_u=False, fl
             )
 
         # Bones + owners
-        bone_names, bone_positions, bone_parents, vertex_owners = utils.collect_bones_and_owners(obj, export_matrix)
+        bone_names, bone_positions, bone_parents, vertex_owners = utils.collect_bones_and_owners(obj, export_matrix, diagnostics=diagnostics)
         bone_count = len(bone_names)
         if session:
             session.add_metadata(bones=bone_count)
@@ -130,7 +131,7 @@ def gather_mesh_data(obj, export_matrix, export_textures=False, flip_u=False, fl
         # Bones (loop is fine, bone_count usually small)
         bones_arr = np.zeros(bone_count, dtype=BONE_DTYPE)
         for i, name in enumerate(bone_names):
-            bones_arr['name'][i] = name.encode('ascii', 'ignore')[:32].ljust(32, b'\x00')
+            bones_arr['name'][i] = serialize_name(name)
             bones_arr['pos'][i] = bone_positions[i]
             bones_arr['parent'][i] = bone_parents[i]
             bones_arr['hidden'][i] = 0
@@ -142,11 +143,11 @@ def gather_mesh_data(obj, export_matrix, export_textures=False, flip_u=False, fl
     return vertex_count, face_count, bone_count, texture_size, faces_arr, verts_arr, bones_arr, texture_raw
 
 @utils.timed('export_3df.serialize')
-def export_3df(filepath, obj, export_matrix, export_textures=False, flip_u=False, flip_v=False, flip_handedness=True):
+def export_3df(filepath, obj, export_matrix, export_textures=False, flip_u=False, flip_v=False, flip_handedness=True, diagnostics=None):
     
     (vertex_count, face_count, bone_count, texture_size, 
      faces_arr, verts_arr, bones_arr, texture_raw) = gather_mesh_data(
-        obj, export_matrix, export_textures, flip_u, flip_v, flip_handedness
+        obj, export_matrix, export_textures, flip_u, flip_v, flip_handedness, diagnostics=diagnostics
     )
 
     # Header
@@ -157,7 +158,7 @@ def export_3df(filepath, obj, export_matrix, export_textures=False, flip_u=False
     header['texture_size'] = texture_size
 
     # Write file
-    with open(filepath, 'wb') as f:
+    with utils.atomic_output_file(filepath) as f:
         header.tofile(f)
         faces_arr.tofile(f)
         verts_arr.tofile(f)

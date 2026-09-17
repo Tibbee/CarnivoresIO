@@ -74,6 +74,7 @@ Covers low-level binary structures, map/resource files, and mathematical convers
 * **Size**: `TextureSize` (from header)
 * **Format**: 16-bit TGA-style, ARGB1555
 * **Width**: Always 256 pixels (see [Reference](reference.md#core-constants))
+* **Alpha bit (bit 15)**: Deliberately forced to 0 by this add-on on import and export — see [Texture Alpha Bit Policy](reference.md#texture-alpha-bit-policy) in the Reference. Setting it to 1 triggers undefined engine behavior (black edge pixels on LOD sprite bitmaps); further research pending.
 
 ---
 

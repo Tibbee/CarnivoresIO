@@ -12,7 +12,7 @@ WINPWD=$(pwd -W)
 
 The suite registers the addon because several operator tests call `bpy.ops.carnivores.*`. It does not modify Blender user preferences.
 
-The suite currently holds **101 tests across 10 files**:
+The suite currently holds **118 tests across 11 files**:
 
 | File | Coverage |
 |---|---|
@@ -26,3 +26,4 @@ The suite currently holds **101 tests across 10 files**:
 | `test_audio_playback_selection.py` | NLA-focused audio playback selection |
 | `test_addon_preferences.py` | Preference registration and defaults |
 | `test_owner_mapping.py` | Raw → compact owner mapping |
+| `test_release_fixes.py` | Import/export robustness fixes: atomic writes, name sanitization, fast-path modifier rule, empty textures, loud CAR animation failures, absolute resync |

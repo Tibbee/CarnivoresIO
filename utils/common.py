@@ -1,8 +1,44 @@
 import functools
+import os
+import tempfile
 import time
+import contextlib
 
 from .logger import debug
 from .performance import benchmark_session, benchmark_stage
+
+
+@contextlib.contextmanager
+def atomic_output_file(filepath):
+    """Yield an open binary file that atomically replaces ``filepath``.
+
+    Data streams to a temporary file in the destination directory. Only after
+    the writer closes cleanly is the destination replaced with ``os.replace``.
+    If the writer raises — disk full, I/O error, interruption — the temporary
+    file is removed and the previous destination file is left intact.
+    """
+    filepath = os.fspath(filepath)
+    directory = os.path.dirname(os.path.abspath(filepath))
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(filepath)}.",
+        suffix=".tmp",
+        dir=directory,
+    )
+    output = os.fdopen(fd, 'wb')
+    try:
+        yield output
+        output.close()
+        os.replace(temp_path, filepath)
+    except BaseException:
+        try:
+            output.close()
+        except Exception:
+            pass
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        raise
 
 
 def timed(label="Function", is_operator=False):

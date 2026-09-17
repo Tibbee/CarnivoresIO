@@ -12,6 +12,12 @@ class ParserContext:
     def __init__(self):
         self.warnings = []
 
+def _warn(context, message):
+    """Record a warning in the parser context and echo it to the log."""
+    if message not in context.warnings:
+        context.warnings.append(message)
+    warn(message)
+
 @timed('parse_3df.header')
 def parse_3df_header(file):
     parsed = np.fromfile(file, dtype=HEADER_DTYPE, count=1)
@@ -47,20 +53,36 @@ def parse_3df_vertices(file, vertex_count):
     return vertices
 
 @timed('parse_3df.bones')
-def parse_3df_bones(file, bone_count):
+def parse_3df_bones(file, bone_count, context=None):
     bones = np.fromfile(file, dtype=BONE_DTYPE, count=bone_count)
     
     decoded = np.char.decode(bones['name'], 'ascii', errors='ignore')
-    bone_names = np.char.rstrip(decoded, '\x00')
+    # Single shared rule: split at the first NUL byte (embedded padding must
+    # not survive into Blender names) and truncate by bytes, matching what
+    # validation and re-export do with the same field.
+    bone_names = np.array([name.split('\x00', 1)[0] for name in decoded], dtype='U32')
     for i, name in enumerate(bone_names):
         if not name:
             bone_names[i] = f"Bone_{i}"
-        elif len(name.encode('ascii', errors='ignore')) > 32:
-            bone_names[i] = name[:32]
-            warn(f"Bone name '{name}' truncated to 32 characters.")
-        elif not name.isascii():
-            bone_names[i] = ''.join(c for c in name if c.isascii())
-            warn(f"Bone name '{name}' contains non-ASCII characters; cleaned.")
+        else:
+            clean, truncated = validator.truncate_serialized_name(name)
+            if truncated:
+                bone_names[i] = clean
+                message = f"Bone name '{name}' exceeds {validator.SERIALIZED_NAME_BYTES} bytes; truncated."
+                warn(message)
+                if context is not None:
+                    _warn(context, message)
+            if not name.isascii():
+                cleaned = ''.join(c for c in name if c.isascii())
+                if not cleaned:
+                    cleaned = f"Bone_{i}"
+                    message = f"Bone #{i} name contains no ASCII characters; using placeholder."
+                else:
+                    message = f"Bone name '{name}' contains non-ASCII characters; cleaned to '{cleaned}'."
+                bone_names[i] = validator.truncate_serialized_name(cleaned)[0]
+                warn(message)
+                if context is not None:
+                    _warn(context, message)
     
     return bones, bone_names
     
@@ -171,7 +193,7 @@ def parse_3df(filepath, validate=True, parse_texture=True, flip_handedness=True)
             compatibility=validate,
         )
 
-        bones, bone_names = parse_3df_bones(file, header['bone_count'])
+        bones, bone_names = parse_3df_bones(file, header['bone_count'], context=context)
         bones = validator.validate_3df_bones(
             bones,
             header['bone_count'],
@@ -180,13 +202,19 @@ def parse_3df(filepath, validate=True, parse_texture=True, flip_handedness=True)
         )
 
         if parse_texture:
-            texture, texture_raw = parse_3df_texture(file, header['texture_size'], texture_height)
-            texture_raw = validator.validate_3df_texture(
-                texture_raw,
-                header['texture_size'],
-                context,
-                compatibility=validate,
-            )
+            if int(header['texture_size']) == 0:
+                # Untextured model: no texture payload follows. Creating a
+                # zero-height image datablock would be degenerate.
+                texture, texture_raw = None, None
+                _warn(context, "Model has no texture data (texture_size = 0); texture import skipped.")
+            else:
+                texture, texture_raw = parse_3df_texture(file, header['texture_size'], texture_height)
+                texture_raw = validator.validate_3df_texture(
+                    texture_raw,
+                    header['texture_size'],
+                    context,
+                    compatibility=validate,
+                )
         else:
             texture, texture_raw = None, None
             file.seek(header['texture_size'], 1)

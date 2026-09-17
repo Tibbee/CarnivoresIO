@@ -16,6 +16,18 @@ from .common import timed
 from .io import apply_import_matrix
 from . import io as io_utils
 from .logger import info, debug, warn, error
+
+# Modifier types that never change evaluated vertex positions; the shape-key
+# fast path may safely ignore them. Every other visible modifier (Mirror,
+# Subdivision Surface, Decimate, Array, Cast, Wave, Lattice, ...) deforms or
+# re-topsologizes the mesh and invalidates direct shape-key sampling.
+FAST_PATH_SAFE_MODIFIER_TYPES = frozenset({
+    'UV_PROJECT',      # modifies UV coordinates only
+    'UV_WARP',         # modifies UV coordinates only
+    'WEIGHTED_NORMAL', # adjusts custom normals only
+    'NORMAL_EDIT',     # adjusts custom normals only
+})
+
 from .rig_reconstruction import (
     OWNER_MAPPING_PROPERTY,
     analyze_rig_geometry,
@@ -733,6 +745,25 @@ def resolve_action_sound(action):
     if legacy_name:
         return bpy.data.sounds.get(legacy_name)
     return None
+
+
+def can_use_shape_key_fast_path(obj):
+    """True when direct shape-key sampling matches dependency-graph evaluation.
+
+    Direct sampling reads base-mesh coordinates and shape-key deltas without
+    evaluating the dependency graph. Any visible modifier that can move or
+    duplicate vertices would make that data diverge from what the user sees,
+    so only known position-preserving modifiers keep the fast path enabled.
+    Everything else forces the (slower) evaluated-mesh bake.
+    """
+    sk_data = obj.data.shape_keys if obj.type == 'MESH' and obj.data else None
+    if sk_data is None:
+        return False
+    return all(
+        modifier.type in FAST_PATH_SAFE_MODIFIER_TYPES
+        for modifier in obj.modifiers
+        if modifier.show_viewport
+    )
 
 
 def get_active_animation_data(obj):

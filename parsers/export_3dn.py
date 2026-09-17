@@ -3,8 +3,9 @@ import numpy as np
 from .. import utils
 from ..core.core import THREEDN_HEADER_DTYPE, THREEDN_VERTEX_DTYPE, THREEDN_FACE_DTYPE, BONE_DTYPE
 from ..utils.logger import info, debug, warn, error
+from .validate import serialize_name
 
-def gather_3dn_data(obj, export_matrix, model_name="", has_sprite=False, sprite_name="", flip_u=False, flip_v=False, flip_handedness=True):
+def gather_3dn_data(obj, export_matrix, model_name="", has_sprite=False, sprite_name="", flip_u=False, flip_v=False, flip_handedness=True, diagnostics=None):
     """
     Gathers mesh data (vertices, faces, bones) from a Blender object for 3DN format.
     """
@@ -17,8 +18,13 @@ def gather_3dn_data(obj, export_matrix, model_name="", has_sprite=False, sprite_
         face_count = len(tmp_mesh.polygons)
 
         # Bones + owners
-        bone_names, bone_positions, bone_parents, vertex_owners = utils.collect_bones_and_owners(obj, export_matrix)
+        bone_names, bone_positions, bone_parents, vertex_owners = utils.collect_bones_and_owners(obj, export_matrix, diagnostics=diagnostics)
         bone_count = len(bone_names)
+        if bone_count > np.iinfo(np.int16).max + 1:
+            raise ValueError(
+                f"{bone_count} bones exceed the signed 16-bit parent/owner index range "
+                f"(max {np.iinfo(np.int16).max + 1}). The 3DN format cannot store this hierarchy."
+            )
 
         # 3DN doesn't store texture size in header, but we need texture height for pixel UVs
         # We assume 256x256 or similar if not found, but spec says pixel values.
@@ -26,7 +32,10 @@ def gather_3dn_data(obj, export_matrix, model_name="", has_sprite=False, sprite_
         texture_image, texture_height = utils.find_texture_image(obj)
         if not texture_height:
             texture_height = 256
-            warn("No texture found for 3DN export, assuming 256 height for UVs.")
+            texture_message = "No texture found for 3DN export, assuming 256 height for UVs."
+            warn(texture_message)
+            if diagnostics is not None and texture_message not in diagnostics:
+                diagnostics.append(texture_message)
 
         # Vertices (vectorized)
         verts_arr = np.zeros(vertex_count, dtype=THREEDN_VERTEX_DTYPE)
@@ -90,7 +99,7 @@ def gather_3dn_data(obj, export_matrix, model_name="", has_sprite=False, sprite_
         # Bones
         bones_arr = np.zeros(bone_count, dtype=BONE_DTYPE)
         for i, name in enumerate(bone_names):
-            bones_arr['name'][i] = name.encode('ascii', 'ignore')[:32].ljust(32, b'\x00')
+            bones_arr['name'][i] = serialize_name(name)
             bones_arr['pos'][i] = bone_positions[i]
             bones_arr['parent'][i] = bone_parents[i]
             bones_arr['hidden'][i] = 0
@@ -101,25 +110,24 @@ def gather_3dn_data(obj, export_matrix, model_name="", has_sprite=False, sprite_
 
     return vertex_count, face_count, bone_count, verts_arr, faces_arr, bones_arr
 
-def export_3dn(filepath, obj, export_matrix, model_name="", has_sprite=False, sprite_name="", flip_u=False, flip_v=False, flip_handedness=True):
+def export_3dn(filepath, obj, export_matrix, model_name="", has_sprite=False, sprite_name="", flip_u=False, flip_v=False, flip_handedness=True, diagnostics=None):
     
     (vertex_count, face_count, bone_count, 
      verts_arr, faces_arr, bones_arr) = gather_3dn_data(
-        obj, export_matrix, model_name, has_sprite, sprite_name, flip_u, flip_v, flip_handedness
+        obj, export_matrix, model_name, has_sprite, sprite_name, flip_u, flip_v, flip_handedness, diagnostics=diagnostics
     )
 
     header = np.zeros(1, dtype=THREEDN_HEADER_DTYPE)
     header['vertex_count'] = vertex_count
     header['face_count'] = face_count
     header['bone_count'] = bone_count
-    header['model_name'] = model_name.encode('ascii', 'ignore')[:32].ljust(32, b'\x00')
+    header['model_name'] = serialize_name(model_name)
     header['has_sprite'] = 1 if has_sprite else 0
 
-    with open(filepath, 'wb') as f:
+    with utils.atomic_output_file(filepath) as f:
         header.tofile(f)
         if has_sprite:
-            sprite_name_encoded = sprite_name.encode('ascii', 'ignore')[:32].ljust(32, b'\x00')
-            f.write(sprite_name_encoded)
+            f.write(serialize_name(sprite_name))
         
         verts_arr.tofile(f)
         faces_arr.tofile(f)

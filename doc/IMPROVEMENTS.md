@@ -614,6 +614,8 @@ Potential areas already mentioned in the development roadmap include export vali
 
 Findings from a code audit (parsers, operators, animation, tests) cross-checked against all roadmap documents. None of these are covered by the rig, UI, audio, or performance plans. Each item records the confirmed behavior at the time of writing (HEAD `fab49f4`); verify current line references before editing.
 
+**Implementation status: Phases A–E are implemented** (see status notes in §3.4). The ARGB1555 alpha-bit item in Phase A was **rejected by decision** — see [Texture Alpha Bit Policy](reference.md#texture-alpha-bit-policy) in `reference.md`. The `_strip_cycles` key-collision finding became obsolete through refactoring (mute-state maps now key by track identity); `sounds_map` is keyed by sound datablock identity.
+
 ### 3.1 Goals
 
 - No export may silently drop or corrupt animation data while reporting success.
@@ -712,33 +714,43 @@ No test coverage exists for: `.3dn` export, `.vtl` export, ARGB1555 texture conv
 
 #### Phase A: Data-Integrity Bugs
 
-1. CAR export: fail or warn through the report (never silently skip) when `bake_range()` returns `None`; route bake exceptions into the report; unify the CAR/VTL failure contract.
-2. Resync Animation: pass `use_absolute` matching the imported shape-key mode.
-3. Fast path: treat topology-changing visible modifiers as incompatible with the shape-key fast path in both CAR and VTL.
-4. ARGB1555: preserve bit 15 through import and export.
-5. Empty texture: skip image creation for zero-size payloads and record a warning.
+**Status: implemented** (item 4 rejected by decision — alpha bit deliberately forced to 0; see [Texture Alpha Bit Policy](reference.md#texture-alpha-bit-policy)).
+
+1. CAR export: fail or warn through the report (never silently skip) when `bake_range()` returns `None`; route bake exceptions into the report; unify the CAR/VTL failure contract. **Implemented:** vertex-count mismatch raises `ValueError` through `gather_car_animations` into the operator report; per-animation bake diagnostics travel via the `diagnostics` list; the critical bake error is logged and re-raised.
+2. Resync Animation: pass `use_absolute` matching the imported shape-key mode. **Implemented** in `operators/animation.py`.
+3. Fast path: treat topology-changing visible modifiers as incompatible with the shape-key fast path in both CAR and VTL. **Implemented** via `can_use_shape_key_fast_path()` in `utils/animation.py` (allowlist of position-preserving modifier types: UV_PROJECT, UV_WARP, WEIGHTED_NORMAL, NORMAL_EDIT).
+4. ARGB1555 alpha bit: **Rejected by decision — do not implement.** Bit 15 is deliberately forced to 0 on export and discarded on import. Carnivores exhibits undefined engine behavior with alpha = 1 (black edge pixels on LOD sprite bitmaps for `sfOpacity` + `sfDoubleSide` objects). See [Texture Alpha Bit Policy](reference.md#texture-alpha-bit-policy) in `reference.md`. Further research into map resource files is pending; until then, treating the alpha bit as a preservation bug is incorrect.
+5. Empty texture: skip image creation for zero-size payloads and record a warning. **Implemented** in `parse_3df`, `create_image_texture`, and both import operators.
 
 #### Phase B: Scene-State Safety
 
-1. Add `'REGISTER', 'UNDO'` to import/export operators (verify undo granularity and memory cost on large imports).
-2. Replace unconditional world replacement with a disclosed, optional shader setup (default off) or restore the prior world.
-3. Expand failed-import cleanup to remove created datablocks, not just the collection.
+**Status: implemented.**
+
+1. Add `'REGISTER', 'UNDO'` to import/export operators (verify undo granularity and memory cost on large imports). **Implemented** for all six I/O operators.
+2. Replace unconditional world replacement with a disclosed, optional shader setup (default off) or restore the prior world. **Implemented** as the opt-in `setup_world_shader` import option (default off).
+3. Expand failed-import cleanup to remove created datablocks, not just the collection. **Implemented** via a per-file datablock snapshot rollback in `_remove_failed_import_collection`.
 
 #### Phase C: Binary and Output Robustness
 
-1. Add the 3DN int16 parent-count guard and preflight check.
-2. Unify bone-name sanitization (single rule: split at first NUL, byte-aware truncation) across `.3df`, `.car`, validation, and export name generation.
-3. Write exports to a temp file in the destination directory and atomically rename on success.
+**Status: implemented.** The 3DN exporter raises a clear `ValueError` above the signed 16-bit range; the preflight check at `utils/validation.py` (`_check_skeleton`) already covered all of 3DF/CAR/3DN.
+
+1. Add the 3DN int16 parent-count guard and preflight check. **Implemented** in `gather_3dn_data`.
+2. Unify bone-name sanitization (single rule: split at first NUL, byte-aware truncation) across `.3df`, `.car`, validation, and export name generation. **Implemented** via `decode_serialized_name` / `truncate_serialized_name` / `serialize_name` in `parsers/validate.py`.
+3. Write exports to a temp file in the destination directory and atomically rename on success. **Implemented** via `atomic_output_file` in `utils/common.py`, used by all four exporters.
 
 #### Phase D: Reporting and Coverage
 
-1. Route every console-only `warn()`/`error()` that affects output through `ParserContext.warnings` or the operation report.
-2. Make `sounds_map` and `_strip_cycles` keys collision-safe (datablock identity, track index).
-3. Document import support explicitly in the README and `doc/README.md` (`.3dn`/`.vtl` import status, `.vtl` export only).
+**Status: implemented.**
+
+1. Route every console-only `warn()`/`error()` that affects output through `ParserContext.warnings` or the operation report. **Implemented:** CAR export diagnostics thread (`diagnostics` list) covers static animations, missing-eval_time fast paths, no-animation sources, >64 animations, and cross-reference truncation; 3DF/3DN export diagnostics surface owner-mapping warnings and the 3DN texture-height assumption; `parse_3df` bone-name warnings land in `ParserContext.warnings`.
+2. Make `sounds_map` and `_strip_cycles` keys collision-safe (datablock identity, track index). **Implemented:** `sounds_map` keys by Sound datablock identity; `_strip_cycles` was removed by earlier refactoring (mute maps key by track identity).
+3. Document import support explicitly in the README and `doc/README.md` (`.3dn`/`.vtl` import status, `.vtl` export only). **Implemented** with the coverage table in both files.
 
 #### Phase E: Tests
 
 Fill the blind spots in section 3.3 as each phase lands, with at least: CAR export dropping an animation produces a reported warning/error; VTL and CAR fail identically on vertex-count mismatch; absolute resync round-trips byte-identical animation; fast path disabled with SUBSURF/MIRROR visible; alpha-bit round trip; empty-texture import; undo of import; 3DN with >32,767 bones fails preflight; atomic write leaves no partial file on injected failure.
+
+**Status: implemented** in `tests/test_release_fixes.py` (16 tests): name-rule round trips, embedded-NUL import, atomic write success/failure, fast-path modifier matrix, empty-texture import warning, loud CAR vertex-count failure, CAR diagnostics round trip, and absolute-mode resync. The alpha-bit round-trip test is dropped (rejected by decision); undo-granularity and the >32,767-bone preflight remain manual/optional because of headless-mode and runtime cost limits.
 
 ### 3.5 Verification Matrix
 

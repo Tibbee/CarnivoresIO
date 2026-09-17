@@ -1385,12 +1385,20 @@ class CARNIVORES_OT_resync_animation(bpy.types.Operator):
             else:
                 anim_base_name = action.name
             
+            # Preserve the shape-key evaluation mode. Absolute shape keys (the
+            # import default) animate through a single 'eval_time' F-Curve;
+            # re-baking them as relative fcurves would export the basis pose
+            # for every frame.
+            sk_data = obj.data.shape_keys if obj.type == 'MESH' and obj.data else None
+            use_absolute = bool(sk_data is not None and not sk_data.use_relative)
+            
             anim_utils.keyframe_shape_key_animation_as_action(
                 obj, 
                 anim_base_name, 
                 frame_start=1, 
                 kps=kps, 
-                scene_fps=context.scene.render.fps
+                scene_fps=context.scene.render.fps,
+                use_absolute=use_absolute,
             )
         else:
             # STANDARD LOGIC

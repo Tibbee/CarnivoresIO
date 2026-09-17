@@ -20,7 +20,7 @@ def parse_car_header(file):
     if CAR_HEADER_DTYPE.itemsize != 52:
         raise ValueError('Internal CAR header definition must be 52 bytes.')
     # Sanitize string: split at first null byte to discard potential garbage
-    model_name = header['model_name'].decode('ascii', errors='ignore').split('\x00')[0]
+    model_name = validator.decode_serialized_name(header['model_name'])
     texture_height = header['texture_size'] // (TEXTURE_WIDTH * 2)
     return header, model_name, texture_height
 
@@ -58,7 +58,7 @@ def parse_car_animations(file, header, context, compatibility=True, parse_positi
             # Read 32-byte name
             ani_name_raw = np.fromfile(file, dtype='S32', count=1)[0]
             # Sanitize string: split at first null byte
-            ani_name = ani_name_raw.decode('ascii', errors='ignore').split('\x00')[0]
+            ani_name = validator.decode_serialized_name(ani_name_raw)
             if not ani_name:
                 ani_name = f"Anim_{anim_idx}"
             
@@ -167,7 +167,7 @@ def parse_car_sounds_and_crossref(file, header, context, validate=True, parse_sa
             raise ValueError(f"Sound block #{sfx_idx} header extends beyond the end of the CAR file.")
 
         name_raw = np.fromfile(file, dtype='S32', count=1)[0]
-        name = name_raw.decode('ascii', errors='ignore').split('\x00')[0]
+        name = validator.decode_serialized_name(name_raw)
         if not name:
             name = f"Sound_{sfx_idx}"
             if validate:

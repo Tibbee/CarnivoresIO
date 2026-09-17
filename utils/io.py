@@ -758,6 +758,12 @@ def create_uv_map(mesh, uvs):
 
 @timed("create_image_texture") 
 def create_image_texture(texture, texture_height, object_name):
+    if texture is None or np.asarray(texture).size == 0:
+        warn(
+            f"No texture pixel data for '{object_name}' (empty texture payload); "
+            "image creation skipped."
+        )
+        return None
     image = bpy.data.images.new(
         name=f"{object_name}_Texture",
         width=TEXTURE_WIDTH,
@@ -1372,13 +1378,28 @@ def collect_export_mapping(obj, export_matrix):
 
 
 @timed("collect_bones_and_owners")
-def collect_bones_and_owners(obj, export_matrix):
+def collect_bones_and_owners(obj, export_matrix, diagnostics=None):
     """Return the legacy exporter tuple from the shared read-only mapper."""
+    # Pure information for unrigged meshes; the implicit Default owner is the
+    # normal export path, so it does not deserve a report warning.
+    informational = (
+        "No armature or hooks were found; all vertices use implicit Default owner 0.",
+    )
     mapping = collect_export_mapping(obj, export_matrix)
     for message in mapping.warnings:
-        warn(f"Export owner mapping: {message}")
+        report_message = f"Export owner mapping: {message}"
+        warn(report_message)
+        if (
+            diagnostics is not None
+            and message not in informational
+            and report_message not in diagnostics
+        ):
+            diagnostics.append(report_message)
     for message in mapping.errors:
-        error(f"Export owner mapping: {message}")
+        report_message = f"Export owner mapping error: {message}"
+        error(report_message)
+        if diagnostics is not None and report_message not in diagnostics:
+            diagnostics.append(report_message)
     return (
         [bone.export_name for bone in mapping.bones],
         [list(position) for position in mapping.bone_positions],

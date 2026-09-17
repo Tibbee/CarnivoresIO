@@ -1,4 +1,4 @@
-from .common import timed
+from .common import timed, atomic_output_file
 from .logger import info, debug, warn, error
 from .io import (
     handle_car_owners,

@@ -19,11 +19,20 @@ Consolidated technical documentation for the CarnivoresIO Blender add-on, coveri
 | [Performance Analysis](PERFORMANCE_ANALYSIS.md) | Top-down cost analysis of every function, operator, and subsystem by execution frequency |
 | [Audio Test Checklist](AUDIO_TEST_CHECKLIST.md) | Manual verification checklist for audio import/export and focused playback testing |
 | [Phase 5 Fix Continuation](PHASE5_FIX_CONTINUATION.md) | Historical record of the Phase 5 lifecycle fixes; superseded by the Plan and Handoff |
-| [Test Suite](../tests/README.md) | How to run the automated Blender test suite (101 tests / 10 files) |
+| [Test Suite](../tests/README.md) | How to run the automated Blender test suite (118 tests / 11 files) |
 
 ## Project Context
 
-This add-on supports importing/exporting Carnivores engine formats (`.3df`, `.car`, `.3dn`) for Blender 4.2+. Build instructions and coding conventions are documented in the repository root and [AGENTS.md](../AGENTS.md).
+This add-on supports Blender 4.2+. Format support is **not symmetric** — import coverage is narrower than export:
+
+| Format | Import | Export | Notes |
+|--------|--------|--------|-------|
+| `.3df` | Yes | Yes (single + batch) | Static models; textures, bones/hooks, face flags |
+| `.car` | Yes | Yes | Vertex animations (shape keys), embedded sounds, owner/rig data |
+| `.3dn` | No | Yes | Static mobile/HD model export only; no importer is planned yet |
+| `.vtl` | No | Yes | Standalone vertex animation export only; animations are round-tripped through `.car` |
+
+Build instructions and coding conventions are documented in the repository root and [AGENTS.md](../AGENTS.md). The complete user-facing feature list, including the same coverage table, lives in the root [README](../README.md).
 
 ## Documentation Structure
 

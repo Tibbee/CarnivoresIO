@@ -257,14 +257,51 @@ def _draw_scale_note(layout, direction):
     layout.label(text=f"Standard: {standard}", icon='INFO')
 
 
-def _remove_failed_import_collection(collection):
-    """Remove a collection created for an import that did not complete."""
+_IMPORT_DATABLOCK_ATTRIBUTES = (
+    "objects", "meshes", "armatures", "images", "materials",
+    "actions", "sounds", "collections",
+)
+
+
+def _snapshot_datablock_names():
+    """Record existing datablock names so a failed import can roll back."""
+    return {
+        attr: set(getattr(bpy.data, attr).keys())
+        for attr in _IMPORT_DATABLOCK_ATTRIBUTES
+    }
+
+
+def _remove_failed_import_collection(collection, snapshot=None):
+    """Remove a collection created for an import that did not complete.
+
+    With a pre-import snapshot, every datablock the failed import created
+    (objects, meshes, armatures, images, materials, actions, sounds, child
+    collections) is removed as well, so a partial import no longer leaves
+    orphaned data behind. Pre-existing datablocks are never touched.
+    """
     if collection is None:
         return
     try:
         collection_name = collection.name
     except ReferenceError:
         collection_name = "<invalid collection>"
+
+    if snapshot is not None:
+        for attr, before in snapshot.items():
+            datablocks = getattr(bpy.data, attr)
+            for name in list(datablocks.keys()):
+                if name in before:
+                    continue
+                datablock = datablocks.get(name, None)
+                if datablock is None:
+                    continue
+                try:
+                    datablocks.remove(datablock, do_unlink=True)
+                except Exception as remove_error:
+                    warn(
+                        f"Could not remove {attr[:-1]} '{name}' from the failed "
+                        f"import of '{collection_name}': {remove_error}"
+                    )
 
     try:
         live_collection = bpy.data.collections.get(collection_name)
@@ -338,7 +375,7 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
     bl_idname = "carnivores.import_3df"
     bl_label = "Import .3DF Model"
     bl_description = "Import a Carnivores .3df model file"
-    bl_options = {'PRESET'}
+    bl_options = {'REGISTER', 'UNDO', 'PRESET'}
     
     filename_ext = ".3df"
     filter_glob: bpy.props.StringProperty(
@@ -363,8 +400,13 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
     )
     create_materials: bpy.props.BoolProperty(
         name="Create Materials",
-        description="Create materials for the mesh and the world",
+        description="Create materials for the mesh",
         default=True
+    )
+    setup_world_shader: bpy.props.BoolProperty(
+        name="Set Up CustomWorld Lighting",
+        description="Replace the scene's current world with the extension's CustomWorld lighting setup. This changes scene lighting and is not undoable separately",
+        default=False
     )
     normal_smooth: bpy.props.BoolProperty(
         name="Smooth Faces",
@@ -445,6 +487,7 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         if content:
             content.enabled = self.import_textures
             content.prop(self, "create_materials", text="Materials")
+            content.prop(self, "setup_world_shader", text="CustomWorld Lighting")
 
         geometry = _operator_panel(
             layout,
@@ -505,6 +548,7 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                 "scale",
                 "import_textures",
                 "create_materials",
+                "setup_world_shader",
                 "normal_smooth",
                 "select_imported",
                 "frame_imported",
@@ -554,6 +598,7 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         for filepath in valid_paths:
             coll = None
             filename = os.path.basename(filepath)
+            file_snapshot = _snapshot_datablock_names()
             try:
                 # Your existing parsing and importing logic here
                 mesh_name, object_name = io_utils.generate_names(filepath)
@@ -579,7 +624,7 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                 io_utils.create_uv_map(obj.data, uvs)
                 if self.import_textures and texture is not None:
                     image = io_utils.create_image_texture(texture, texture_height, object_name)
-                    if self.create_materials:
+                    if image is not None and self.create_materials:
                         material = io_utils.create_texture_material(image, object_name)
                         obj.data.materials.append(material)
 
@@ -635,10 +680,10 @@ class CARNIVORES_OT_import_3df(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                     suggested_action="Check the file and import options, then retry.",
                 )
                 failed_files.append(filename)
-                _remove_failed_import_collection(coll)
+                _remove_failed_import_collection(coll, snapshot=file_snapshot)
                 continue
 
-        if self.create_materials and self.import_textures and imported_files:
+        if self.create_materials and self.import_textures and imported_files and self.setup_world_shader:
             io_utils.setup_custom_world_shader()
 
         completed = _report_batch_summary(
@@ -673,7 +718,7 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
     bl_idname = "carnivores.export_3df"
     bl_label = "Export .3DF Model(s)"
     bl_description = "Export selected mesh objects as Carnivores .3df model file(s)"
-    bl_options = {'PRESET'}
+    bl_options = {'REGISTER', 'UNDO', 'PRESET'}
     filename_ext = ".3df"
     filter_glob: bpy.props.StringProperty(default="*.3df", options={'HIDDEN'}, maxlen=255)
     scale: bpy.props.FloatProperty(
@@ -831,6 +876,7 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
                         if not _append_preflight_report(report, validation, obj.name, os.path.basename(filepath)):
                             failed_files.append(obj.name)
                             continue
+                    file_diagnostics = []
                     export_3df(
                         filepath,
                         obj,
@@ -838,13 +884,21 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
                         export_textures=self.export_textures,
                         flip_u=self.flip_u,
                         flip_v=self.flip_v,
-                        flip_handedness=self.flip_handedness
+                        flip_handedness=self.flip_handedness,
+                        diagnostics=file_diagnostics,
                     )
                     destination = os.path.basename(filepath)
                     exported_files.append(destination)
+                    for diagnostic in file_diagnostics:
+                        report.warning(
+                            "Export diagnostics",
+                            diagnostic,
+                            source=obj.name,
+                            destination=destination,
+                        )
                     report.info(
                         "Export",
-                        "Exported successfully.",
+                        "Exported successfully." if not file_diagnostics else "Exported with warnings; review the diagnostics above.",
                         source=obj.name,
                         destination=destination,
                     )
@@ -891,6 +945,7 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
                         os.path.basename(filepath),
                     )
                 if preflight_ok:
+                    file_diagnostics = []
                     export_3df(
                         filepath,
                         obj,
@@ -898,13 +953,21 @@ class CARNIVORES_OT_export_3df(bpy.types.Operator, bpy_extras.io_utils.ExportHel
                         export_textures=self.export_textures,
                         flip_u=self.flip_u,
                         flip_v=self.flip_v,
-                        flip_handedness=self.flip_handedness
+                        flip_handedness=self.flip_handedness,
+                        diagnostics=file_diagnostics,
                     )
                     destination = os.path.basename(filepath)
                     exported_files.append(destination)
+                    for diagnostic in file_diagnostics:
+                        report.warning(
+                            "Export diagnostics",
+                            diagnostic,
+                            source=obj.name,
+                            destination=destination,
+                        )
                     report.info(
                         "Export",
-                        "Exported successfully.",
+                        "Exported successfully." if not file_diagnostics else "Exported with warnings; review the diagnostics above.",
                         source=obj.name,
                         destination=destination,
                     )
@@ -938,7 +1001,7 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
     bl_idname = "carnivores.export_car"
     bl_label = "Export .CAR Model"
     bl_description = "Export active mesh object as Carnivores .car model file"
-    bl_options = {'PRESET'}
+    bl_options = {'REGISTER', 'UNDO', 'PRESET'}
     
     filename_ext = ".car"
     filter_glob: bpy.props.StringProperty(default="*.car", options={'HIDDEN'}, maxlen=255)
@@ -1099,6 +1162,7 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
                     self.report({'ERROR'}, "CAR preflight failed; no file was written.")
                     _finalize_operation_report(self, report)
                     return {'CANCELLED'}
+            diagnostics = []
             export_car(
                 self.filepath,
                 obj,
@@ -1109,12 +1173,20 @@ class CARNIVORES_OT_export_car(bpy.types.Operator, bpy_extras.io_utils.ExportHel
                 flip_handedness=self.flip_handedness,
                 model_name_override=self.model_name,
                 sound_conversion_cache=artifact_cache.setdefault("sound_conversion", {}),
+                diagnostics=diagnostics,
             )
             destination = os.path.basename(self.filepath)
             report.set_outcome(1, 1, 0)
+            for diagnostic in diagnostics:
+                report.warning(
+                    "Export diagnostics",
+                    diagnostic,
+                    source=obj.name,
+                    destination=destination,
+                )
             report.info(
                 "Export",
-                "Exported successfully.",
+                "Exported successfully." if not diagnostics else "Exported with warnings; review the diagnostics above.",
                 source=obj.name,
                 destination=destination,
             )
@@ -1141,7 +1213,7 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
     bl_idname = 'carnivores.import_car'
     bl_label = 'Import .CAR Model'
     bl_description = 'Import a Carnivores .car model file'
-    bl_options = {'PRESET'}
+    bl_options = {'REGISTER', 'UNDO', 'PRESET'}
     filename_ext = '.car'
     filter_glob: bpy.props.StringProperty(
         default='*.car', 
@@ -1166,8 +1238,13 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
     )
     create_materials: bpy.props.BoolProperty(
         name='Create Materials', 
-        description='Create materials for the mesh and the world',
+        description='Create materials for the mesh',
         default=True
+    )
+    setup_world_shader: bpy.props.BoolProperty(
+        name='Set Up CustomWorld Lighting', 
+        description="Replace the scene's current world with the extension's CustomWorld lighting setup. This changes scene lighting and is not undoable separately",
+        default=False
     )
     normal_smooth: bpy.props.BoolProperty(
         name='Smooth Faces', 
@@ -1258,6 +1335,7 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         if content:
             content.enabled = self.import_textures
             content.prop(self, "create_materials", text="Materials")
+            content.prop(self, "setup_world_shader", text="CustomWorld Lighting")
 
         geometry = _operator_panel(
             layout,
@@ -1330,6 +1408,7 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                 "scale",
                 "import_textures",
                 "create_materials",
+                "setup_world_shader",
                 "normal_smooth",
                 "validate",
                 "flip_handedness",
@@ -1378,6 +1457,7 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
         for filepath in valid_paths:
             coll = None
             filename = os.path.basename(filepath)
+            file_snapshot = _snapshot_datablock_names()
             try:
                 mesh_name, _ = io_utils.generate_names(filepath)  # Ignore basename; use model_name below
                 coll = io_utils.create_import_collection(os.path.splitext(filename)[0])
@@ -1483,7 +1563,7 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                         )
                 if self.import_textures and texture is not None:
                     image = io_utils.create_image_texture(texture, texture_height, model_name)
-                    if self.create_materials:
+                    if image is not None and self.create_materials:
                         material = io_utils.create_texture_material(image, model_name)
                         obj.data.materials.append(material)
                 # Vertex groups use compact IDs; the structured vertices retain raw CAR owners.
@@ -1525,10 +1605,10 @@ class CARNIVORES_OT_import_car(bpy.types.Operator, bpy_extras.io_utils.ImportHel
                     suggested_action="Check the file and import options, then retry.",
                 )
                 failed_files.append(filename)
-                _remove_failed_import_collection(coll)
+                _remove_failed_import_collection(coll, snapshot=file_snapshot)
                 continue
 
-        if self.create_materials and self.import_textures and imported_files:
+        if self.create_materials and self.import_textures and imported_files and self.setup_world_shader:
             io_utils.setup_custom_world_shader()
 
         completed = _report_batch_summary(
@@ -1571,7 +1651,7 @@ class CARNIVORES_OT_export_3dn(bpy.types.Operator, bpy_extras.io_utils.ExportHel
     bl_idname = "carnivores.export_3dn"
     bl_label = "Export .3DN Model"
     bl_description = "Export an active mesh as a static .3dn model for Carnivores: Dinosaur Hunter mobile/HD titles"
-    bl_options = {'PRESET'}
+    bl_options = {'REGISTER', 'UNDO', 'PRESET'}
     
     filename_ext = ".3dn"
     filter_glob: bpy.props.StringProperty(default="*.3dn", options={'HIDDEN'}, maxlen=255)
@@ -1742,6 +1822,7 @@ class CARNIVORES_OT_export_3dn(bpy.types.Operator, bpy_extras.io_utils.ExportHel
                     self.report({'ERROR'}, ".3DN preflight failed; no file was written.")
                     _finalize_operation_report(self, report)
                     return {'CANCELLED'}
+            file_diagnostics = []
             export_3dn(
                 self.filepath,
                 obj,
@@ -1751,13 +1832,21 @@ class CARNIVORES_OT_export_3dn(bpy.types.Operator, bpy_extras.io_utils.ExportHel
                 sprite_name=self.sprite_name,
                 flip_u=self.flip_u,
                 flip_v=self.flip_v,
-                flip_handedness=self.flip_handedness
+                flip_handedness=self.flip_handedness,
+                diagnostics=file_diagnostics,
             )
             destination = os.path.basename(self.filepath)
             report.set_outcome(1, 1, 0)
+            for diagnostic in file_diagnostics:
+                report.warning(
+                    "Export diagnostics",
+                    diagnostic,
+                    source=obj.name,
+                    destination=destination,
+                )
             report.info(
                 "Export",
-                "Exported successfully.",
+                "Exported successfully." if not file_diagnostics else "Exported with warnings; review the diagnostics above.",
                 source=obj.name,
                 destination=destination,
             )
@@ -1784,7 +1873,7 @@ class CARNIVORES_OT_export_vtl(bpy.types.Operator, bpy_extras.io_utils.ExportHel
     bl_idname = "carnivores.export_vtl"
     bl_label = "Export .VTL Animation"
     bl_description = "Export active animation as Carnivores .vtl animation file"
-    bl_options = {'PRESET'}
+    bl_options = {'REGISTER', 'UNDO', 'PRESET'}
     
     filename_ext = ".vtl"
     filter_glob: bpy.props.StringProperty(default="*.vtl", options={'HIDDEN'}, maxlen=255)
